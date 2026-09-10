@@ -7,8 +7,8 @@
 #define TOTAL_PAGES ((RAM_END - RAM_START) / PAGE_SIZE)
 
 static unsigned char page_bitmap[TOTAL_PAGES / 8];
-
 static unsigned long first_free_page;
+static unsigned long used_pages;
 
 extern char kernel_start;
 extern char kernel_end;
@@ -77,19 +77,11 @@ void page_init(void)
 {
     unsigned long i;
 
-    /*
-     * Safety first:
-     * Mark every physical page as USED.
-     */
     for (i = 0; i < TOTAL_PAGES; i++)
     {
         page_set_used(i);
     }
 
-    /*
-     * The stack may end in the middle of a page.
-     * Align upward to the next complete 4 KiB page.
-     */
     uintptr_t usable_start =
         ((uintptr_t)&stack_top + PAGE_SIZE - 1)
         & ~(PAGE_SIZE - 1);
@@ -102,75 +94,12 @@ void page_init(void)
     unsigned long last_free_page =
         (usable_end - RAM_START) / PAGE_SIZE;
 
-    /*
-     * Everything after the kernel + stack is FREE.
-     */
     for (i = first_free_page; i < last_free_page; i++)
     {
         page_set_free(i);
     }
-}
-void page_debug(void)
-{
-    unsigned long i = 0;
 
-    uart_puts("\n");
-    uart_puts("================================\n");
-    uart_puts("        KnocOS Page Manager\n");
-    uart_puts("================================\n");
-
-    uart_puts("Page size  : ");
-    uart_put_uint(PAGE_SIZE);
-    uart_puts(" bytes\n");
-
-    uart_puts("Total pages: ");
-    uart_put_uint(TOTAL_PAGES);
-    uart_puts("\n");
-
-    uart_puts("--------------------------------\n");
-    uart_puts("Memory Map\n");
-    uart_puts("--------------------------------\n");
-
-    while (i < TOTAL_PAGES)
-    {
-        unsigned long start = i;
-        int used = page_is_used(i);
-
-        /*
-         * Find the end of this consecutive
-         * USED or FREE range.
-         */
-        while (i < TOTAL_PAGES &&
-               page_is_used(i) == used)
-        {
-            i++;
-        }
-
-        unsigned long end = i - 1;
-        unsigned long count = end - start + 1;
-
-        uart_puts("Pages ");
-        uart_put_uint(start);
-        uart_puts(" - ");
-        uart_put_uint(end);
-
-        uart_puts(" : ");
-
-        if (used)
-        {
-            uart_puts("USED");
-        }
-        else
-        {
-            uart_puts("FREE");
-        }
-
-        uart_puts(" (");
-        uart_put_uint(count);
-        uart_puts(" pages)\n");
-    }
-
-    uart_puts("================================\n");
+    used_pages = first_free_page;
 }
 
 void *page_alloc(void)
@@ -182,6 +111,7 @@ void *page_alloc(void)
         if (!page_is_used(i))
         {
             page_set_used(i);
+            used_pages++;
 
             return (void *)(RAM_START + (i * PAGE_SIZE));
         }
@@ -212,5 +142,92 @@ void page_free(void *address)
         return;
     }
 
+    if (!page_is_used(page_number))
+    {
+        return;
+    }
+
     page_set_free(page_number);
+    used_pages--;
+}
+
+unsigned long page_total(void)
+{
+    return TOTAL_PAGES;
+}
+
+unsigned long page_used(void)
+{
+    return used_pages;
+}
+
+unsigned long page_free_count(void)
+{
+    return TOTAL_PAGES - used_pages;
+}
+
+void page_debug(void)
+{
+    unsigned long i = 0;
+
+    uart_puts("\n");
+    uart_puts("================================\n");
+    uart_puts("        KnocOS Page Manager\n");
+    uart_puts("================================\n");
+
+    uart_puts("Page size  : ");
+    uart_put_uint(PAGE_SIZE);
+    uart_puts(" bytes\n");
+
+    uart_puts("Total pages: ");
+    uart_put_uint(page_total());
+    uart_puts("\n");
+
+    uart_puts("Used pages : ");
+    uart_put_uint(page_used());
+    uart_puts("\n");
+
+    uart_puts("Free pages : ");
+    uart_put_uint(page_free_count());
+    uart_puts("\n");
+
+    uart_puts("--------------------------------\n");
+    uart_puts("Memory Map\n");
+    uart_puts("--------------------------------\n");
+
+    while (i < TOTAL_PAGES)
+    {
+        unsigned long start = i;
+        int used = page_is_used(i);
+
+        while (i < TOTAL_PAGES &&
+               page_is_used(i) == used)
+        {
+            i++;
+        }
+
+        unsigned long end = i - 1;
+        unsigned long count = end - start + 1;
+
+        uart_puts("Pages ");
+        uart_put_uint(start);
+        uart_puts(" - ");
+        uart_put_uint(end);
+        uart_puts(" : ");
+
+        if (used)
+        {
+            uart_puts("USED");
+        }
+        else
+        {
+            uart_puts("FREE");
+        }
+
+        uart_puts(" (");
+        uart_put_uint(count);
+        uart_puts(" pages)\n");
+    }
+
+    uart_puts("================================\n");
 }

@@ -60,8 +60,24 @@ size: knocos.elf
 
 
 pages: knocos.elf
-	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
-	-machine virt \
-	-bios none \
-	-kernel knocos.elf \
-	-nographic
+	@echo "================================"
+	@echo "        KnocOS Page Info"
+	@echo "================================"
+	@echo ""
+	@echo "Physical Memory:"
+	@echo "  RAM Start   : 0x80000000"
+	@echo "  RAM End     : 0x88000000"
+	@echo "  Total       : 128.00 MiB"
+	@echo ""
+	@echo "Page Configuration:"
+	@echo "  Page Size   : 4096 bytes"
+	@echo "  Total Pages : 32768"
+	@echo "  Bitmap Size : 4096 bytes"
+	@echo ""
+	@echo "Page State:"
+	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; first=((d['stack_top']+4095)&~4095-0x80000000)//4096; total=(0x88000000-0x80000000)//4096; used=first; free=total-used; print(f'  Used Pages  : {used}'); print(f'  Free Pages  : {free}'); print(f'  Used Memory : {used*4096/1024:.2f} KiB'); print(f'  Free Memory : {free*4096/1024/1024:.2f} MiB')"
+	@echo ""
+	@echo "Page Map:"
+	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; first=((d['stack_top']+4095)&~4095-0x80000000)//4096; print(f'  Reserved    : Pages 0 - {first-1}'); print(f'  Available   : Pages {first} - 32767')"
+	@echo ""
+	@echo "================================"
