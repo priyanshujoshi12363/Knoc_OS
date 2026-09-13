@@ -8,9 +8,9 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
 
 all: knocos.elf
 
-knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o
+knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o
 	$(LD) -T boot/linker.ld -o knocos.elf \
-	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o
+	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o
 
 boot/boot.o: boot/boot.S
 	$(AS) $(CFLAGS) -c -o boot/boot.o boot/boot.S
@@ -27,13 +27,17 @@ kernel/logging.o: kernel/logging.c kernel/logging.h
 kernel/page.o: kernel/page.c kernel/page.h
 	$(CC) $(CFLAGS) -c -o kernel/page.o kernel/page.c
 
+kernel/vm.o: kernel/vm.c kernel/vm.h
+	$(CC) $(CFLAGS) -c -o kernel/vm.o kernel/vm.c
+
 clean:
 	rm -f knocos.elf \
 	      boot/boot.o \
 	      kernel/main.o \
 	      kernel/memory.o \
 	      kernel/logging.o \
-	      kernel/page.o
+	      kernel/page.o \
+	      kernel/vm.o
 
 run: knocos.elf
 	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
@@ -57,7 +61,6 @@ size: knocos.elf
 	@echo ""
 	@echo "RAM:"
 	@echo "  Total: 128 MiB"
-
 
 pages: knocos.elf
 	@echo "================================"
