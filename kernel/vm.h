@@ -31,6 +31,7 @@ typedef pte_t page_table_t[512];
 pte_t vm_make_pte(uintptr_t physical_address, uint64_t flags);
 
 void vm_init(void);
+void vm_enable(void);
 
 int vm_map(uintptr_t virtual_address,
            uintptr_t physical_address,
@@ -42,5 +43,8 @@ int vm_map_range(uintptr_t virtual_start,
                  uint64_t flags);
 
 void vm_debug(uintptr_t virtual_address);
+int vm_map_test(uintptr_t virtual_address,
+                uintptr_t physical_address,
+                uint64_t flags);
 
 #endif

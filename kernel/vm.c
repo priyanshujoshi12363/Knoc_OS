@@ -65,6 +65,15 @@ pte_t vm_make_pte(uintptr_t physical_address, uint64_t flags)
 {
     return (PA_TO_PPN(physical_address) << 10) | flags;
 }
+
+void vm_enable(void)
+{
+    uintptr_t root_address = (uintptr_t)root_page_table;
+    uint64_t satp_value = (8ULL << 60) | (root_address >> 12);
+
+    asm volatile("csrw satp, %0" :: "r"(satp_value));
+    asm volatile("sfence.vma zero, zero");
+}
 void vm_init(void)
 {
     root_page_table = (page_table_t *)page_alloc();
