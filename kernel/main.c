@@ -1,6 +1,8 @@
+#include <stdint.h>
 #include "logging.h"
 #include "page.h"
 #include "vm.h"
+#include "heap.h"
 
 void kernel_main(void)
 {
@@ -18,19 +20,9 @@ void kernel_main(void)
 
     vm_debug(0x80000000UL);
 
-    uintptr_t test_virtual = 0x40000000UL;
-    uintptr_t test_physical = 0x80000000UL;
+    heap_init();
 
-    if (vm_map(test_virtual,
-               test_physical,
-               PTE_R | PTE_W) != 0)
-    {
-        panic("Hardware translation test mapping failed");
-    }
-
-    log_info("Hardware translation test mapping ready");
-
-    vm_debug(test_virtual);
+    log_info("Kernel heap mapping prepared");
 
     log_info("Enabling Sv39");
 
@@ -38,17 +30,32 @@ void kernel_main(void)
 
     log_info("Sv39 enabled");
 
-    volatile uint64_t *test_address =
-        (volatile uint64_t *)test_virtual;
+    heap_activate();
 
-    *test_address = 0x4B4E4F434F53ULL;
+    log_info("Kernel heap activated");
 
-    if (*test_address != 0x4B4E4F434F53ULL)
+    void *test_memory = kmalloc(100);
+
+    if (test_memory == 0)
     {
-        panic("Hardware translation test failed");
+        panic("Kernel heap allocation failed");
     }
 
-    log_info("Hardware Sv39 translation verified");
+    volatile uint64_t *test_value =
+        (volatile uint64_t *)test_memory;
+
+    *test_value = 0x4B4E4F434F534845ULL;
+
+    if (*test_value != 0x4B4E4F434F534845ULL)
+    {
+        panic("Kernel heap allocation test failed");
+    }
+
+    log_info("Kernel heap allocation verified");
+
+    kfree(test_memory);
+
+    log_info("Kernel heap free verified");
 
     while (1)
     {

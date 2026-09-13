@@ -8,9 +8,9 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
 
 all: knocos.elf
 
-knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o
+knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o
 	$(LD) -T boot/linker.ld -o knocos.elf \
-	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o
+	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o
 
 boot/boot.o: boot/boot.S
 	$(AS) $(CFLAGS) -c -o boot/boot.o boot/boot.S
@@ -30,6 +30,9 @@ kernel/page.o: kernel/page.c kernel/page.h
 kernel/vm.o: kernel/vm.c kernel/vm.h
 	$(CC) $(CFLAGS) -c -o kernel/vm.o kernel/vm.c
 
+kernel/heap.o: kernel/heap.c kernel/heap.h kernel/page.h kernel/vm.h
+	$(CC) $(CFLAGS) -c -o kernel/heap.o kernel/heap.c
+
 clean:
 	rm -f knocos.elf \
 	      boot/boot.o \
@@ -37,7 +40,8 @@ clean:
 	      kernel/memory.o \
 	      kernel/logging.o \
 	      kernel/page.o \
-	      kernel/vm.o
+	      kernel/vm.o \
+	      kernel/heap.o
 
 run: knocos.elf
 	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
