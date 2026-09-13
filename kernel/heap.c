@@ -3,6 +3,7 @@
 #include "vm.h"
 
 #define HEAP_START 0x90000000UL
+#define HEAP_ALIGNMENT 8UL
 
 typedef struct heap_block
 {
@@ -13,6 +14,32 @@ typedef struct heap_block
 
 static heap_block_t *heap_first_block;
 static uintptr_t heap_physical_page;
+
+static uint64_t align_size(uint64_t size)
+{
+    return (size + HEAP_ALIGNMENT - 1) &
+           ~(HEAP_ALIGNMENT - 1);
+}
+
+static void split_block(heap_block_t *block, uint64_t size)
+{
+    if (block->size < size + sizeof(heap_block_t) + HEAP_ALIGNMENT)
+    {
+        return;
+    }
+
+    heap_block_t *new_block =
+        (heap_block_t *)((uintptr_t)(block + 1) + size);
+
+    new_block->size =
+        block->size - size - sizeof(heap_block_t);
+
+    new_block->free = 1;
+    new_block->next = block->next;
+
+    block->size = size;
+    block->next = new_block;
+}
 
 void heap_init(void)
 {
@@ -61,10 +88,14 @@ void *kmalloc(uint64_t size)
         return 0;
     }
 
+    size = align_size(size);
+
     while (block != 0)
     {
         if (block->free && block->size >= size)
         {
+            split_block(block, size);
+
             block->free = 0;
 
             return (void *)(block + 1);
