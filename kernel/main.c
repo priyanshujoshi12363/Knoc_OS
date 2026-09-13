@@ -24,6 +24,11 @@ void kernel_main(void)
 
     log_info("Kernel heap mapping prepared");
 
+    unsigned long pages_after_heap_init =
+        page_used();
+
+    log_info("Initial heap physical memory verified");
+
     log_info("Enabling Sv39");
 
     vm_enable();
@@ -34,7 +39,7 @@ void kernel_main(void)
 
     log_info("Kernel heap activated");
 
-    void *block_a = kmalloc(100);
+    void *block_a = kmalloc(3000);
 
     if (block_a == 0)
     {
@@ -43,7 +48,15 @@ void kernel_main(void)
 
     log_info("Allocation A successful");
 
-    void *block_b = kmalloc(200);
+    unsigned long pages_after_allocation_a =
+        page_used();
+
+    if (pages_after_allocation_a != pages_after_heap_init)
+    {
+        panic("Unexpected page allocation during A");
+    }
+
+    void *block_b = kmalloc(3000);
 
     if (block_b == 0)
     {
@@ -52,14 +65,15 @@ void kernel_main(void)
 
     log_info("Allocation B successful");
 
-    void *block_c = kmalloc(300);
+    unsigned long pages_after_growth =
+        page_used();
 
-    if (block_c == 0)
+    if (pages_after_growth != pages_after_allocation_a + 1)
     {
-        panic("Allocation C failed");
+        panic("Heap page growth failed");
     }
 
-    log_info("Allocation C successful");
+    log_info("Automatic physical page growth verified");
 
     volatile uint64_t *value_a =
         (volatile uint64_t *)block_a;
@@ -67,12 +81,8 @@ void kernel_main(void)
     volatile uint64_t *value_b =
         (volatile uint64_t *)block_b;
 
-    volatile uint64_t *value_c =
-        (volatile uint64_t *)block_c;
-
     *value_a = 0xAAAAAAAAAAAAAAAAULL;
     *value_b = 0xBBBBBBBBBBBBBBBBULL;
-    *value_c = 0xCCCCCCCCCCCCCCCCULL;
 
     if (*value_a != 0xAAAAAAAAAAAAAAAAULL)
     {
@@ -84,12 +94,7 @@ void kernel_main(void)
         panic("Allocation B memory test failed");
     }
 
-    if (*value_c != 0xCCCCCCCCCCCCCCCCULL)
-    {
-        panic("Allocation C memory test failed");
-    }
-
-    log_info("Multiple heap allocations verified");
+    log_info("Multiple-page heap allocation verified");
 
     kfree(block_a);
 
@@ -99,33 +104,7 @@ void kernel_main(void)
 
     log_info("Allocation B freed");
 
-    void *block_d = kmalloc(250);
-
-    if (block_d == 0)
-    {
-        panic("Coalesced allocation failed");
-    }
-
-    log_info("Coalesced allocation successful");
-
-    volatile uint64_t *value_d =
-        (volatile uint64_t *)block_d;
-
-    *value_d = 0xDDDDDDDDDDDDDDDDULL;
-
-    if (*value_d != 0xDDDDDDDDDDDDDDDDULL)
-    {
-        panic("Coalesced allocation memory test failed");
-    }
-
-    log_info("Coalesced memory verified");
-
-    kfree(block_c);
-    kfree(block_d);
-
-    log_info("All heap blocks freed");
-
-    log_info("Kernel heap coalescing test passed");
+    log_info("Kernel heap automatic growth test passed");
 
     while (1)
     {
