@@ -41,6 +41,53 @@ static void split_block(heap_block_t *block, uint64_t size)
     block->next = new_block;
 }
 
+static int block_belongs_to_heap(heap_block_t *target)
+{
+    heap_block_t *block = heap_first_block;
+
+    while (block != 0)
+    {
+        if (block == target)
+        {
+            return 1;
+        }
+
+        block = block->next;
+    }
+
+    return 0;
+}
+
+static void merge_with_next(heap_block_t *block)
+{
+    heap_block_t *next = block->next;
+
+    if (next == 0 || !next->free)
+    {
+        return;
+    }
+
+    block->size += sizeof(heap_block_t) + next->size;
+    block->next = next->next;
+}
+
+static void coalesce_blocks(void)
+{
+    heap_block_t *block = heap_first_block;
+
+    while (block != 0 && block->next != 0)
+    {
+        if (block->free && block->next->free)
+        {
+            merge_with_next(block);
+        }
+        else
+        {
+            block = block->next;
+        }
+    }
+}
+
 void heap_init(void)
 {
     heap_physical_page = (uintptr_t)page_alloc();
@@ -109,7 +156,7 @@ void *kmalloc(uint64_t size)
 
 void kfree(void *address)
 {
-    if (address == 0)
+    if (address == 0 || heap_first_block == 0)
     {
         return;
     }
@@ -117,5 +164,17 @@ void kfree(void *address)
     heap_block_t *block =
         ((heap_block_t *)address) - 1;
 
+    if (!block_belongs_to_heap(block))
+    {
+        return;
+    }
+
+    if (block->free)
+    {
+        return;
+    }
+
     block->free = 1;
+
+    coalesce_blocks();
 }

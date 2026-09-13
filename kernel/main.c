@@ -91,19 +91,41 @@ void kernel_main(void)
 
     log_info("Multiple heap allocations verified");
 
-    kfree(block_b);
-
-    log_info("Allocation B freed");
-
     kfree(block_a);
 
     log_info("Allocation A freed");
 
+    kfree(block_b);
+
+    log_info("Allocation B freed");
+
+    void *block_d = kmalloc(250);
+
+    if (block_d == 0)
+    {
+        panic("Coalesced allocation failed");
+    }
+
+    log_info("Coalesced allocation successful");
+
+    volatile uint64_t *value_d =
+        (volatile uint64_t *)block_d;
+
+    *value_d = 0xDDDDDDDDDDDDDDDDULL;
+
+    if (*value_d != 0xDDDDDDDDDDDDDDDDULL)
+    {
+        panic("Coalesced allocation memory test failed");
+    }
+
+    log_info("Coalesced memory verified");
+
     kfree(block_c);
+    kfree(block_d);
 
-    log_info("Allocation C freed");
+    log_info("All heap blocks freed");
 
-    log_info("Kernel heap splitting test passed");
+    log_info("Kernel heap coalescing test passed");
 
     while (1)
     {
