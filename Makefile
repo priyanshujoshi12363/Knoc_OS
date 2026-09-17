@@ -8,9 +8,9 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
 
 all: knocos.elf
 
-knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o
+knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o
 	$(LD) -T boot/linker.ld -o knocos.elf \
-	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o
+	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o
 
 boot/boot.o: boot/boot.S
 	$(AS) $(CFLAGS) -c -o boot/boot.o boot/boot.S
@@ -33,6 +33,15 @@ kernel/vm.o: kernel/vm.c kernel/vm.h
 kernel/heap.o: kernel/heap.c kernel/heap.h kernel/page.h kernel/vm.h
 	$(CC) $(CFLAGS) -c -o kernel/heap.o kernel/heap.c
 
+kernel/timer.o: kernel/timer.c kernel/timer.h
+	$(CC) $(CFLAGS) -c -o kernel/timer.o kernel/timer.c
+
+timer/timer.o: timer/timer.S
+	$(AS) $(CFLAGS) -c -o timer/timer.o timer/timer.S
+
+timer.elf: timer/timer.o timer/linker.ld
+	$(LD) -T timer/linker.ld -o timer.elf timer/timer.o
+
 clean:
 	rm -f knocos.elf \
 	      boot/boot.o \
@@ -41,13 +50,23 @@ clean:
 	      kernel/logging.o \
 	      kernel/page.o \
 	      kernel/vm.o \
-	      kernel/heap.o
+	      kernel/heap.o \
+	      kernel/timer.o \
+	      timer.elf \
+	      timer/timer.o
 
 run: knocos.elf
 	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
 	-machine virt \
 	-bios none \
 	-kernel knocos.elf \
+	-nographic
+
+timer-test: timer.elf
+	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
+	-machine virt \
+	-bios none \
+	-kernel timer.elf \
 	-nographic
 
 size: knocos.elf

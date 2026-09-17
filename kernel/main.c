@@ -3,10 +3,13 @@
 #include "page.h"
 #include "vm.h"
 #include "heap.h"
-
+#include "timer.h"
 void kernel_main(void)
 {
-    log_info("KnocOS starting");
+     log_info("KnocOS starting");
+
+    uint64_t now = timer_read();
+    timer_set_next(now + 1000000);
 
     page_init();
     log_info("Page memory initialized");
