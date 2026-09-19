@@ -1,6 +1,7 @@
 .section .text
 .global _start
 .extern kernel_main
+.extern timer_interrupt
 
 _start:
     la sp, stack_top
@@ -23,13 +24,16 @@ _start:
     li t0, 0x1800
     csrc mstatus, t0
 
- li t0, 0x0800
-csrs mstatus, t0
+    li t0, 0x0080
+    csrs mstatus, t0
 
-li t0, 0x80
-csrs mie, t0
+    li t0, 0x0800
+    csrs mstatus, t0
 
-mret
+    li t0, 0x0080
+    csrs mie, t0
+
+    mret
 
 supervisor_start:
     call kernel_main
@@ -38,7 +42,7 @@ loop:
     j loop
 
 machine_trap:
-    addi sp, sp, -248
+    addi sp, sp, -256
 
     sd ra, 0(sp)
     sd gp, 8(sp)
@@ -77,25 +81,8 @@ machine_trap:
     li t1, 0x8000000000000007
     bne t0, t1, machine_trap_exception
 
-    li t1, 0x0200BFF8
-    ld t2, 0(t1)
+    call timer_interrupt
 
-    li t1, 0x02004000
-    li t3, 1000000
-    add t2, t2, t3
-    sd t2, 0(t1)
-
-    la t1, timer_message
-    li t2, 0x10000000
-
-timer_print:
-    lbu t3, 0(t1)
-    beqz t3, timer_restore
-    sb t3, 0(t2)
-    addi t1, t1, 1
-    j timer_print
-
-timer_restore:
     ld ra, 0(sp)
     ld gp, 8(sp)
     ld tp, 16(sp)
@@ -128,7 +115,7 @@ timer_restore:
     ld t6, 232(sp)
     ld sp, 240(sp)
 
-    addi sp, sp, 248
+    addi sp, sp, 256
     mret
 
 machine_trap_exception:
@@ -191,6 +178,3 @@ trap_message:
 
 supervisor_trap_message:
     .asciz "[TRAP] scause=0x"
-
-timer_message:
-    .asciz "[TIMER] interrupt\n"

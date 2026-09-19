@@ -5,5 +5,7 @@
 
 uint64_t timer_read(void);
 void timer_set_next(uint64_t value);
-void timer_enable(void);
+void timer_interrupt(void);
+uint64_t timer_ticks(void);
+
 #endif

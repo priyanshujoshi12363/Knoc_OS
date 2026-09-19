@@ -2,6 +2,9 @@
 
 #define CLINT_MTIME 0x0200BFF8UL
 #define CLINT_MTIMECMP 0x02004000UL
+#define TIMER_INTERVAL 100000ULL
+
+static uint64_t ticks = 0;
 
 uint64_t timer_read(void)
 {
@@ -18,20 +21,15 @@ void timer_set_next(uint64_t value)
 
     *mtimecmp = value;
 }
-void timer_enable(void)
+
+void timer_interrupt(void)
 {
-    uint64_t value;
+    ticks++;
 
-    __asm__ volatile(
-        "csrr %0, mie"
-        : "=r"(value)
-    );
+    timer_set_next(timer_read() + TIMER_INTERVAL);
+}
 
-    value |= (1UL << 7);
-
-    __asm__ volatile(
-        "csrw mie, %0"
-        :
-        : "r"(value)
-    );
+uint64_t timer_ticks(void)
+{
+    return ticks;
 }

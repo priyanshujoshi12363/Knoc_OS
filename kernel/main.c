@@ -4,9 +4,10 @@
 #include "vm.h"
 #include "heap.h"
 #include "timer.h"
+
 void kernel_main(void)
 {
-     log_info("KnocOS starting");
+    log_info("KnocOS starting");
 
     uint64_t now = timer_read();
     timer_set_next(now + 1000000);
@@ -170,6 +171,21 @@ void kernel_main(void)
     kfree(block_f);
 
     log_info("Kernel heap 4.0 stress test passed");
+
+    uint64_t timer_start = timer_ticks();
+
+    for (volatile uint64_t i = 0; i < 10000000; i++)
+    {
+    }
+
+    uint64_t timer_end = timer_ticks();
+
+    if (timer_end <= timer_start)
+    {
+        panic("Timer interrupt test failed");
+    }
+
+    log_info("Timer interrupt and tick counter verified");
 
     while (1)
     {
