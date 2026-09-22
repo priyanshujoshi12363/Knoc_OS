@@ -18,7 +18,9 @@ KnocOS currently has:
 - Drop from Machine mode → **Supervisor mode** via `mret`
 - Custom linker script with separate `R-X` (text) and `RW-` (data) segments
 - C kernel entry point with a 16 KiB kernel stack
-- UART output through memory-mapped I/O
+- **UART driver** (16550): output plus **interrupt-driven keyboard input** into a ring buffer
+- **PLIC interrupt controller**: device interrupts (UART, IRQ 10) delivered to the kernel
+- Interactive **keyboard echo** (Enter = new line, Backspace erases)
 - Kernel logging (`log_info`, `log_warn`, `log_trap`) and a `panic` handler
 - **Physical page allocator** (bitmap, 4 KiB pages)
 - **Sv39 virtual memory** (3-level page tables, identity-mapped kernel, paging enabled via `satp`)
@@ -48,6 +50,9 @@ KnocOS currently has:
 [TRAP] Breakpoint
 [TRAP] sepc   = 0x0000000080000790
 [INFO] Supervisor trap handler verified
+[INFO] UART input interrupts enabled
+[INFO] Keyboard echo ready, start typing
+hello knocos          ← what you type is echoed back
 ```
 
 Example of an unhandled kernel fault (a store to an unmapped address):
@@ -78,6 +83,7 @@ Recent progress:
 | *(uncommitted)* | Timer cleanup: shared constants in `timer.h`, `timer_set_next()` removed |
 | *(uncommitted)* | Supervisor-mode trap handler in C |
 | *(uncommitted)* | Timer interrupts forwarded to Supervisor mode |
+| *(uncommitted)* | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
 
 What works right now:
 
@@ -88,13 +94,14 @@ What works right now:
 - `boot.S` delegates exceptions to Supervisor mode with `medeleg = 0xB1FF`, covering misaligned/access faults, illegal instruction, breakpoint, U-mode `ecall` and page faults
 - `supervisor_trap` (in `boot.S`) saves 31 registers into a `trap_frame_t`, calls `supervisor_trap_handler()` in C, restores the registers and `sret`s
 - `supervisor_trap_handler()` reads `scause`, `sepc` and `stval`. A breakpoint (`ebreak`) is logged and skipped (`sepc += 4`), and anything else is decoded by name, printed, and ends in `panic`
+- `mideleg` also delegates **external interrupts** (`SEIP`), and `trap_enable_interrupts()` turns on `sie.SEIE`
+- On an external interrupt the handler **claims** the IRQ from the PLIC, calls `uart_interrupt()` for IRQ 10 (which moves received bytes into a 128-byte ring buffer), then **completes** the IRQ
+- `kernel_main` ends in an echo loop: `uart_getc()` reads from the buffer, and when it's empty the CPU sleeps with `wfi` until the next interrupt
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
 Next steps in this phase:
 
-- [ ] PLIC (interrupt controller)
-- [ ] UART driver with input interrupts
-- [ ] Device abstraction
+- [ ] Device abstraction (a common driver interface so new devices plug in the same way)
 
 ---
 
@@ -123,7 +130,7 @@ _start (Machine mode)          boot/boot.S
    ├─ mtvec = machine_trap
    ├─ stvec = supervisor_trap
    ├─ medeleg: exceptions → S-mode
-   ├─ mideleg: supervisor software interrupt → S-mode
+   ├─ mideleg: supervisor software + external interrupts → S-mode
    ├─ mstatus.MPP = S, MPIE = 1
    ├─ mcounteren.TM = 1 (rdtime)
    ├─ mtimecmp = mtime + TIMER_INTERVAL
@@ -132,7 +139,7 @@ _start (Machine mode)          boot/boot.S
    │
    ▼
 kernel_main (Supervisor mode)  kernel/main.c
-   ├─ trap_enable_interrupts()  sie.SSIE + sstatus.SIE
+   ├─ trap_enable_interrupts()  sie.SSIE + sie.SEIE + sstatus.SIE
    ├─ page_init()     physical page allocator
    ├─ vm_init()       build Sv39 page tables
    ├─ heap_init()     map first heap page
@@ -140,11 +147,15 @@ kernel_main (Supervisor mode)  kernel/main.c
    ├─ heap_activate() create first heap block
    ├─ heap stress test
    ├─ timer interrupt test
-   └─ supervisor trap test (ebreak)
+   ├─ supervisor trap test (ebreak)
+   ├─ uart_init(), plic_init(), plic_enable(UART_IRQ)
+   └─ keyboard echo loop (wfi when idle)
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
                          └──► supervisor_trap (S-mode) ──► clear sip.SSIP, timer_tick() ──► sret
 Exception ────────► supervisor_trap (S-mode) ──► supervisor_trap_handler() ──► sret / panic
+Key press ────────► UART ──► PLIC (IRQ 10) ──► supervisor_trap (S-mode)
+                         ──► plic_claim() ──► uart_interrupt() → ring buffer ──► plic_complete() ──► sret
 ```
 
 ### Physical memory layout
@@ -152,7 +163,8 @@ Exception ────────► supervisor_trap (S-mode) ──► supervi
 ```text
 0x02004000 ─────────────── CLINT mtimecmp
 0x0200BFF8 ─────────────── CLINT mtime
-0x10000000 ─────────────── UART0
+0x0C000000 ─────────────── PLIC
+0x10000000 ─────────────── UART0 (IRQ 10)
    ...
 0x80000000 ─────────────── RAM START / kernel_start
      │  .text + .rodata          (R-X)
@@ -173,6 +185,7 @@ Exception ────────► supervisor_trap (S-mode) ──► supervi
 | Virtual range | Maps to | Flags | Purpose |
 |---|---|---|---|
 | `0x80000000 – 0x88000000` | same (identity) | `R W X` | Kernel + all RAM |
+| `0x0C000000 – 0x0C400000` | same (identity) | `R W` | PLIC |
 | `0x10000000` (1 page) | same (identity) | `R W` | UART |
 | `0x90000000 – 0xA0000000` | pages from `page_alloc()` | `R W` | Kernel heap (grows on demand) |
 
@@ -187,13 +200,15 @@ KnocOS/
 │   └── linker.ld     # Kernel layout, segments, stack
 ├── kernel/
 │   ├── main.c        # kernel_main: init sequence + self-tests
-│   ├── logging.c/h   # UART logging and panic()
+│   ├── logging.c/h   # Log levels and panic(), built on the UART driver
 │   ├── memory.c      # Early RAM / kernel / stack accounting helpers
 │   ├── page.c/h      # Bitmap physical page allocator
 │   ├── vm.c/h        # Sv39 page tables, mapping, satp enable, debug
 │   ├── heap.c/h      # kmalloc / kfree kernel heap
 │   ├── timer.c/h     # rdtime, tick counter, timer interrupt, shared timer constants
-│   └── trap.c/h      # Supervisor trap frame and C trap handler
+│   ├── trap.c/h      # Supervisor trap frame and C trap handler
+│   ├── uart.c/h      # 16550 UART driver: output, RX interrupt, ring buffer
+│   └── plic.c/h      # PLIC: enable IRQs, claim / complete
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -210,7 +225,7 @@ KnocOS/
 - Sets `sp` to `stack_top`
 - Configures PMP entry 0 as NAPOT covering all memory with `RWX`, which Supervisor mode needs in order to run
 - Installs `machine_trap` (`mtvec`) and `supervisor_trap` (`stvec`)
-- Delegates exceptions to S-mode (`medeleg = 0xB1FF`) and the supervisor software interrupt (`mideleg = SIP_SSIP`)
+- Delegates exceptions to S-mode (`medeleg = 0xB1FF`) and the supervisor software + external interrupts (`mideleg = SIP_SSIP | SIP_SEIP`)
 - Sets `mepc = supervisor_start`, `MPP = Supervisor`, `MPIE = 1`
 - Enables `rdtime` for S-mode (`mcounteren.TM`), arms the first `mtimecmp`, enables `MTIE` and executes `mret`
 - Includes `kernel/timer.h` for `CLINT_MTIME`, `CLINT_MTIMECMP` and `TIMER_INTERVAL`
@@ -228,6 +243,7 @@ KnocOS/
 
 - `log_info()` → `[INFO] ...`
 - `log_warn()` → `[WARN] ...`
+- All output goes through the UART driver (`uart.c`)
 - `log_trap()` → `[TRAP] ...`
 - `log_trap_hex()` → `[TRAP] label0x0000000000000000`
 - `panic()` → `[PANIC] ...` then halts forever
@@ -245,7 +261,7 @@ KnocOS/
 - Sv39 3-level page tables (512 × 8-byte PTEs per table), tables allocated with `page_alloc()`
 - `vm_map()` walks VPN[2] → VPN[1] → VPN[0] and creates intermediate tables on demand
 - `vm_map_range()` maps a range page by page
-- `vm_init()` identity-maps all RAM (`RWX`) and the UART (`RW`)
+- `vm_init()` identity-maps all RAM (`RWX`), the UART (`RW`) and the PLIC (`RW`)
 - `vm_enable()` writes `satp` (mode 8 = Sv39) and flushes the TLB with `sfence.vma`
 - `vm_debug(va)` prints the full page-table walk for an address
 
@@ -274,11 +290,28 @@ KnocOS/
 - `trap_frame_t` matches the register layout saved by `supervisor_trap`
 - `supervisor_trap_handler()` reads `scause`, `sepc` and `stval` and decodes the cause into a name (page faults, illegal instruction, access faults, ...)
 - Forwarded timer ticks (supervisor software interrupt) clear `sip.SSIP` and call `timer_tick()`
+- External interrupts: `plic_claim()`, dispatch (IRQ 10 → `uart_interrupt()`, anything else → warning), `plic_complete()`
 - Breakpoints are logged, counted and skipped (`sepc += 4`)
 - Every other trap prints `scause`, `sepc`, `stval`, `ra` and `sp`, then panics
 - `trap_breakpoint_count()` is used by the self-test
-- `trap_enable_interrupts()` enables supervisor interrupts (`sie.SSIE`, `sstatus.SIE`)
-- `trap.h` holds `SIP_SSIP`, `SIE_SSIE` and `SSTATUS_SIE`, shared with `boot.S`
+- `trap_enable_interrupts()` enables supervisor interrupts (`sie.SSIE`, `sie.SEIE`, `sstatus.SIE`)
+- `trap.h` holds `SIP_SSIP`, `SIP_SEIP`, `SIE_SSIE`, `SIE_SEIE` and `SSTATUS_SIE`, shared with `boot.S`
+
+### UART driver: `kernel/uart.c`
+
+- NS16550 UART at `0x10000000`, IRQ 10
+- `uart_init()`: 8N1, FIFOs on, "receive data available" interrupt on
+- `uart_putc()` waits for the transmit register to be empty, then writes
+- `uart_puts()`, `uart_put_hex()`, `uart_put_uint()`: the single output path, also used by `logging.c`, `page.c` and `vm.c`
+- `uart_interrupt()` drains every received byte into a 128-byte ring buffer (bytes are dropped if it's full)
+- `uart_getc()` returns the next byte, or `-1` if the buffer is empty
+
+### Interrupt controller: `kernel/plic.c`
+
+- PLIC at `0x0C000000`, using hart 0's **Supervisor context** (context 1)
+- `plic_init()` sets the priority threshold to 0 (accept every enabled IRQ)
+- `plic_enable(irq)` gives the IRQ priority 1 and turns on its enable bit
+- `plic_claim()` returns the pending IRQ number (0 = none), and `plic_complete(irq)` tells the PLIC it was handled
 
 ### Early memory info: `kernel/memory.c`
 
@@ -385,8 +418,8 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Supervisor-mode trap handling in C
 - [x] Exception decoding (page faults, illegal instruction, ...)
 - [x] Timer interrupts forwarded to Supervisor mode
-- [ ] Interrupt controller (PLIC)
-- [ ] UART driver with input
+- [x] Interrupt controller (PLIC)
+- [x] UART driver with input
 - [ ] Device abstraction
 
 ### Phase 5: Processes & Scheduling
@@ -442,4 +475,4 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 **Early development: experimental / educational.**
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The interrupt controller and device drivers are next.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. Device abstraction is the last Phase 4 item.

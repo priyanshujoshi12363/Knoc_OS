@@ -8,26 +8,26 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
 
 all: knocos.elf
 
-knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o
+knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o kernel/uart.o kernel/plic.o
 	$(LD) -T boot/linker.ld -o knocos.elf \
-	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o
+	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o kernel/uart.o kernel/plic.o
 
 boot/boot.o: boot/boot.S kernel/timer.h kernel/trap.h
 	$(AS) $(CFLAGS) -c -o boot/boot.o boot/boot.S
 
-kernel/main.o: kernel/main.c kernel/timer.h kernel/trap.h
+kernel/main.o: kernel/main.c kernel/timer.h kernel/trap.h kernel/uart.h kernel/plic.h
 	$(CC) $(CFLAGS) -c -o kernel/main.o kernel/main.c
 
 kernel/memory.o: kernel/memory.c
 	$(CC) $(CFLAGS) -c -o kernel/memory.o kernel/memory.c
 
-kernel/logging.o: kernel/logging.c kernel/logging.h
+kernel/logging.o: kernel/logging.c kernel/logging.h kernel/uart.h
 	$(CC) $(CFLAGS) -c -o kernel/logging.o kernel/logging.c
 
-kernel/page.o: kernel/page.c kernel/page.h
+kernel/page.o: kernel/page.c kernel/page.h kernel/uart.h
 	$(CC) $(CFLAGS) -c -o kernel/page.o kernel/page.c
 
-kernel/vm.o: kernel/vm.c kernel/vm.h
+kernel/vm.o: kernel/vm.c kernel/vm.h kernel/uart.h kernel/plic.h
 	$(CC) $(CFLAGS) -c -o kernel/vm.o kernel/vm.c
 
 kernel/heap.o: kernel/heap.c kernel/heap.h kernel/page.h kernel/vm.h
@@ -36,8 +36,14 @@ kernel/heap.o: kernel/heap.c kernel/heap.h kernel/page.h kernel/vm.h
 kernel/timer.o: kernel/timer.c kernel/timer.h kernel/trap.h
 	$(CC) $(CFLAGS) -c -o kernel/timer.o kernel/timer.c
 
-kernel/trap.o: kernel/trap.c kernel/trap.h kernel/logging.h kernel/timer.h
+kernel/trap.o: kernel/trap.c kernel/trap.h kernel/logging.h kernel/timer.h kernel/plic.h kernel/uart.h
 	$(CC) $(CFLAGS) -c -o kernel/trap.o kernel/trap.c
+
+kernel/uart.o: kernel/uart.c kernel/uart.h
+	$(CC) $(CFLAGS) -c -o kernel/uart.o kernel/uart.c
+
+kernel/plic.o: kernel/plic.c kernel/plic.h
+	$(CC) $(CFLAGS) -c -o kernel/plic.o kernel/plic.c
 
 timer/timer.o: timer/timer.S
 	$(AS) $(CFLAGS) -c -o timer/timer.o timer/timer.S
@@ -56,6 +62,8 @@ clean:
 	      kernel/heap.o \
 	      kernel/timer.o \
 	      kernel/trap.o \
+	      kernel/uart.o \
+	      kernel/plic.o \
 	      timer.elf \
 	      timer/timer.o
 

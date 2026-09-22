@@ -1,57 +1,9 @@
 #include "vm.h"
 #include "page.h"
+#include "uart.h"
+#include "plic.h"
 
 static page_table_t *root_page_table;
-
-static void uart_putc(char c)
-{
-    volatile char *uart = (volatile char *)VM_UART;
-    *uart = c;
-}
-
-static void uart_puts(const char *str)
-{
-    while (*str)
-    {
-        uart_putc(*str);
-        str++;
-    }
-}
-
-static void uart_put_hex(uintptr_t value)
-{
-    const char *digits = "0123456789ABCDEF";
-
-    uart_puts("0x");
-
-    for (int i = 15; i >= 0; i--)
-    {
-        uart_putc(digits[(value >> (i * 4)) & 0xF]);
-    }
-}
-
-static void uart_put_uint(unsigned long value)
-{
-    char buffer[20];
-    int i = 0;
-
-    if (value == 0)
-    {
-        uart_putc('0');
-        return;
-    }
-
-    while (value > 0)
-    {
-        buffer[i++] = '0' + (value % 10);
-        value /= 10;
-    }
-
-    while (i > 0)
-    {
-        uart_putc(buffer[--i]);
-    }
-}
 
 static void vm_clear_page_table(page_table_t *page_table)
 {
@@ -97,6 +49,15 @@ void vm_init(void)
     if (vm_map_range(VM_UART,
                      VM_UART,
                      VM_PAGE_SIZE,
+                     PTE_R | PTE_W) != 0)
+    {
+        root_page_table = 0;
+        return;
+    }
+
+    if (vm_map_range(PLIC_BASE,
+                     PLIC_BASE,
+                     PLIC_SIZE,
                      PTE_R | PTE_W) != 0)
     {
         root_page_table = 0;

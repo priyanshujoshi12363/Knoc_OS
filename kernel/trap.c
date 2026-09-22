@@ -1,12 +1,15 @@
 #include "trap.h"
 #include "logging.h"
 #include "timer.h"
+#include "plic.h"
+#include "uart.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
 
 #define EXCEPTION_BREAKPOINT 3
 #define INTERRUPT_SUPERVISOR_SOFTWARE 1
+#define INTERRUPT_SUPERVISOR_EXTERNAL 9
 #define INSTRUCTION_SIZE 4
 
 static volatile uint64_t breakpoint_count = 0;
@@ -70,6 +73,27 @@ static void clear_sip(uint64_t bits)
     asm volatile("csrc sip, %0" :: "r"(bits));
 }
 
+static void handle_external_interrupt(void)
+{
+    uint32_t irq = plic_claim();
+
+    if (irq == 0)
+    {
+        return;
+    }
+
+    if (irq == UART_IRQ)
+    {
+        uart_interrupt();
+    }
+    else
+    {
+        log_warn("Unexpected external interrupt");
+    }
+
+    plic_complete(irq);
+}
+
 static const char *trap_name(uint64_t scause)
 {
     uint64_t code = scause & SCAUSE_CODE_MASK;
@@ -112,6 +136,13 @@ void supervisor_trap_handler(trap_frame_t *frame)
         return;
     }
 
+    if ((scause & SCAUSE_INTERRUPT) &&
+        (scause & SCAUSE_CODE_MASK) == INTERRUPT_SUPERVISOR_EXTERNAL)
+    {
+        handle_external_interrupt();
+        return;
+    }
+
     if (!(scause & SCAUSE_INTERRUPT) &&
         (scause & SCAUSE_CODE_MASK) == EXCEPTION_BREAKPOINT)
     {
@@ -141,6 +172,6 @@ uint64_t trap_breakpoint_count(void)
 
 void trap_enable_interrupts(void)
 {
-    asm volatile("csrs sie, %0" :: "r"(SIE_SSIE));
+    asm volatile("csrs sie, %0" :: "r"(SIE_SSIE | SIE_SEIE));
     asm volatile("csrs sstatus, %0" :: "r"(SSTATUS_SIE));
 }

@@ -3,6 +3,8 @@
 
 #define SIP_SSIP 0x2
 #define SIE_SSIE 0x2
+#define SIP_SEIP 0x200
+#define SIE_SEIE 0x200
 #define SSTATUS_SIE 0x2
 
 #ifndef __ASSEMBLER__

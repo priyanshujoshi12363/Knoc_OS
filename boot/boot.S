@@ -25,7 +25,7 @@ _start:
     li t0, 0xB1FF
     csrw medeleg, t0
 
-    li t0, SIP_SSIP
+    li t0, SIP_SSIP | SIP_SEIP
     csrw mideleg, t0
 
     la t0, supervisor_start

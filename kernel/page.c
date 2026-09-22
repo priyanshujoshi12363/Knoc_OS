@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "page.h"
+#include "uart.h"
 
 #define RAM_START 0x80000000UL
 #define RAM_END   0x88000000UL
@@ -14,46 +15,6 @@ extern char kernel_start;
 extern char kernel_end;
 extern char stack_bottom;
 extern char stack_top;
-
-#define UART 0x10000000UL
-
-static void uart_putc(char c)
-{
-    volatile char *uart = (volatile char *)UART;
-    *uart = c;
-}
-
-static void uart_puts(const char *str)
-{
-    while (*str)
-    {
-        uart_putc(*str);
-        str++;
-    }
-}
-
-static void uart_put_uint(unsigned long value)
-{
-    char buffer[20];
-    int i = 0;
-
-    if (value == 0)
-    {
-        uart_putc('0');
-        return;
-    }
-
-    while (value > 0)
-    {
-        buffer[i++] = '0' + (value % 10);
-        value /= 10;
-    }
-
-    while (i > 0)
-    {
-        uart_putc(buffer[--i]);
-    }
-}
 
 static void page_set_used(unsigned long page_number)
 {

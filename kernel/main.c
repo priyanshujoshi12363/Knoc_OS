@@ -5,6 +5,8 @@
 #include "heap.h"
 #include "timer.h"
 #include "trap.h"
+#include "uart.h"
+#include "plic.h"
 
 #define TIMER_TEST_TICKS 5
 
@@ -205,7 +207,34 @@ void kernel_main(void)
 
     log_info("Supervisor trap handler verified");
 
+    uart_init();
+    plic_init();
+    plic_enable(UART_IRQ);
+
+    log_info("UART input interrupts enabled");
+    log_info("Keyboard echo ready, start typing");
+
     while (1)
     {
+        int c = uart_getc();
+
+        if (c < 0)
+        {
+            asm volatile("wfi");
+            continue;
+        }
+
+        if (c == '\r')
+        {
+            uart_putc('\n');
+        }
+        else if (c == 0x7F)
+        {
+            uart_puts("\b \b");
+        }
+        else
+        {
+            uart_putc((char)c);
+        }
     }
 }
