@@ -33,6 +33,18 @@ _start:
     li t0, 0x0080
     csrs mie, t0
 
+    li t0, 0x2
+    csrs mcounteren, t0
+
+    li t0, 0x0200BFF8
+    ld t1, 0(t0)
+
+    li t2, 100000
+    add t1, t1, t2
+
+    li t0, 0x02004000
+    sd t1, 0(t0)
+
     mret
 
 supervisor_start:

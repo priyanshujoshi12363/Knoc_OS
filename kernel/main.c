@@ -9,9 +9,6 @@ void kernel_main(void)
 {
     log_info("KnocOS starting");
 
-    uint64_t now = timer_read();
-    timer_set_next(now + 1000000);
-
     page_init();
     log_info("Page memory initialized");
 
@@ -172,21 +169,18 @@ void kernel_main(void)
 
     log_info("Kernel heap 4.0 stress test passed");
 
-    uint64_t timer_start = timer_ticks();
+  uint64_t timer_start = timer_ticks();
+uint64_t time_start = timer_read();
 
-    for (volatile uint64_t i = 0; i < 10000000; i++)
+while (timer_ticks() <= timer_start)
+{
+    if (timer_read() - time_start >= TIMER_FREQ_HZ)
     {
+        panic("Timer interrupt timeout");
     }
+}
 
-    uint64_t timer_end = timer_ticks();
-
-    if (timer_end <= timer_start)
-    {
-        panic("Timer interrupt test failed");
-    }
-
-    log_info("Timer interrupt and tick counter verified");
-
+log_info("Timer interrupt and tick counter verified");
     while (1)
     {
     }
