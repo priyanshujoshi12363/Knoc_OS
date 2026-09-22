@@ -19,12 +19,13 @@ KnocOS currently has:
 - Custom linker script with separate `R-X` (text) and `RW-` (data) segments
 - C kernel entry point with a 16 KiB kernel stack
 - UART output through memory-mapped I/O
-- Kernel logging (`log_info`, `log_warn`) and a `panic` handler
+- Kernel logging (`log_info`, `log_warn`, `log_trap`) and a `panic` handler
 - **Physical page allocator** (bitmap, 4 KiB pages)
 - **Sv39 virtual memory** (3-level page tables, identity-mapped kernel, paging enabled via `satp`)
 - **Kernel heap** (`kmalloc` / `kfree`) in its own virtual region with block splitting, coalescing and automatic page growth
-- **Machine timer interrupts** via the CLINT (`mtime` / `mtimecmp`) with a tick counter
+- **Timer interrupts at 100 Hz**: M-mode catches the hardware timer and forwards each tick to the kernel (S-mode), which counts it. Time is read with `rdtime`
 - Machine-mode trap handler that saves/restores all registers and prints `mcause` for unhandled traps
+- **Supervisor-mode trap handler in C**: exceptions are delegated to S-mode, decoded by name and reported with `scause` / `sepc` / `stval`
 - Standalone `timer/` test program for reading `mtime`
 - Make-based build system with `size` and `pages` inspection targets
 
@@ -32,6 +33,7 @@ KnocOS currently has:
 
 ```text
 [INFO] KnocOS starting
+[INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
 [INFO] Kernel page tables ready
@@ -42,7 +44,22 @@ KnocOS currently has:
 [INFO] Allocation A successful
 ...
 [INFO] Kernel heap 4.0 stress test passed
-[INFO] Timer interrupt and tick counter verified
+[INFO] Supervisor timer interrupts verified
+[TRAP] Breakpoint
+[TRAP] sepc   = 0x0000000080000790
+[INFO] Supervisor trap handler verified
+```
+
+Example of an unhandled kernel fault (a store to an unmapped address):
+
+```text
+[TRAP] Store page fault
+[TRAP] scause = 0x000000000000000F
+[TRAP] sepc   = 0x0000000080000784
+[TRAP] stval  = 0x0000000040000000
+[TRAP] ra     = 0x000000008000077C
+[TRAP] sp     = 0x00000000800080F0
+[PANIC] Unhandled supervisor trap
 ```
 
 ---
@@ -51,32 +68,33 @@ KnocOS currently has:
 
 Memory management (Phase 3) is complete. Work is now on **hardware interrupts and trap handling**.
 
-Recent progress (from the git history):
+Recent progress:
 
 | Commit | Milestone |
 |---|---|
 | `9a094c3` | Integrate kernel timer interrupts |
 | `42458f8` | Verify machine timer interrupts |
-| *(uncommitted)* | `boot/linker.ld`: add `PHDRS` so text is `R-X` and data is `RW-`, which removes the linker warning *"LOAD segment with RWX permissions"* |
+| `2a69e89` | Fix timer interrupt and reliable timer test, R-X / RW- linker segments |
+| *(uncommitted)* | Timer cleanup: shared constants in `timer.h`, `timer_set_next()` removed |
+| *(uncommitted)* | Supervisor-mode trap handler in C |
+| *(uncommitted)* | Timer interrupts forwarded to Supervisor mode |
 
 What works right now:
 
-- `boot.S` enables the machine timer interrupt (`mie.MTIE`) and installs `machine_trap` in `mtvec`
-- `machine_trap` saves all registers, checks `mcause == 0x8000000000000007` (machine timer interrupt), calls `timer_interrupt()` in C, restores registers and `mret`s
-- `timer_interrupt()` increments a tick counter and re-arms `mtimecmp` every `100000` ticks (≈10 ms at QEMU's 10 MHz timebase)
-- Any other machine trap prints `[TRAP] mcause=0x...` and halts
-
-Known issue:
-
-- **The timer self-test in `kernel/main.c` can fail** with `[PANIC] Timer interrupt test failed`. The first deadline is set to `now + 1000000` (≈100 ms), but the busy-wait loop (`10000000` iterations) often finishes sooner under QEMU, so the tick counter is still `0` when checked. Interrupts themselves work: with a longer wait (or a shorter first deadline) the test passes.
+- `boot.S` arms the first timer deadline, enables `mie.MTIE`, and sets `mcounteren.TM` so S-mode can use `rdtime`
+- `machine_trap` handles machine timer interrupts: it calls `timer_interrupt()`, which does `mtimecmp += TIMER_INTERVAL` (no drift) and forwards the tick by setting `mip.SSIP`
+- `mideleg` delegates the supervisor software interrupt to S-mode, and `trap_enable_interrupts()` turns on `sie.SSIE` and `sstatus.SIE`
+- The kernel's `supervisor_trap_handler()` receives the forwarded tick, clears `sip.SSIP` and calls `timer_tick()`
+- `boot.S` delegates exceptions to Supervisor mode with `medeleg = 0xB1FF`, covering misaligned/access faults, illegal instruction, breakpoint, U-mode `ecall` and page faults
+- `supervisor_trap` (in `boot.S`) saves 31 registers into a `trap_frame_t`, calls `supervisor_trap_handler()` in C, restores the registers and `sret`s
+- `supervisor_trap_handler()` reads `scause`, `sepc` and `stval`. A breakpoint (`ebreak`) is logged and skipped (`sepc += 4`), and anything else is decoded by name, printed, and ends in `panic`
+- Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
 Next steps in this phase:
 
-- [ ] Fix the timer self-test timing
-- [ ] Supervisor-mode trap handler in C (`stvec` currently only prints a message and halts)
-- [ ] Delegate / forward timer interrupts to Supervisor mode (`mideleg`, `medeleg`, `sip.STIP`)
-- [ ] Decode and report exceptions (page faults, illegal instructions) with `sepc` / `stval`
-- [ ] PLIC (interrupt controller) and UART input interrupts
+- [ ] PLIC (interrupt controller)
+- [ ] UART driver with input interrupts
+- [ ] Device abstraction
 
 ---
 
@@ -104,22 +122,29 @@ _start (Machine mode)          boot/boot.S
    ├─ PMP: allow all memory
    ├─ mtvec = machine_trap
    ├─ stvec = supervisor_trap
+   ├─ medeleg: exceptions → S-mode
+   ├─ mideleg: supervisor software interrupt → S-mode
    ├─ mstatus.MPP = S, MPIE = 1
+   ├─ mcounteren.TM = 1 (rdtime)
+   ├─ mtimecmp = mtime + TIMER_INTERVAL
    ├─ mie.MTIE = 1
    └─ mret
    │
    ▼
 kernel_main (Supervisor mode)  kernel/main.c
-   ├─ arm first timer interrupt
+   ├─ trap_enable_interrupts()  sie.SSIE + sstatus.SIE
    ├─ page_init()     physical page allocator
    ├─ vm_init()       build Sv39 page tables
    ├─ heap_init()     map first heap page
    ├─ vm_enable()     write satp, sfence.vma
    ├─ heap_activate() create first heap block
    ├─ heap stress test
-   └─ timer interrupt test
+   ├─ timer interrupt test
+   └─ supervisor trap test (ebreak)
 
-Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt() ──► mret
+Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
+                         └──► supervisor_trap (S-mode) ──► clear sip.SSIP, timer_tick() ──► sret
+Exception ────────► supervisor_trap (S-mode) ──► supervisor_trap_handler() ──► sret / panic
 ```
 
 ### Physical memory layout
@@ -158,7 +183,7 @@ Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt() ─�
 ```text
 KnocOS/
 ├── boot/
-│   ├── boot.S        # M-mode entry, PMP, trap vectors, mret to S-mode, trap handler
+│   ├── boot.S        # M-mode entry, PMP, delegation, trap entry points (M and S), mret to S-mode
 │   └── linker.ld     # Kernel layout, segments, stack
 ├── kernel/
 │   ├── main.c        # kernel_main: init sequence + self-tests
@@ -167,7 +192,8 @@ KnocOS/
 │   ├── page.c/h      # Bitmap physical page allocator
 │   ├── vm.c/h        # Sv39 page tables, mapping, satp enable, debug
 │   ├── heap.c/h      # kmalloc / kfree kernel heap
-│   └── timer.c/h     # CLINT timer read/set, tick counter, interrupt handler
+│   ├── timer.c/h     # rdtime, tick counter, timer interrupt, shared timer constants
+│   └── trap.c/h      # Supervisor trap frame and C trap handler
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -184,8 +210,12 @@ KnocOS/
 - Sets `sp` to `stack_top`
 - Configures PMP entry 0 as NAPOT covering all memory with `RWX`, which Supervisor mode needs in order to run
 - Installs `machine_trap` (`mtvec`) and `supervisor_trap` (`stvec`)
-- Sets `mepc = supervisor_start`, `MPP = Supervisor`, `MPIE = 1`, enables `MTIE` and executes `mret`
+- Delegates exceptions to S-mode (`medeleg = 0xB1FF`) and the supervisor software interrupt (`mideleg = SIP_SSIP`)
+- Sets `mepc = supervisor_start`, `MPP = Supervisor`, `MPIE = 1`
+- Enables `rdtime` for S-mode (`mcounteren.TM`), arms the first `mtimecmp`, enables `MTIE` and executes `mret`
+- Includes `kernel/timer.h` for `CLINT_MTIME`, `CLINT_MTIMECMP` and `TIMER_INTERVAL`
 - `machine_trap` saves 31 registers on a 256-byte stack frame, dispatches timer interrupts to C and prints the `mcause` hex value for anything else
+- `supervisor_trap` saves 31 registers as a `trap_frame_t`, calls `supervisor_trap_handler(frame)` and returns with `sret`
 
 ### Linker script: `boot/linker.ld`
 
@@ -198,6 +228,8 @@ KnocOS/
 
 - `log_info()` → `[INFO] ...`
 - `log_warn()` → `[WARN] ...`
+- `log_trap()` → `[TRAP] ...`
+- `log_trap_hex()` → `[TRAP] label0x0000000000000000`
 - `panic()` → `[PANIC] ...` then halts forever
 
 ### Physical pages: `kernel/page.c`
@@ -230,10 +262,23 @@ KnocOS/
 
 ### Timer: `kernel/timer.c`
 
-- `timer_read()` reads CLINT `mtime` (`0x0200BFF8`)
-- `timer_set_next()` writes `mtimecmp` (`0x02004000`)
-- `timer_interrupt()` increments `ticks` and re-arms for `+100000`
+- `timer.h` holds constants shared with `boot.S`: `CLINT_MTIME`, `CLINT_MTIMECMP`, `TIMER_FREQ_HZ` (10 MHz), `TIMER_TICK_HZ` (100) and `TIMER_INTERVAL`
+- `timer_read()` uses the `rdtime` instruction, which works in S-mode and after Sv39 is on
+- `timer_interrupt()` (called from M-mode) does `mtimecmp += TIMER_INTERVAL` and forwards the tick to S-mode by setting `mip.SSIP`
+- `timer_tick()` (called from the S-mode trap handler) increments `ticks`
 - `timer_ticks()` returns the tick count
+- The timer hardware is only written from M-mode
+
+### Traps: `kernel/trap.c`
+
+- `trap_frame_t` matches the register layout saved by `supervisor_trap`
+- `supervisor_trap_handler()` reads `scause`, `sepc` and `stval` and decodes the cause into a name (page faults, illegal instruction, access faults, ...)
+- Forwarded timer ticks (supervisor software interrupt) clear `sip.SSIP` and call `timer_tick()`
+- Breakpoints are logged, counted and skipped (`sepc += 4`)
+- Every other trap prints `scause`, `sepc`, `stval`, `ra` and `sp`, then panics
+- `trap_breakpoint_count()` is used by the self-test
+- `trap_enable_interrupts()` enables supervisor interrupts (`sie.SSIE`, `sstatus.SIE`)
+- `trap.h` holds `SIP_SSIP`, `SIE_SSIE` and `SSTATUS_SIE`, shared with `boot.S`
 
 ### Early memory info: `kernel/memory.c`
 
@@ -254,7 +299,7 @@ make pages      # physical page layout summary
 make timer-test # run the standalone mtime printer (timer.elf)
 ```
 
-> **Note:** The Makefile does not list `boot/linker.ld` or most headers as dependencies. After editing those, run `make clean && make`.
+> **Note:** The Makefile does not list `boot/linker.ld` or every header as a dependency. After editing those, run `make clean && make`.
 
 Compiler flags:
 
@@ -336,9 +381,10 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Timer (CLINT `mtime` / `mtimecmp`)
 - [x] Machine-mode trap entry and register save/restore
 - [x] Timer interrupt handling and tick counter
-- [ ] Reliable timer self-test
-- [ ] Supervisor-mode trap handling in C
-- [ ] Exception decoding (page faults, illegal instruction, ...)
+- [x] Reliable timer self-test
+- [x] Supervisor-mode trap handling in C
+- [x] Exception decoding (page faults, illegal instruction, ...)
+- [x] Timer interrupts forwarded to Supervisor mode
 - [ ] Interrupt controller (PLIC)
 - [ ] UART driver with input
 - [ ] Device abstraction
@@ -396,4 +442,4 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 **Early development: experimental / educational.**
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts are working, and the rest of interrupt/trap handling is under active development.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The interrupt controller and device drivers are next.

@@ -4,10 +4,16 @@
 #include "vm.h"
 #include "heap.h"
 #include "timer.h"
+#include "trap.h"
+
+#define TIMER_TEST_TICKS 5
 
 void kernel_main(void)
 {
     log_info("KnocOS starting");
+
+    trap_enable_interrupts();
+    log_info("Supervisor interrupts enabled");
 
     page_init();
     log_info("Page memory initialized");
@@ -169,18 +175,36 @@ void kernel_main(void)
 
     log_info("Kernel heap 4.0 stress test passed");
 
-  uint64_t timer_start = timer_ticks();
-uint64_t time_start = timer_read();
+    uint64_t timer_start = timer_ticks();
+    uint64_t time_start = timer_read();
 
-while (timer_ticks() <= timer_start)
-{
-    if (timer_read() - time_start >= TIMER_FREQ_HZ)
+    while (timer_ticks() < timer_start + TIMER_TEST_TICKS)
     {
-        panic("Timer interrupt timeout");
+        if (timer_read() - time_start >= TIMER_FREQ_HZ)
+        {
+            panic("Timer interrupt timeout");
+        }
     }
-}
 
-log_info("Timer interrupt and tick counter verified");
+    if (timer_read() - time_start <
+        (TIMER_TEST_TICKS - 1) * TIMER_INTERVAL)
+    {
+        panic("Timer ticks arrived too fast");
+    }
+
+    log_info("Supervisor timer interrupts verified");
+
+    uint64_t breakpoints_before = trap_breakpoint_count();
+
+    asm volatile("ebreak");
+
+    if (trap_breakpoint_count() != breakpoints_before + 1)
+    {
+        panic("Supervisor trap test failed");
+    }
+
+    log_info("Supervisor trap handler verified");
+
     while (1)
     {
     }
