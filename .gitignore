@@ -1,6 +1,8 @@
 /.vscode
 *.o
+*.d
 knocos.elf
+timer.elf
 virt.dtb
 virt.dts
 /.claude

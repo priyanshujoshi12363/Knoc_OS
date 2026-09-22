@@ -1,7 +1,11 @@
 
 # KnocOS
 
-**KnocOS** is a from-scratch experimental operating system being built for learning and exploring low-level computer architecture, operating systems, memory management, and eventually AI-oriented systems.
+[![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-v0.4.0-blue)
+![Stage](https://img.shields.io/badge/stage-early%20development-orange)
+
+**KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 It is a bare-metal **RISC-V 64-bit** kernel that runs on the QEMU `virt` machine, written in C and RISC-V assembly with no standard library and no firmware (`-bios none`).
 
@@ -29,12 +33,14 @@ KnocOS currently has:
 - Machine-mode trap handler that saves/restores all registers and prints `mcause` for unhandled traps
 - **Supervisor-mode trap handler in C**: exceptions are delegated to S-mode, decoded by name and reported with `scause` / `sepc` / `stval`
 - Standalone `timer/` test program for reading `mtime`
-- Make-based build system with `size` and `pages` inspection targets
+- **Power-off / reboot** driver (QEMU test device): press **Ctrl-D** to shut KnocOS down
+- **Automated tests** (`make test`) and **GitHub Actions CI** on every push
+- Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
 
 ### Boot output
 
 ```text
-[INFO] KnocOS starting
+[INFO] KnocOS v0.4.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
@@ -80,10 +86,9 @@ Recent progress:
 | `9a094c3` | Integrate kernel timer interrupts |
 | `42458f8` | Verify machine timer interrupts |
 | `2a69e89` | Fix timer interrupt and reliable timer test, R-X / RW- linker segments |
-| *(uncommitted)* | Timer cleanup: shared constants in `timer.h`, `timer_set_next()` removed |
-| *(uncommitted)* | Supervisor-mode trap handler in C |
-| *(uncommitted)* | Timer interrupts forwarded to Supervisor mode |
-| *(uncommitted)* | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
+| `6fe8a98` | Supervisor trap handler, timer interrupts forwarded to S-mode |
+| `9bffe5d` | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
+| *(uncommitted)* | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
 
 What works right now:
 
@@ -208,12 +213,21 @@ KnocOS/
 │   ├── timer.c/h     # rdtime, tick counter, timer interrupt, shared timer constants
 │   ├── trap.c/h      # Supervisor trap frame and C trap handler
 │   ├── uart.c/h      # 16550 UART driver: output, RX interrupt, ring buffer
-│   └── plic.c/h      # PLIC: enable IRQs, claim / complete
+│   ├── plic.c/h      # PLIC: enable IRQs, claim / complete
+│   └── power.c/h     # Power off / reboot (QEMU test device)
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
+├── scripts/
+│   └── test.sh       # Automated boot test used by `make test` and CI
+├── .github/workflows/
+│   └── ci.yml        # GitHub Actions: build + test on every push
 ├── Makefile
-└── README.md
+├── VERSION           # Current version (shown at boot)
+├── CHANGELOG.md      # Release notes
+├── README.md
+├── goal.md           # Long-term AI-OS vision
+└── notes.md          # Learning notes: how KnocOS works, basic to advanced
 ```
 
 ---
@@ -313,6 +327,13 @@ KnocOS/
 - `plic_enable(irq)` gives the IRQ priority 1 and turns on its enable bit
 - `plic_claim()` returns the pending IRQ number (0 = none), and `plic_complete(irq)` tells the PLIC it was handled
 
+### Power: `kernel/power.c`
+
+- Uses QEMU's test device at `0x00100000` (mapped in `vm.c`)
+- `power_off()` writes `0x5555` and QEMU exits
+- `power_reboot()` writes `0x7777` and QEMU restarts the machine
+- Ctrl-D in the echo loop calls `power_off()`
+
 ### Early memory info: `kernel/memory.c`
 
 Helpers from the first milestone: total RAM (B/KB/MB/GB), kernel size, stack size, used/free bytes. These are not called by `kernel_main` right now; the page allocator does the real accounting.
@@ -325,21 +346,48 @@ Requirements: `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-ld`, `qemu-system-
 
 ```bash
 make            # build knocos.elf
-make run        # boot KnocOS in QEMU (exit: Ctrl-A then X)
+make run        # boot KnocOS in QEMU (power off: Ctrl-D, force quit: Ctrl-A then X)
+make test       # boot, run every self-test, type test input, power off, print PASS/FAIL
 make clean      # remove build artifacts
 make size       # kernel / stack size info
 make pages      # physical page layout summary
 make timer-test # run the standalone mtime printer (timer.elf)
 ```
 
-> **Note:** The Makefile does not list `boot/linker.ld` or every header as a dependency. After editing those, run `make clean && make`.
-
 Compiler flags:
 
 ```text
 -march=rv64g -mabi=lp64d -mcmodel=medany
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
+-Wall -Wextra -Werror        # every warning is an error
+-MMD -MP                     # automatic header dependencies
+-DKNOCOS_VERSION='"v0.4.0"'  # from the VERSION file
 ```
+
+Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
+
+### Testing
+
+`make test` runs `scripts/test.sh`, which:
+
+1. Boots KnocOS in QEMU
+2. Checks that every self-test message appears and there is no `[PANIC]`
+3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
+4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
+
+```text
+  ok   Supervisor timer interrupts verified
+  ok   Supervisor trap handler verified
+  ...
+  ok   Powering off
+RESULT: PASS
+```
+
+The same test runs on GitHub Actions for every push (`.github/workflows/ci.yml`).
+
+### Versioning
+
+The version lives in `VERSION` and follows [Semantic Versioning](https://semver.org/). Below `1.0.0`, each minor version is a development milestone. Changes are recorded in `CHANGELOG.md`.
 
 ---
 
@@ -420,6 +468,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Timer interrupts forwarded to Supervisor mode
 - [x] Interrupt controller (PLIC)
 - [x] UART driver with input
+- [x] Power-off / reboot driver
 - [ ] Device abstraction
 
 ### Phase 5: Processes & Scheduling
@@ -458,6 +507,59 @@ Long-term ideas (not part of the current implementation):
 
 ---
 
+## Road to Production
+
+KnocOS aims to become a production-grade operating system. This is what that requires and where it stands today.
+
+### Engineering quality
+
+| Requirement | Status |
+|---|---|
+| Builds with zero warnings (`-Wall -Wextra -Werror`) | ✅ |
+| Correct incremental builds (automatic dependencies) | ✅ |
+| Automated boot test (`make test`) | ✅ |
+| Continuous integration on every push | ✅ |
+| Versioning and release notes | ✅ |
+| Unit tests for individual subsystems (heap, pages, page tables) | ⬜ |
+| Stress / fuzz testing | ⬜ |
+| Kernel debug tooling (backtraces, assertions, memory leak checks) | ⬜ |
+
+### Kernel features
+
+| Requirement | Status |
+|---|---|
+| Memory management (pages, paging, heap) | ✅ |
+| Interrupts and exception handling | ✅ |
+| Device driver model (device abstraction) | ⬜ |
+| Processes, scheduler, context switching | ⬜ |
+| User mode and memory isolation between programs | ⬜ |
+| System calls | ⬜ |
+| Multi-core (SMP) support and locking | ⬜ |
+| Disk driver (virtio-blk) and filesystem | ⬜ |
+| Networking stack | ⬜ |
+| Graphics and input devices | ⬜ |
+
+### Reliability and security
+
+| Requirement | Status |
+|---|---|
+| Kernel pages with correct permissions (no `RWX` mappings) | ⬜ |
+| Stack overflow protection (guard pages) | ⬜ |
+| Permission / capability system | ⬜ |
+| Crash recovery (no single fault takes down the whole OS) | ⬜ |
+| Secure boot / update path | ⬜ |
+
+### Platform
+
+| Requirement | Status |
+|---|---|
+| Runs on QEMU `virt` | ✅ |
+| Device tree parsing (no hard-coded addresses) | ⬜ |
+| Runs on real RISC-V hardware (with OpenSBI) | ⬜ |
+| Other architectures (x86-64 / ARM64) | ⬜ |
+
+---
+
 ## Philosophy
 
 KnocOS is being built from the lowest practical level upward:
@@ -473,6 +575,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development: experimental / educational.**
+**Early development (v0.4.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. Device abstraction is the last Phase 4 item.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is the last Phase 4 item.

@@ -2,7 +2,7 @@
 
 > **An AI-native operating system where intelligence is part of the kernel's world, not an app running on top of it.**
 
-KnocOS aims to be an operating system with **local AI built in**: a large language model for heavy reasoning and conversation, and many **small neural networks (NNs)** trained for specific tasks that run cheaply on the CPU. Everything runs **locally**, with no cloud dependency. KnocOS machines can talk **directly to each other** over their own network, and users can bring their existing apps from **Windows, Linux and (partially) macOS**.
+KnocOS aims to be a **production-grade** operating system with **local AI built in**: a large language model for heavy reasoning and conversation, and many **small neural networks (NNs)** trained for specific tasks that run cheaply on the CPU. Everything runs **locally**, with no cloud dependency. KnocOS machines can talk **directly to each other** over their own network, and users can bring their existing apps from **Windows, Linux and (partially) macOS**.
 
 ---
 
@@ -148,6 +148,7 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | Timer interrupts forwarded to the kernel | ✅ Done | The "heartbeat" the scheduler will use to share the CPU between apps, the LLM and background NNs |
 | Supervisor trap handler | ✅ Done | Crashes are reported clearly instead of freezing, which is needed for self-diagnosis later |
 | PLIC + interrupt-driven UART input | ✅ Done | The OS reacts to devices, the base for every driver (disk, network, GPU/NPU) |
+| Power-off driver, automated tests (`make test`), CI | ✅ Done | Every change is checked automatically, the first step toward production quality |
 | Device abstraction | 🚧 Next | One common driver interface so new hardware plugs in the same way |
 | Processes, context switch, scheduler | ⬜ | Run many programs at once, and later give AI workloads their own scheduling class |
 | User mode + system calls | ⬜ | Isolate apps from the kernel, the base for intent-based security |

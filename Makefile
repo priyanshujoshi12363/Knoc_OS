@@ -2,84 +2,66 @@ CC = riscv64-unknown-elf-gcc
 AS = riscv64-unknown-elf-gcc
 LD = riscv64-unknown-elf-ld
 
+VERSION := $(shell cat VERSION)
+
 CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
          -ffreestanding -fno-pie -fno-pic \
-         -nostdlib -nostartfiles -nodefaultlibs
+         -nostdlib -nostartfiles -nodefaultlibs \
+         -Wall -Wextra -Werror \
+         -MMD -MP \
+         -DKNOCOS_VERSION='"v$(VERSION)"'
+
+QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
+QEMU_FLAGS = -machine virt -bios none -nographic
+
+KERNEL_OBJS = boot/boot.o \
+              kernel/main.o \
+              kernel/memory.o \
+              kernel/logging.o \
+              kernel/page.o \
+              kernel/vm.o \
+              kernel/heap.o \
+              kernel/timer.o \
+              kernel/trap.o \
+              kernel/uart.o \
+              kernel/plic.o \
+              kernel/power.o
+
+TIMER_OBJS = timer/timer.o
+
+DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d)
+
+.PHONY: all clean run test timer-test size pages
 
 all: knocos.elf
 
-knocos.elf: boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o kernel/uart.o kernel/plic.o
-	$(LD) -T boot/linker.ld -o knocos.elf \
-	boot/boot.o kernel/main.o kernel/memory.o kernel/logging.o kernel/page.o kernel/vm.o kernel/heap.o kernel/timer.o kernel/trap.o kernel/uart.o kernel/plic.o
+knocos.elf: $(KERNEL_OBJS) boot/linker.ld
+	$(LD) -T boot/linker.ld -o knocos.elf $(KERNEL_OBJS)
 
-boot/boot.o: boot/boot.S kernel/timer.h kernel/trap.h
-	$(AS) $(CFLAGS) -c -o boot/boot.o boot/boot.S
+timer.elf: $(TIMER_OBJS) timer/linker.ld
+	$(LD) -T timer/linker.ld -o timer.elf $(TIMER_OBJS)
 
-kernel/main.o: kernel/main.c kernel/timer.h kernel/trap.h kernel/uart.h kernel/plic.h
-	$(CC) $(CFLAGS) -c -o kernel/main.o kernel/main.c
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-kernel/memory.o: kernel/memory.c
-	$(CC) $(CFLAGS) -c -o kernel/memory.o kernel/memory.c
+%.o: %.S
+	$(AS) $(CFLAGS) -c -o $@ $<
 
-kernel/logging.o: kernel/logging.c kernel/logging.h kernel/uart.h
-	$(CC) $(CFLAGS) -c -o kernel/logging.o kernel/logging.c
+kernel/main.o: VERSION
 
-kernel/page.o: kernel/page.c kernel/page.h kernel/uart.h
-	$(CC) $(CFLAGS) -c -o kernel/page.o kernel/page.c
-
-kernel/vm.o: kernel/vm.c kernel/vm.h kernel/uart.h kernel/plic.h
-	$(CC) $(CFLAGS) -c -o kernel/vm.o kernel/vm.c
-
-kernel/heap.o: kernel/heap.c kernel/heap.h kernel/page.h kernel/vm.h
-	$(CC) $(CFLAGS) -c -o kernel/heap.o kernel/heap.c
-
-kernel/timer.o: kernel/timer.c kernel/timer.h kernel/trap.h
-	$(CC) $(CFLAGS) -c -o kernel/timer.o kernel/timer.c
-
-kernel/trap.o: kernel/trap.c kernel/trap.h kernel/logging.h kernel/timer.h kernel/plic.h kernel/uart.h
-	$(CC) $(CFLAGS) -c -o kernel/trap.o kernel/trap.c
-
-kernel/uart.o: kernel/uart.c kernel/uart.h
-	$(CC) $(CFLAGS) -c -o kernel/uart.o kernel/uart.c
-
-kernel/plic.o: kernel/plic.c kernel/plic.h
-	$(CC) $(CFLAGS) -c -o kernel/plic.o kernel/plic.c
-
-timer/timer.o: timer/timer.S
-	$(AS) $(CFLAGS) -c -o timer/timer.o timer/timer.S
-
-timer.elf: timer/timer.o timer/linker.ld
-	$(LD) -T timer/linker.ld -o timer.elf timer/timer.o
+-include $(DEPS)
 
 clean:
-	rm -f knocos.elf \
-	      boot/boot.o \
-	      kernel/main.o \
-	      kernel/memory.o \
-	      kernel/logging.o \
-	      kernel/page.o \
-	      kernel/vm.o \
-	      kernel/heap.o \
-	      kernel/timer.o \
-	      kernel/trap.o \
-	      kernel/uart.o \
-	      kernel/plic.o \
-	      timer.elf \
-	      timer/timer.o
+	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(DEPS)
 
 run: knocos.elf
-	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
-	-machine virt \
-	-bios none \
-	-kernel knocos.elf \
-	-nographic
+	$(QEMU) $(QEMU_FLAGS) -kernel knocos.elf
+
+test: knocos.elf
+	./scripts/test.sh
 
 timer-test: timer.elf
-	env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64 \
-	-machine virt \
-	-bios none \
-	-kernel timer.elf \
-	-nographic
+	$(QEMU) $(QEMU_FLAGS) -kernel timer.elf
 
 size: knocos.elf
 	@echo "================================"

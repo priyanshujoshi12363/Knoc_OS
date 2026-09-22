@@ -7,12 +7,15 @@
 #include "trap.h"
 #include "uart.h"
 #include "plic.h"
+#include "power.h"
 
 #define TIMER_TEST_TICKS 5
+#define KEY_CTRL_D 0x04
+#define KEY_BACKSPACE 0x7F
 
 void kernel_main(void)
 {
-    log_info("KnocOS starting");
+    log_info("KnocOS " KNOCOS_VERSION " starting");
 
     trap_enable_interrupts();
     log_info("Supervisor interrupts enabled");
@@ -212,7 +215,8 @@ void kernel_main(void)
     plic_enable(UART_IRQ);
 
     log_info("UART input interrupts enabled");
-    log_info("Keyboard echo ready, start typing");
+    log_info("All self-tests passed");
+    log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
 
     while (1)
     {
@@ -224,11 +228,17 @@ void kernel_main(void)
             continue;
         }
 
-        if (c == '\r')
+        if (c == KEY_CTRL_D)
+        {
+            uart_putc('\n');
+            log_info("Powering off");
+            power_off();
+        }
+        else if (c == '\r')
         {
             uart_putc('\n');
         }
-        else if (c == 0x7F)
+        else if (c == KEY_BACKSPACE)
         {
             uart_puts("\b \b");
         }

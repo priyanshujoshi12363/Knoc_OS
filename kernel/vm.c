@@ -2,6 +2,7 @@
 #include "page.h"
 #include "uart.h"
 #include "plic.h"
+#include "power.h"
 
 static page_table_t *root_page_table;
 
@@ -48,6 +49,15 @@ void vm_init(void)
 
     if (vm_map_range(VM_UART,
                      VM_UART,
+                     VM_PAGE_SIZE,
+                     PTE_R | PTE_W) != 0)
+    {
+        root_page_table = 0;
+        return;
+    }
+
+    if (vm_map_range(POWER_BASE,
+                     POWER_BASE,
                      VM_PAGE_SIZE,
                      PTE_R | PTE_W) != 0)
     {
