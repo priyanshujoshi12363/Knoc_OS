@@ -101,6 +101,119 @@ void *mem_alloc(unsigned long bytes)
     return is_error(result) ? 0 : (void *)result;
 }
 
+long wait(int pid)
+{
+    return syscall(SYS_WAIT, pid, 0, 0);
+}
+
+int ps(unsigned long index, process_info_t *info)
+{
+    return (int)syscall(SYS_PS, (long)index, (long)info, 0);
+}
+
+int kill(int pid)
+{
+    return (int)syscall(SYS_KILL, pid, 0, 0);
+}
+
+int sysinfo(system_info_t *info)
+{
+    return (int)syscall(SYS_SYSINFO, (long)info, 0, 0);
+}
+
+int devinfo(unsigned long index, device_info_t *info)
+{
+    return (int)syscall(SYS_DEVINFO, (long)index, (long)info, 0);
+}
+
+int crashinfo(unsigned long index, crash_info_t *info)
+{
+    return (int)syscall(SYS_CRASHINFO, (long)index, (long)info, 0);
+}
+
+unsigned long strlen(const char *text)
+{
+    unsigned long length = 0;
+
+    while (text[length])
+    {
+        length++;
+    }
+
+    return length;
+}
+
+int strcmp(const char *a, const char *b)
+{
+    while (*a && *a == *b)
+    {
+        a++;
+        b++;
+    }
+
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+char *strcpy(char *destination, const char *source)
+{
+    char *to = destination;
+
+    while ((*to++ = *source++) != 0)
+    {
+    }
+
+    return destination;
+}
+
+/* A decimal number, or -1 if the text isn't one */
+long parse_number(const char *text)
+{
+    long value = 0;
+
+    if (*text == 0)
+    {
+        return -1;
+    }
+
+    while (*text)
+    {
+        if (*text < '0' || *text > '9')
+        {
+            return -1;
+        }
+
+        value = value * 10 + (*text++ - '0');
+    }
+
+    return value;
+}
+
+void print_padded(const char *text, int width)
+{
+    print(text);
+
+    for (int i = (int)strlen(text); i < width; i++)
+    {
+        print(" ");
+    }
+}
+
+void print_padded_uint(unsigned long value, int width)
+{
+    char buffer[21];
+    int i = 20;
+
+    buffer[i] = 0;
+
+    do
+    {
+        buffer[--i] = '0' + (value % 10);
+        value /= 10;
+    } while (value > 0);
+
+    print_padded(&buffer[i], width);
+}
+
 int is_error(long result)
 {
     return result < 0 && result >= -64;

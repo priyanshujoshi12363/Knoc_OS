@@ -112,6 +112,11 @@ device_t *device_find(const char *name)
     return 0;
 }
 
+device_t *device_at(uint32_t index)
+{
+    return index < registered_count ? devices[index] : 0;
+}
+
 uint32_t device_count(void)
 {
     return registered_count;

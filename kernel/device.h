@@ -39,5 +39,6 @@ int device_handle_irq(uint32_t irq);
 int device_disable(device_t *dev);
 
 void device_list(void);
+device_t *device_at(uint32_t index);
 
 #endif

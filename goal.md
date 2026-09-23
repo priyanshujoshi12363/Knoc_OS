@@ -128,7 +128,7 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), **wait queues** and the **KnocFS filesystem** (programs and model files on disk), automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), **wait queues** and the **KnocFS filesystem** (programs and model files on disk), the **`knocsh` shell**, automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
@@ -159,7 +159,8 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | Big memory (v0.10.0) | ✅ Done | Room for real AI models: RAM size from the device tree, a buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space |
 | User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
 | Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
-| Shell (v0.13.0) | 🚧 Next | Type commands: `ls`, `cat`, `ps`, `run`, `crashes`, `mem` |
+| Shell (v0.13.0) | ✅ Done | `knocsh`: files, programs, `ps`/`kill`/Ctrl-C, and the AI's view (`crashes`, `ai`) |
+| Small NN runtime (v0.14.0) | 🚧 Next | The first neural network running inside KnocOS |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
 
@@ -183,7 +184,7 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | 3 | **v0.10.0** ✅ | Big memory | RAM size from the device tree, 2–4 GiB+, 2 MiB megapages, buddy page allocator, spinlocks for 2 cores, bigger AI region | Room for real AI models |
 | 4 | **v0.11.0** ✅ | User mode + system calls | U-mode programs with their own page tables, `ecall` system calls, program loader | A buggy program can't hurt the OS |
 | 5 | **v0.12.0** ✅ | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
-| 6 | v0.13.0 | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
+| 6 | **v0.13.0** ✅ | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
 
 ### Phase C: The first real AI inside KnocOS
 

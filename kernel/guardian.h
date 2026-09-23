@@ -16,6 +16,8 @@ void guardian_start_watch(void);
 void guardian_set_safe_mode(int enabled);
 int guardian_restart_safe_mode(void);
 void guardian_set_ram_end(uint64_t ram_end);
+void guardian_set_collect(int enabled);
+void guardian_set_inject_label(uint32_t label);
 int guardian_driver_disabled(const char *name);
 
 void guardian_record_trap(uint64_t scause,
@@ -27,5 +29,10 @@ void guardian_report_panic(const char *message);
 
 uint64_t guardian_boot_report(device_t *disk);
 void guardian_process(void *arg);
+
+struct system_info;
+struct crash_info;
+void guardian_system_info(struct system_info *info);
+int guardian_crash_info(uint32_t index, struct crash_info *info);
 
 #endif

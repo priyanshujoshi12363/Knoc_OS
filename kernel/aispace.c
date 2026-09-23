@@ -586,6 +586,14 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_READDIR] = "readdir",
         [SYS_MKDIR] = "mkdir",
         [SYS_REMOVE] = "remove",
+        [SYS_WAIT] = "wait",
+        [SYS_PS] = "ps",
+        [SYS_KILL] = "kill",
+        [SYS_SYSINFO] = "sysinfo",
+        [SYS_DEVINFO] = "devinfo",
+        [SYS_CRASHINFO] = "crashinfo",
+        [SYS_RANDOM] = "random",
+        [SYS_INJECT] = "inject",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

@@ -2,7 +2,7 @@
 set -u
 
 KERNEL=${KERNEL:-knocos.elf}
-TIMEOUT=${TIMEOUT:-15}
+TIMEOUT=${TIMEOUT:-35}
 GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
 HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 LOG=$(mktemp)
@@ -26,8 +26,23 @@ qemu() {
 
 new_disk
 
+# Types each argument into the shell as a command line ("^C" sends Ctrl-C),
+# then powers off with Ctrl-D
 boot() {
-    (sleep 2; printf 'knocos-echo-test\r'; sleep 1; printf '\004'; sleep 2) | qemu "$TIMEOUT"
+    (
+        sleep 7
+        for command in "$@"; do
+            if [ "$command" = "^C" ]; then
+                printf '\003'
+            else
+                printf '%s\r' "$command"
+            fi
+            sleep 0.6
+        done
+        sleep 1
+        printf '\004'
+        sleep 2
+    ) | qemu "$TIMEOUT"
     STATUS=$?
     check_status "$TIMEOUT" no-panic
 }
@@ -73,8 +88,10 @@ show_log_on_failure() {
     fi
 }
 
-echo "Boot 1: self-tests"
-boot
+echo "Boot 1: self-tests and the shell"
+boot "knocos-echo-test" "ls /bin" "cat /hello.txt" \
+    "echo saved by the shell > /home/shell.txt" "cd /home" "pwd" "cat shell.txt" \
+    "ps" "mem" "devices" "ai" "crashes" "counter" "^C" "kill 2"
 check \
     "Supervisor interrupts enabled" \
     "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
@@ -114,22 +131,36 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: badcall bigmem crash files hello hog modelcheck noperm spy" \
+    "[files] /bin: badcall bigmem counter crash files hello hog knocsh modelcheck noperm spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
     "Programs loaded from /bin on disk: 8" \
     "User mode verified" \
     "All self-tests passed" \
-    "knocos-echo-test" \
+    "KnocOS shell (knocsh). Type help for commands." \
+    "knocsh: unknown command: knocos-echo-test (type help)" \
+    "  modelcheck" \
+    "Hello from a file on KnocFS!" \
+    "knoc:/home$ pwd" \
+    "saved by the shell" \
+    "knocsh        INTERACTIVE  RUNNING" \
+    "RAM:  2048 MiB total" \
+    "disk0     IRQ 1" \
+    "AI space: online on core 1" \
+    "No crashes recorded in the black box" \
+    "[counter] 2" \
+    "knocsh: counter stopped (Ctrl-C)" \
+    "kill (only user programs can be stopped): permission denied" \
     "Powering off"
 show_log_on_failure
 
 echo "Boot 2: disk data and files survive a reboot"
-boot
+boot "cat /home/shell.txt"
 check \
     "Disk boot count: 2" \
     "[files] found my note from the last boot: KnocOS remembers this" \
+    "knoc:/$ cat /home/shell.txt" \
     "Powering off"
 show_log_on_failure
 
@@ -144,7 +175,9 @@ new_disk
     sleep 2;  printf '\027'
     sleep 8;  printf '\017'
     sleep 6;  printf '\013'
-    sleep 6;  printf '\004'
+    sleep 7;  printf 'crashes\r'
+    sleep 1;  printf 'ai\r'
+    sleep 1;  printf '\004'
     sleep 3
 ) | qemu "$GUARDIAN_TIMEOUT"
 STATUS=$?
@@ -197,6 +230,12 @@ check \
     "Warm restart #3 by the AI space" \
     "Previous crash detected: #3 TRAP" \
     "SAFE MODE" \
+    "#3 TRAP in console" \
+    "   AI action: warm kernel restart into safe mode" \
+    "#2 TRAP in console" \
+    "Warm kernel restarts: 3" \
+    "Drivers disabled by the AI: faulty0" \
+    "Safe mode: on" \
     "Powering off"
 
 if grep -q "\[spy\] read kernel memory!" "$LOG"; then

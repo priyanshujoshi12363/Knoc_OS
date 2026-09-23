@@ -6,6 +6,7 @@
 #include "uart.h"
 #include "logging.h"
 #include "process.h"
+#include "syscall_abi.h"
 
 #define GUARDIAN_ONLINE_TIMEOUT TIMER_FREQ_HZ
 
@@ -125,6 +126,17 @@ void guardian_set_safe_mode(int enabled)
 void guardian_set_ram_end(uint64_t ram_end)
 {
     guardian_mailbox.ram_end = ram_end;
+}
+
+void guardian_set_collect(int enabled)
+{
+    guardian_mailbox.collect_mode = (uint32_t)enabled;
+}
+
+void guardian_set_inject_label(uint32_t label)
+{
+    guardian_mailbox.inject_label = label;
+    __sync_synchronize();
 }
 
 int guardian_restart_safe_mode(void)
@@ -392,6 +404,7 @@ static void post_fault(process_fault_t *fault)
     guardian_mailbox.fault_user = (uint32_t)fault->user;
     guardian_mailbox.fault_denied = fault->denied;
     guardian_mailbox.fault_trace_count = fault->trace_count;
+    guardian_mailbox.fault_label = fault->label;
 
     for (uint32_t i = 0; i < fault->trace_count && i < MAILBOX_TRACE_MAX; i++)
     {
@@ -510,4 +523,80 @@ void guardian_process(void *arg)
             reset_streak();
         }
     }
+}
+
+/* ---- For the shell: AI space status and crash reports ---- */
+
+void guardian_system_info(system_info_t *info)
+{
+    blackbox_header_t header;
+
+    info->ai_online = guardian_online && guardian_mailbox.aispace_magic == MAILBOX_MAGIC;
+    info->kernel_restarts = info->ai_online ? guardian_mailbox.kernel_restarts : 0;
+    info->ai_uptime_ms = info->ai_online
+                             ? (timer_read() - guardian_mailbox.ai_start_time) / (TIMER_FREQ_HZ / 1000)
+                             : 0;
+    info->safe_mode = guardian_mailbox.safe_mode;
+
+    for (int i = 0; i < INFO_DISABLED_MAX && i < MAILBOX_DISABLED_MAX; i++)
+    {
+        copy_bytes(info->disabled_drivers[i], (const void *)guardian_mailbox.disabled_drivers[i], INFO_NAME_MAX);
+        info->disabled_drivers[i][INFO_NAME_MAX - 1] = 0;
+
+        if (!info->ai_online)
+        {
+            info->disabled_drivers[i][0] = 0;
+        }
+    }
+
+    info->crashes_total = 0;
+    info->crashes_in_a_row = 0;
+
+    if (guardian_disk != 0 && read_header(&header) == 0)
+    {
+        info->crashes_total = (uint32_t)header.total_crashes;
+        info->crashes_in_a_row = (uint32_t)header.consecutive_crashes;
+    }
+}
+
+/* index 0 = the newest crash; the black box keeps the last 4 */
+int guardian_crash_info(uint32_t index, crash_info_t *info)
+{
+    blackbox_header_t header;
+    blackbox_record_t record;
+
+    if (guardian_disk == 0 || read_header(&header) != 0 ||
+        index >= BLACKBOX_RECORDS || index >= header.total_crashes)
+    {
+        return -1;
+    }
+
+    uint64_t sequence = header.total_crashes - index;
+
+    if (device_read_block(guardian_disk,
+                          blackbox_record_sector(guardian_disk->block_count, sequence),
+                          guardian_sector) != 0)
+    {
+        return -1;
+    }
+
+    copy_bytes(&record, guardian_sector, sizeof(record));
+
+    if (record.magic != BLACKBOX_MAGIC || record.sequence != sequence)
+    {
+        return -1;
+    }
+
+    zero_bytes(info, sizeof(*info));
+    info->sequence = record.sequence;
+    info->uptime_ticks = record.uptime_ticks;
+    info->crash_type = record.crash_type;
+    info->action = record.action;
+    info->pid = record.pid;
+    copy_bytes(info->process, record.process_name, INFO_NAME_MAX);
+    copy_bytes(info->driver, record.driver, INFO_NAME_MAX);
+    copy_bytes(info->message, record.message, sizeof(info->message));
+    copy_bytes(info->diagnosis, record.diagnosis, sizeof(info->diagnosis));
+
+    return 0;
 }

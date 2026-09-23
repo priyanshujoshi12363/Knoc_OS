@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** the device tree, the buddy allocator, virtual memory (Sv39) and megapages, kernel heap, spinlocks
-- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart, user mode and system calls, wait queues, the KnocFS filesystem
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart, user mode and system calls, wait queues, the KnocFS filesystem, the shell
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** shell, NN runtime, AI-OS
+- **Part 8: What comes next:** NN runtime, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -1224,6 +1224,77 @@ The `files` program printed empty error messages. The cause: the program's data 
 
 ---
 
+## 5.17 The shell: knocsh (v0.13.0)
+
+### What a shell is
+
+A **shell** is the program you type commands into. It reads a line, works out what you mean, and asks the kernel to do it with system calls. On Linux it's `bash`, on Windows `cmd` or PowerShell. The important idea: **the shell is not part of the kernel**. It's an ordinary program, and it can only do what its system calls allow. `knocsh` is `/bin/knocsh`, in the INTERACTIVE class (so it always answers first), with every capability including the new `SYSTEM` one.
+
+### The loop
+
+```text
+print the prompt  knoc:/home$
+read keys until Enter (echo each one, Backspace erases)
+split the line into words
+first word is a built-in?  → do it (ls, cd, cat, ps, mem, ai...)
+else is it /bin/<word>?    → spawn it, wait for it (or not, with &)
+else                       → "unknown command"
+```
+
+The **current directory** exists only inside the shell. `cd home` just changes a string, and the shell turns relative paths into absolute ones (resolving `.` and `..`) before any system call. The kernel only ever sees absolute paths. Linux keeps the current directory in the kernel instead, because every program has one; KnocOS may do that later.
+
+### Who gets the keyboard? The terminal layer
+
+Two things want the keys: the kernel console (Ctrl-D, Ctrl-C, the test keys) and the shell (everything else). `kernel/tty.c` sits between them:
+
+```text
+UART interrupt → console process: control key? handle it : tty_input(c)
+                                                              │
+knocsh: read(0) ─── tty_read() sleeps on a wait queue until ──┘
+```
+
+This is a tiny version of what Unix calls a **tty** (from teletype). The program marked `PROGRAM_TERMINAL` becomes the terminal's **owner** when it starts. If the shell crashes and the AI restarts it, the new one becomes the owner again. While no shell runs (for example after `exit`), the console echoes keys itself, as before v0.13.
+
+### Ctrl-C and the foreground program
+
+When the shell runs a program and waits for it (`wait` system call), the kernel records that program as the **foreground** process. Ctrl-C reaches the console (the shell never sees it), and the console kills the foreground process. `wait` then returns `E_KILLED` and the shell prints `counter stopped (Ctrl-C)`. On Linux, Ctrl-C sends the signal `SIGINT`, which a program can catch. KnocOS just stops the program.
+
+Killing had to become safer for this. A process killed while it sleeps inside a system call (for example in the middle of a disk read) could be holding the filesystem or disk lock. `process_kill` now releases its sleep locks (like a crash does) and wakes anyone waiting for it.
+
+### Looking inside the system: the new system calls
+
+Some things only the kernel knows: the process table, free memory, the devices, and the AI space's crash reports. Six new system calls expose them, all but `wait` behind the `SYSTEM` capability (ordinary programs can't list processes or kill them):
+
+| Call | Used by |
+|---|---|
+| `wait(pid)` | Running a program in the foreground |
+| `ps(i, info)` | `ps` |
+| `kill(pid)` | `kill` (user programs only) |
+| `sysinfo(info)` | `mem`, `ai` |
+| `devinfo(i, info)` | `devices` |
+| `crashinfo(i, info)` | `crashes`: the black box reports, with the AI's diagnosis and action |
+
+The pattern is "give me item *i*": the program asks for 0, 1, 2... until it gets `E_NOTFOUND`, so the kernel never needs to know how big the program's buffer is.
+
+### Safe mode gets a shell too
+
+After 3 crashes in a row, KnocOS starts in safe mode with minimal services. The shell starts too, like Windows' "Safe Mode with Command Prompt", so you can look at what happened:
+
+```text
+knoc:/$ crashes
+#3 TRAP in console (pid 6) after 5 s: Unhandled supervisor trap
+   AI diagnosis: Bad pointer: the code accessed an address that is not mapped (stval).
+   AI action: warm kernel restart into safe mode
+knoc:/$ ai
+Warm kernel restarts: 3
+Drivers disabled by the AI: faulty0
+Safe mode: on
+```
+
+### A bug caught on the way
+
+After Ctrl-F crashes the console process, the AI restarts it, and the restarted console starts at the top of its code again, including "start the shell". That would have started a **second** shell while the first was still running, with two programs fighting over the keyboard. The console now starts a shell only when no program owns the terminal.
+
 ---
 
 # Part 6: Engineering
@@ -1267,8 +1338,9 @@ The `files` program printed empty error messages. The cause: the program's data 
 | 0.10.0 | Big memory: device tree, buddy allocator, megapages, spinlocks, 256 MiB AI space |
 | 0.11.0 | User mode, system calls, capabilities, quotas, system call trace for the AI |
 | 0.12.0 | Wait queues, KnocFS filesystem, programs and models on disk |
+| 0.13.0 | The shell knocsh, the terminal layer, Ctrl-C, system information calls |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.12.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.13.0 && git push --tags`.
 
 ---
 
@@ -1323,11 +1395,7 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 A shell (v0.13.0)
-
-`knocsh`, the first interactive user program: `ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`. It owns the keyboard (the kernel's console process steps aside) and needs a few new system calls, for example a process list.
-
-## 8.2 The small NN runtime (v0.14.0)
+## 8.1 The small NN runtime (v0.14.0)
 
 Tensors and int8 math inside the AI space, loading its weights from `/models`, to replace the rule brain with a trained crash classifier (v0.15).
 
@@ -1403,6 +1471,9 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | Term | Meaning |
 |---|---|
 | **Bare metal** | Running with no OS underneath |
+| **Foreground process** | The program the shell is waiting for; Ctrl-C stops it |
+| **Shell** | The program you type commands into (`knocsh`, `bash`, `cmd`) |
+| **Terminal (tty)** | The layer that hands keyboard input to the program that owns it |
 | **Extent** | A run of consecutive disk blocks `{start, count}` holding part of a file |
 | **File descriptor** | A small number a program uses for an open file (0 keyboard, 1–2 screen) |
 | **Inode** | The on-disk record of one file: type, size and where its data is |

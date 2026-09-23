@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.12.0-blue)
+![Version](https://img.shields.io/badge/version-v0.13.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -25,7 +25,7 @@ KnocOS currently has:
 - **UART driver** (16550): output plus **interrupt-driven keyboard input** into a ring buffer
 - **PLIC interrupt controller**: device interrupts (UART, IRQ 10) delivered to the kernel
 - **Device abstraction**: every driver has the same shape (`init`, `interrupt`, `read`, `write`) and is registered in a device table, like the Windows driver model and Device Manager
-- Interactive **keyboard echo** (Enter = new line, Backspace erases)
+- **A shell, `knocsh`**: type commands (`ls`, `cd`, `cat`, `echo > file`, `ps`, `kill`, `mem`, `devices`, `crashes`, `ai`) and run programs from `/bin`; Ctrl-C stops the running program
 - Kernel logging (`log_info`, `log_warn`, `log_trap`) and a `panic` handler
 - **Device tree parsing**: RAM size and CPU count come from the firmware, not hard-coded (runs with 1 GiB to 8 GiB+, `make run` uses 2 GiB)
 - **Buddy page allocator**: 4 KiB pages up to 1 GiB contiguous blocks, which merge back when freed (room for AI models)
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.12.0 starting
+[INFO] KnocOS v0.13.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -112,11 +112,14 @@ KnocOS currently has:
 [hog] 8 MiB allowed, 16 MiB more refused: quota is 16 MiB
 [bigmem] AI agent got 256 MiB at 0x0000001100000000 and used all of it
 [INFO] User memory verified: every page and page table was returned when the programs exited
-[INFO] User mode verified: 5 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced
+[INFO] User mode verified: 7 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced
 [INFO] All self-tests passed
-[INFO] Keyboard echo ready, start typing (Ctrl-D power off)
+[INFO] Console ready (Ctrl-D power off, Ctrl-C stop the running program)
 [INFO] Test keys: Ctrl-F process fault, Ctrl-X driver fault, Ctrl-K kernel fault, Ctrl-O overwrite kernel code, Ctrl-P panic, Ctrl-W freeze
-hello knocos          ← what you type is echoed back
+[INFO] Program keys: Ctrl-U run the crash program, Ctrl-E run the spy program
+
+KnocOS shell (knocsh). Type help for commands.
+knoc:/$ ls /bin                ← you type commands here
 ```
 
 Example of an unhandled kernel fault (a store to an unmapped address):
@@ -133,36 +136,52 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Wait Queues + KnocFS Filesystem (v0.12.0)
+## ✅ Just Completed: The Shell, knocsh (v0.13.0)
 
-**Programs and AI models live on disk now.**
-
-**Part 1, wait queues (no more polling):**
-- A process waiting for something **sleeps** until the event wakes it: the keyboard interrupt wakes the console, the disk interrupt wakes the process that asked for a sector, a process exit wakes `process_wait()`, a crash wakes the guardian at once
-- The disk has a **sleep lock**: before, two processes using the disk at once could mix up their requests. A process that crashes while holding a lock has it released automatically
-- Disk requests carry up to **8 sectors** (one 4 KiB filesystem block) at a time
-
-**Part 2, KnocFS:**
-- Files and directories on `disk0`, 4 KiB blocks, with an inode table and a free-block bitmap
-- Files are stored as **extents** (start block + count): a model file copied in one piece is one contiguous run on the disk
-- **Programs load from `/bin` on disk** (the built-in copies are only a fallback, for example when the AI space disabled the disk)
-- **16 system calls:** new `open`, `close`, `seek`, `stat`, `readdir`, `mkdir`, `remove`, and file descriptors for `read`/`write` (0 = keyboard, 1/2 = screen, 3+ = files), with new capabilities `FILES_READ` and `FILES_WRITE`
-- File reads go **straight into the program's memory**: an AI_AGENT program loads an 8 MiB test model in about 0.6 s and checks every byte
-- **Host tool** `tools/knocfs.py`: format a disk, copy files onto it from your PC (`make put FILE=model.gguf DEST=/models/model.gguf`), list (`make ls DIR=/models`)
+**You can use KnocOS now.** After booting, you get a prompt and type commands, like `bash` or `cmd`:
 
 ```text
-[INFO] KnocFS mounted on disk0: 62 MiB, 11 files, 54 MiB free
-[INFO] Wait queues verified: 200 disk reads, the reader slept 200 times and another process ran meanwhile
-[files] found my note from the last boot: KnocOS remembers this
-[files] /hello.txt says: Hello from a file on KnocFS!
-[files] /bin: badcall bigmem crash files hello hog modelcheck noperm spy
-[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent) in 570 ms, every byte verified
-[INFO] Programs loaded from /bin on disk: 8
+KnocOS shell (knocsh). Type help for commands.
+knoc:/$ ls /bin
+      8248  badcall
+     21216  knocsh
+      8496  modelcheck
+      ...
+knoc:/$ echo saved by the shell > /home/shell.txt
+knoc:/$ cd /home
+knoc:/home$ cat shell.txt
+saved by the shell
+knoc:/home$ ps
+  PID  NAME          CLASS        STATE     CPU  MEMORY    MODE
+  16   knocsh        INTERACTIVE  RUNNING   2    84    KiB user
+  2    guardian      BACKGROUND   BLOCKED   0    0     KiB kernel
+  15   console       INTERACTIVE  BLOCKED   0    0     KiB kernel
+knoc:/home$ counter
+[counter] 1
+[counter] 2
+^C
+knocsh: counter stopped (Ctrl-C)
+knoc:/home$ ai
+AI space: online on core 1, running for 13 s
+Warm kernel restarts: 0
+Crashes in the black box: 0 (0 in a row)
+Safe mode: off
+Drivers disabled by the AI: none
 ```
 
-**Fixed along the way:** the program linker script let a program's data segment start inside its last code page, and the loader then mapped a zeroed page over that code page. Programs with a large `.bss` lost part of their text. The data segment is now page-aligned, and `elf_load()` refuses segments that share a page.
+| Commands | |
+|---|---|
+| Files | `ls [DIR]`, `cd DIR`, `pwd`, `cat FILE`, `echo TEXT [> FILE]`, `mkdir DIR`, `rm PATH` |
+| Programs | `NAME` or `run NAME [&]` (from `/bin`), `ps`, `kill PID`, **Ctrl-C** stops the running program |
+| System | `mem` (RAM + disk), `devices`, `crashes` (the AI's black box reports), `ai` (AI space status), `uptime`, `clear`, `help`, `exit` |
 
-Before this: **v0.11.0**, user mode + system calls (per-program page tables, capabilities, quotas, a system call trace for the AI). **Next up: v0.13.0, the shell (`knocsh`)**, so you can type `ls`, `cat`, `ps`, `run` and more.
+- **The shell is a user program** (`/bin/knocsh`, INTERACTIVE class). If it crashes, the AI restarts it like any other program
+- **A terminal layer** (`kernel/tty.c`): the kernel console keeps the control keys (Ctrl-C, Ctrl-D and the test keys) and passes every other key to the shell
+- **6 new system calls** for things only the kernel knows: `wait`, `ps`, `kill` (user programs only), `sysinfo`, `devinfo`, `crashinfo`, guarded by a new `SYSTEM` capability
+- **Safe mode starts the shell too**, so after a crash loop you can type `crashes` and `ai` to see what the AI found
+- `kill` now releases the killed process's locks and wakes anyone waiting for it
+
+Before this: **v0.12.0**, wait queues and the KnocFS filesystem (programs and model files on disk). **Next up: v0.14.0, the small NN runtime**: the first neural network running inside KnocOS.
 
 Recent progress:
 
@@ -181,7 +200,8 @@ Recent progress:
 | `2773100` | Fault containment, AI verdicts (restart process / disable driver), warm kernel restart from a clean copy, kernel code check, version `v0.9.0` |
 | `4447fb6` | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
 | `4197404` | User mode, per-program page tables, 9 system calls, capabilities, memory quotas, system call trace for the AI, ELF loader, 7 user programs, version `v0.11.0` |
-| *(uncommitted)* | Wait queues, sleep locks, multi-sector disk requests, KnocFS (extents), file system calls, programs from `/bin`, host tool, version `v0.12.0` |
+| `5f6f06b` | Wait queues, sleep locks, multi-sector disk requests, KnocFS (extents), file system calls, programs from `/bin`, host tool, version `v0.12.0` |
+| *(uncommitted)* | The shell `knocsh`, terminal layer, Ctrl-C, 6 system calls (`wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo`), version `v0.13.0` |
 
 What works right now:
 
@@ -200,7 +220,7 @@ What works right now:
 - **Processes:** each has its own 16 KiB stack, saved registers, a class and CPU accounting. `context_switch` (assembly) saves one process's registers and loads another's
 - **Preemption:** every timer tick calls `scheduler_tick()`. When a process's time slice ends, the scheduler switches, even if the process never gives up the CPU
 - **AI-aware scheduling:** INTERACTIVE processes run first. The rest share the CPU by weight (AI_AGENT 60, NORMAL 30, BACKGROUND 10) using virtual runtime, so nothing starves
-- **Console as a process:** the keyboard echo runs as an INTERACTIVE process that sleeps 1 tick when there's no input
+- **Console as a process:** an INTERACTIVE kernel process reads the keyboard (sleeping until a key arrives), handles the control keys and passes the rest to the shell
 - M-mode has its **own stack** (`mscratch`), so the timer handler never touches process stacks. The S-mode trap handler saves `sepc`/`sstatus` so a process switch inside a trap returns to the right place
 - Self-tests: the disk test writes and reads back a sector, reads text placed in `disk.img` by the host, and increments a boot counter stored on the disk
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
@@ -211,7 +231,8 @@ Next steps:
 - [x] v0.10.0: big memory (2–4 GiB+) for AI models
 - [x] v0.11.0: user mode + system calls, capabilities, quotas, system call trace for the AI
 - [x] v0.12.0: wait queues, KnocFS filesystem, programs and models on disk
-- [ ] v0.13.0+: shell, small NN runtime (see the Milestone Roadmap)
+- [x] v0.13.0: the shell `knocsh`
+- [ ] v0.14.0+: small NN runtime, first trained NNs (see the Milestone Roadmap)
 
 ---
 
@@ -276,7 +297,7 @@ kernel_main(dtb) (Supervisor mode)  kernel/main.c
    └─ idle loop (wfi)
         sched-test: start 3 workers, sleep 1 s, check CPU shares, kill workers,
                     run the user programs (U-mode) and check their exit codes,
-                    start "console" (INTERACTIVE) → keyboard echo
+                    start "console" (INTERACTIVE) → it starts the shell knocsh
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
                          └──► supervisor_trap (S-mode) ──► clear sip.SSIP, timer_tick() ──► sret
@@ -725,6 +746,32 @@ A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio
 - Data goes through a 4 KiB buffer inside the driver, so callers can pass any kernel buffer (including heap addresses, which aren't physical addresses)
 - If no disk is attached, `init` fails, the boot log shows `Device failed: disk0`, and KnocOS keeps running
 
+### Shell and terminal: `user/knocsh.c`, `kernel/tty.c`
+
+```text
+keyboard → UART interrupt → console process (kernel)
+             Ctrl-D power off, Ctrl-C kill the foreground program, test keys
+             everything else → tty_input() → tty buffer → read(0) in knocsh
+knocsh → echoes the key, edits the line (Backspace), runs the command on Enter
+```
+
+- **`knocsh`** is a normal user program with every capability, including `SYSTEM`. It keeps its own current directory and resolves relative paths, `.` and `..` itself
+- **Built-in commands** use system calls. Any other word is looked up in `/bin` and run as a program: the shell `spawn`s it and `wait`s for it (`&` runs it in the background)
+- **`tty.c`**: a 256-byte input buffer with a wait queue. The program flagged `PROGRAM_TERMINAL` (the shell) becomes the terminal's owner when it starts or is restarted. While no shell is running, the console echoes keys itself
+- **Ctrl-C:** while the shell waits for a program, that program is the **foreground** process, and Ctrl-C kills it
+- **`kill`** from the shell only works on user programs (`E_PERM` for the kernel's own processes). A killed process has its sleep locks released, and `wait` returns `E_KILLED`
+
+| System call | Returns |
+|---|---|
+| `wait(pid)` | The exit code, `E_KILLED` (Ctrl-C / kill) or `E_CRASHED` (the AI handles it) |
+| `ps(i, info)` | The i-th process: pid, name, class, state, CPU ticks, memory, user or kernel |
+| `kill(pid)` | Stops a user program |
+| `sysinfo(info)` | RAM, disk, uptime, AI space status, warm restarts, crash counts, disabled drivers, safe mode |
+| `devinfo(i, info)` | The i-th device: name, IRQ, ready / disabled by the AI |
+| `crashinfo(i, info)` | The i-th newest black box report: type, process, driver, message, AI diagnosis and action |
+
+All except `wait` need the `SYSTEM` capability.
+
 ### Wait queues: `kernel/process.c`
 
 - `process_block(channel, timeout)` puts the current process to sleep (state `BLOCKED`) until `process_wake(channel)`, or until the timeout. A channel is just an address: the keyboard buffer, the disk, a process
@@ -781,7 +828,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.12.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.13.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -791,8 +838,8 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 `make test` runs `scripts/test.sh`, which:
 
 1. Creates a fresh temporary disk image with `scripts/mkdisk.sh` (`Hello from the host!` in sector 0, a KnocFS filesystem with the programs and the test model)
-2. **Boot 1:** checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
-3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
+2. **Boot 1:** types a shell session (`ls`, `cat`, `echo > file`, `cd`, `pwd`, `ps`, `mem`, `devices`, `ai`, `crashes`, `counter` + Ctrl-C, `kill`) and checks the output, and checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
+3. The first typed line, `knocos-echo-test`, must come back as `unknown command` from the shell (this tests the UART → PLIC → trap → console → tty → shell path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
 5. **Boot 2** with the same disk image: checks `Disk boot count: 2` and that the `files` program finds the note it wrote on Boot 1, which proves sectors and files survive a reboot
 6. **Run 3** (user programs, fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-U → the `crash` program is restarted 3 times by the AI, then left stopped. Ctrl-E → `spy`'s forbidden call is logged, its read of kernel memory is blocked, and the AI refuses to restart it (the test fails if `spy` ever reads kernel memory). Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
@@ -924,9 +971,9 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 ### Phase 7: User Space
 
 - [x] User programs (built in, ELF loader)
-- [ ] Shell
+- [x] Shell (`knocsh`)
 - [ ] Standard library
-- [ ] Process management
+- [x] Process management (`ps`, `kill`, `wait`, Ctrl-C)
 
 ### Future Direction
 
@@ -1027,6 +1074,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.12.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.13.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls. Processes sleep on wait queues instead of polling, and KnocFS stores programs, files and AI model files on the disk.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls. Processes sleep on wait queues instead of polling, and KnocFS stores programs, files and AI model files on the disk. The shell `knocsh` lets you use it: files, programs, processes, and the AI's crash reports.

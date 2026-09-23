@@ -93,6 +93,7 @@ int fdt_parse(uintptr_t dtb, fdt_info_t *info)
     info->ram_start = 0;
     info->ram_size = 0;
     info->cpu_count = 0;
+    info->bootargs[0] = 0;
 
     if (dtb == 0 || (dtb & 3) != 0 || be32(&header->magic) != FDT_MAGIC)
     {
@@ -117,6 +118,7 @@ int fdt_parse(uintptr_t dtb, fdt_info_t *info)
     int depth = 0;
     int in_memory = 0;
     int in_cpus = 0;
+    int in_chosen = 0;
 
     while (token < end)
     {
@@ -133,6 +135,7 @@ int fdt_parse(uintptr_t dtb, fdt_info_t *info)
             {
                 in_memory = starts_with(name, "memory");
                 in_cpus = text_equal(name, "cpus");
+                in_chosen = text_equal(name, "chosen");
             }
             else if (depth == 3 && in_cpus && starts_with(name, "cpu@"))
             {
@@ -147,6 +150,7 @@ int fdt_parse(uintptr_t dtb, fdt_info_t *info)
             {
                 in_memory = 0;
                 in_cpus = 0;
+                in_chosen = 0;
             }
 
             depth--;
@@ -171,6 +175,20 @@ int fdt_parse(uintptr_t dtb, fdt_info_t *info)
             {
                 info->ram_start = read_cells(value, address_cells);
                 info->ram_size = read_cells(value + address_cells * 4, size_cells);
+            }
+
+            /* /chosen/bootargs: the kernel command line (QEMU -append) */
+            if (depth == 2 && in_chosen && text_equal(name, "bootargs"))
+            {
+                uint32_t i = 0;
+
+                while (i < length && i < FDT_BOOTARGS_MAX - 1 && value[i])
+                {
+                    info->bootargs[i] = (char)value[i];
+                    i++;
+                }
+
+                info->bootargs[i] = 0;
             }
 
             token += 8 + ((length + 3) & ~3U);

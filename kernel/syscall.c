@@ -9,6 +9,8 @@
 #include "page.h"
 #include "string.h"
 #include "knocfs.h"
+#include "tty.h"
+#include "guardian.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -32,6 +34,14 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_READDIR] = "readdir",
     [SYS_MKDIR] = "mkdir",
     [SYS_REMOVE] = "remove",
+    [SYS_WAIT] = "wait",
+    [SYS_PS] = "ps",
+    [SYS_KILL] = "kill",
+    [SYS_SYSINFO] = "sysinfo",
+    [SYS_DEVINFO] = "devinfo",
+    [SYS_CRASHINFO] = "crashinfo",
+    [SYS_RANDOM] = "random",
+    [SYS_INJECT] = "inject",
 };
 
 const char *syscall_name(uint64_t number)
@@ -141,6 +151,16 @@ static const char *capability_name(uint32_t capability)
         return "FILES_WRITE";
     }
 
+    if (capability == CAP_SYSTEM)
+    {
+        return "SYSTEM";
+    }
+
+    if (capability == CAP_DEBUG)
+    {
+        return "DEBUG";
+    }
+
     return "MEMORY";
 }
 
@@ -201,18 +221,15 @@ static int64_t console_write(uintptr_t buffer, uint64_t length)
 static int64_t console_read(uintptr_t buffer, uint64_t length)
 {
     char chunk[SYSCALL_CHUNK];
-    int64_t count;
 
     if (length > SYSCALL_CHUNK)
     {
         length = SYSCALL_CHUNK;
     }
 
-    /* Blocks until at least one key arrives */
-    while ((count = device_read(device_find("uart0"), chunk, length)) <= 0)
-    {
-        uart_wait_input();
-    }
+    /* Keys come through the terminal: the console process passes on the
+       ones it doesn't handle itself. Blocks until one arrives. */
+    int64_t count = tty_read(chunk, length);
 
     if (copy_to_user(buffer, chunk, (uint64_t)count) != 0)
     {
@@ -475,6 +492,114 @@ static int64_t sys_readdir(uintptr_t path_address, uint64_t index, uintptr_t out
     return copy_to_user(out, &result, sizeof(result)) == 0 ? 0 : E_FAULT;
 }
 
+static int64_t sys_wait(uint64_t pid)
+{
+    int exit_code = 0;
+
+    /* Ctrl-C stops the program the shell is waiting for */
+    tty_set_foreground((int)pid);
+    int result = process_wait((int)pid, &exit_code);
+    tty_set_foreground(0);
+
+    if (result == -1)
+    {
+        return E_NOTFOUND;
+    }
+
+    if (result == -2)
+    {
+        return E_CRASHED;
+    }
+
+    return exit_code;
+}
+
+static int64_t sys_ps(uint64_t index, uintptr_t out)
+{
+    process_info_t info;
+
+    if (process_info((uint32_t)index, &info) != 0)
+    {
+        return E_NOTFOUND;
+    }
+
+    return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+}
+
+static int64_t sys_sysinfo(uintptr_t out)
+{
+    system_info_t info;
+    uint32_t files = 0;
+
+    memset(&info, 0, sizeof(info));
+
+    info.ram_bytes = (uint64_t)page_total() * PAGE_SIZE;
+    info.ram_free_bytes = (uint64_t)page_free_count() * PAGE_SIZE;
+    info.uptime_ticks = timer_ticks();
+    info.cpu_count = 2;
+
+    knocfs_usage(&info.disk_bytes, &info.disk_free_bytes, &files);
+    info.disk_files = files;
+
+    guardian_system_info(&info);
+
+    return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+}
+
+static int64_t sys_devinfo(uint64_t index, uintptr_t out)
+{
+    device_t *dev = device_at((uint32_t)index);
+    device_info_t info;
+
+    if (dev == 0)
+    {
+        return E_NOTFOUND;
+    }
+
+    memset(&info, 0, sizeof(info));
+
+    for (int i = 0; i < INFO_NAME_MAX - 1 && dev->name[i]; i++)
+    {
+        info.name[i] = dev->name[i];
+    }
+
+    info.irq = dev->irq;
+    info.ready = (uint32_t)dev->ready;
+    info.disabled = (uint32_t)dev->disabled;
+    info.blocks = dev->block_count;
+
+    return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+}
+
+static int64_t sys_crashinfo(uint64_t index, uintptr_t out)
+{
+    crash_info_t info;
+
+    if (guardian_crash_info((uint32_t)index, &info) != 0)
+    {
+        return E_NOTFOUND;
+    }
+
+    return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+}
+
+/* xorshift64: good enough to vary the test crashes, seeded from the clock */
+static uint64_t random_state;
+
+static int64_t sys_random(void)
+{
+    if (random_state == 0)
+    {
+        random_state = timer_read() | 1;
+    }
+
+    random_state ^= random_state << 13;
+    random_state ^= random_state >> 7;
+    random_state ^= random_state << 17;
+
+    return (int64_t)(random_state >> 1);
+}
+
 static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
 {
     char path[PATH_MAX];
@@ -584,6 +709,53 @@ int64_t syscall_handle(trap_frame_t *frame)
     case SYS_MKDIR:
     case SYS_REMOVE:
         return sys_path_change(number, frame->a0);
+
+    case SYS_WAIT:
+        return sys_wait(frame->a0);
+
+    case SYS_RANDOM:
+        return sys_random();
+
+    case SYS_INJECT:
+        if (!allowed(number, CAP_DEBUG))
+        {
+            return E_PERM;
+        }
+
+        process_set_label((uint32_t)frame->a0);
+        return 0;
+
+    case SYS_PS:
+    case SYS_KILL:
+    case SYS_SYSINFO:
+    case SYS_DEVINFO:
+    case SYS_CRASHINFO:
+        if (!allowed(number, CAP_SYSTEM))
+        {
+            return E_PERM;
+        }
+
+        if (number == SYS_PS)
+        {
+            return sys_ps(frame->a0, frame->a1);
+        }
+
+        if (number == SYS_KILL)
+        {
+            return process_kill_user((int)frame->a0);
+        }
+
+        if (number == SYS_SYSINFO)
+        {
+            return sys_sysinfo(frame->a0);
+        }
+
+        if (number == SYS_DEVINFO)
+        {
+            return sys_devinfo(frame->a0, frame->a1);
+        }
+
+        return sys_crashinfo(frame->a0, frame->a1);
 
     default:
         return E_BADCALL;

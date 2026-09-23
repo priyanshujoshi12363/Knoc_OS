@@ -85,6 +85,7 @@ typedef struct process_fault
     uint32_t denied;
     uint32_t trace_count;
     uint8_t trace[PROCESS_TRACE_MAX];
+    uint32_t label;
 } process_fault_t;
 
 struct program;
@@ -118,6 +119,8 @@ void process_exit_code(int code) __attribute__((noreturn));
 int process_spawn(const struct program *program);
 int process_wait(int pid, int *exit_code);
 int process_kill(int pid);
+int process_kill_user(int pid);
+int process_alive(int pid);
 
 int process_can_contain_fault(void);
 void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
@@ -138,11 +141,16 @@ uintptr_t process_user_root(void);
 uint32_t process_capabilities(void);
 void process_record_syscall(uint64_t number);
 void process_note_denied(void);
+void process_set_label(uint32_t label);
+int process_state(int pid);
 int64_t process_mem_alloc(uint64_t bytes);
 
 open_file_t *process_file(int fd);
 int process_file_open(uint32_t inode, uint32_t flags);
 uint64_t process_disk_loads(void);
+
+struct process_info;
+int process_info(uint32_t index, struct process_info *info);
 uint64_t process_cpu_ticks(int pid);
 void process_list(void);
 

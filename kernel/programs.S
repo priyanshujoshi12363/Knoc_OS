@@ -17,3 +17,5 @@ PROGRAM crash
 PROGRAM spy
 PROGRAM files
 PROGRAM modelcheck
+PROGRAM knocsh
+PROGRAM counter

@@ -13,6 +13,7 @@
 #include "syscall_abi.h"
 #include "spinlock.h"
 #include "knocfs.h"
+#include "tty.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -61,6 +62,9 @@ typedef struct process
     sleeplock_t *locks[PROCESS_LOCKS_MAX];
 
     open_file_t files[PROCESS_FILES_MAX];
+
+    /* Collect mode: the true cause of a crash made on purpose */
+    uint32_t label;
 } process_t;
 
 typedef struct class_info
@@ -354,6 +358,7 @@ static process_t *create_locked(const char *name,
     p->denied = 0;
     p->wait_channel = 0;
     p->woken = 0;
+    p->label = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -594,6 +599,11 @@ int process_spawn(const program_t *program)
 
     int pid = p->pid;
 
+    if (program->flags & PROGRAM_TERMINAL)
+    {
+        tty_set_owner(pid);
+    }
+
     interrupts_restore(enabled);
     return pid;
 }
@@ -612,9 +622,14 @@ int process_wait(int pid, int *exit_code)
             }
         }
 
-        if (p == 0 || p->state == PROCESS_CRASHED)
+        if (p == 0)
         {
             return -1;
+        }
+
+        if (p->state == PROCESS_CRASHED)
+        {
+            return -2;
         }
 
         if (p->state == PROCESS_EXITED)
@@ -695,6 +710,28 @@ void process_record_syscall(uint64_t number)
 void process_note_denied(void)
 {
     current->denied++;
+}
+
+void process_set_label(uint32_t label)
+{
+    current->label = label;
+}
+
+int process_state(int pid)
+{
+    uint64_t enabled = interrupts_disable();
+    int state = -1;
+
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        if (processes[i].state != PROCESS_UNUSED && processes[i].pid == pid)
+        {
+            state = processes[i].state;
+        }
+    }
+
+    interrupts_restore(enabled);
+    return state;
 }
 
 int64_t process_mem_alloc(uint64_t bytes)
@@ -991,11 +1028,99 @@ void process_exit(void)
     process_exit_code(0);
 }
 
+static void release_locks(process_t *p)
+{
+    for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+    {
+        if (p->locks[i] != 0)
+        {
+            p->locks[i]->locked = 0;
+            p->locks[i]->owner = 0;
+            process_wake(p->locks[i]);
+            p->locks[i] = 0;
+        }
+    }
+}
+
+static int kill_locked(process_t *p)
+{
+    if (p->user)
+    {
+        user_space_free(p);
+    }
+
+    release_locks(p);
+
+    p->exit_code = E_KILLED;
+    p->state = PROCESS_EXITED;
+    process_wake(p);
+    return 0;
+}
+
+static process_t *find_live(int pid)
+{
+    for (int i = 1; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->state != PROCESS_UNUSED &&
+            p->state != PROCESS_EXITED &&
+            p->pid == pid)
+        {
+            return p;
+        }
+    }
+
+    return 0;
+}
+
 int process_kill(int pid)
 {
     uint64_t enabled = interrupts_disable();
+    process_t *p = find_live(pid);
+    int result = -1;
 
-    for (int i = 1; i < PROCESS_MAX; i++)
+    if (p != 0 && p != current && p->state != PROCESS_LOADING)
+    {
+        result = kill_locked(p);
+    }
+
+    interrupts_restore(enabled);
+    return result;
+}
+
+/* From the shell: only user programs can be killed, never the kernel's own processes */
+int process_kill_user(int pid)
+{
+    uint64_t enabled = interrupts_disable();
+    process_t *p = find_live(pid);
+    int result = E_NOTFOUND;
+
+    if (p != 0)
+    {
+        result = (!p->user || p == current || p->state == PROCESS_LOADING) ? E_PERM : kill_locked(p);
+    }
+
+    interrupts_restore(enabled);
+    return result;
+}
+
+int process_alive(int pid)
+{
+    uint64_t enabled = interrupts_disable();
+    process_t *p = find_live(pid);
+    int alive = p != 0 && p->state != PROCESS_CRASHED;
+
+    interrupts_restore(enabled);
+    return alive;
+}
+
+int process_info(uint32_t index, process_info_t *info)
+{
+    uint64_t enabled = interrupts_disable();
+    uint32_t seen = 0;
+
+    for (int i = 0; i < PROCESS_MAX; i++)
     {
         process_t *p = &processes[i];
 
@@ -1004,17 +1129,24 @@ int process_kill(int pid)
             continue;
         }
 
-        if (p->pid == pid && p != current)
+        if (seen++ != index)
         {
-            if (p->user)
-            {
-                user_space_free(p);
-            }
-
-            p->state = PROCESS_EXITED;
-            interrupts_restore(enabled);
-            return 0;
+            continue;
         }
+
+        info->pid = p->pid;
+        info->process_class = p->process_class;
+        info->state = p->state;
+        info->user = (uint32_t)p->user;
+        info->restarts = p->restarts;
+        info->reserved = 0;
+        info->cpu_ticks = p->cpu_ticks;
+        info->memory = p->mem_used;
+        memset(info->name, 0, sizeof(info->name));
+        copy_name(info->name, p->name);
+
+        interrupts_restore(enabled);
+        return 0;
     }
 
     interrupts_restore(enabled);
@@ -1085,6 +1217,7 @@ int process_next_crash(process_fault_t *fault)
         fault->restarts = p->restarts;
         fault->user = p->user;
         fault->denied = p->denied;
+        fault->label = p->label;
         fault->trace_count = p->trace_count < PROCESS_TRACE_MAX ? p->trace_count : PROCESS_TRACE_MAX;
 
         for (uint32_t t = 0; t < fault->trace_count; t++)
@@ -1159,6 +1292,11 @@ int process_restart(int pid)
     place_vruntime(p);
 
     int new_pid = p->pid;
+
+    if (p->user && (p->program->flags & PROGRAM_TERMINAL))
+    {
+        tty_set_owner(new_pid);
+    }
 
     interrupts_restore(enabled);
     return new_pid;

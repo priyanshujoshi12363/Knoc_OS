@@ -14,7 +14,11 @@ typedef struct program
     const uint8_t *end;
     process_class_t process_class;
     uint32_t capabilities;
+    uint32_t flags;
 } program_t;
+
+/* The program owns the terminal: it gets the keys the console doesn't use */
+#define PROGRAM_TERMINAL 0x1
 
 const program_t *program_find(const char *name);
 uint32_t program_count(void);

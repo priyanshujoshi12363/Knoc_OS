@@ -19,8 +19,10 @@
 #include "spinlock.h"
 #include "program.h"
 #include "knocfs.h"
+#include "tty.h"
 
 #define TIMER_TEST_TICKS 5
+#define KEY_CTRL_C 0x03
 #define KEY_CTRL_D 0x04
 #define KEY_CTRL_E 0x05
 #define KEY_CTRL_U 0x15
@@ -440,9 +442,15 @@ static void console_process(void *arg)
 {
     (void)arg;
 
-    log_info("Keyboard echo ready, start typing (Ctrl-D power off)");
+    log_info("Console ready (Ctrl-D power off, Ctrl-C stop the running program)");
     log_info("Test keys: Ctrl-F process fault, Ctrl-X driver fault, Ctrl-K kernel fault, Ctrl-O overwrite kernel code, Ctrl-P panic, Ctrl-W freeze");
     log_info("Program keys: Ctrl-U run the crash program, Ctrl-E run the spy program");
+
+    /* After a crash the AI restarts the console: the shell may still be running */
+    if (!tty_has_owner() && process_spawn(program_find("knocsh")) < 0)
+    {
+        log_warn("No shell: the console only echoes keys");
+    }
 
     while (1)
     {
@@ -520,6 +528,16 @@ static void console_process(void *arg)
             {
             }
         }
+        else if (c == KEY_CTRL_C)
+        {
+            int foreground = tty_foreground();
+
+            if (foreground != 0)
+            {
+                device_write(console, "^C\n", 3);
+                process_kill(foreground);
+            }
+        }
         else if (c == KEY_CTRL_D)
         {
             uint8_t command = POWER_COMMAND_OFF;
@@ -527,6 +545,11 @@ static void console_process(void *arg)
             device_write(console, "\n", 1);
             log_info("Powering off");
             device_write(power, &command, 1);
+        }
+        else if (tty_has_owner())
+        {
+            /* The shell gets every other key and echoes it itself */
+            tty_input(c);
         }
         else if (c == '\r')
         {

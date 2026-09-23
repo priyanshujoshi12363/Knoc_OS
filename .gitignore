@@ -8,3 +8,5 @@ virt.dts
 /.claude
 disk.img
 user/*.elf
+models/.venv/
+models/data/files/

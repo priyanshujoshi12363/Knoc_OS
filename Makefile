@@ -48,11 +48,12 @@ KERNEL_OBJS = boot/boot.o \
               kernel/program.o \
               kernel/programs.o \
               kernel/knocfs.o \
+              kernel/tty.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter
 USER_LIB_OBJS = user/crt0.o user/ulib.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) $(USER_PROGRAMS:%=user/%.o)

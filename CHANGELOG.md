@@ -2,6 +2,25 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.13.0] - 2026-09-23
+
+The shell: KnocOS can be used by typing commands.
+
+### Added
+- `knocsh` (`user/knocsh.c`), the shell: `ls`, `cd`, `pwd`, `cat`, `echo [> file]`, `mkdir`, `rm`, `ps`, `kill`, `run NAME [&]` or just the program name, `mem`, `devices`, `crashes`, `ai`, `uptime`, `clear`, `help`, `exit`; relative paths with `.` and `..`; line editing with Backspace
+- Terminal layer (`kernel/tty.c`): the console process keeps the control keys and passes the others to the program that owns the terminal (`PROGRAM_TERMINAL`); `read(0)` reads from it
+- Ctrl-C kills the foreground program (the one the shell is waiting for)
+- System calls `wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo` and the `SYSTEM` capability (all but `wait` need it); errors `E_CRASHED`, `E_KILLED`
+- Guardian helpers for the shell: AI space status (uptime, warm restarts, disabled drivers, safe mode) and black box crash reports
+- `counter` program (prints forever, for Ctrl-C)
+- `make test`: a typed shell session on Boot 1, a file written by the shell read back on Boot 2, and `crashes` + `ai` in safe mode after Run 3
+
+### Changed
+- The console starts the shell (also in safe mode) instead of only echoing keys; it echoes itself only while no shell runs, and doesn't start a second shell when it is restarted after a crash
+- `process_kill` releases the killed process's sleep locks, sets `E_KILLED` as its exit code and wakes waiters; the shell can only kill user programs
+- `process_wait` tells a crashed program apart from a missing one
+- The test harness waits for the shell and types whole command lines
+
 ## [0.12.0] - 2026-09-23
 
 Wait queues and the KnocFS filesystem: programs and AI models live on disk.
