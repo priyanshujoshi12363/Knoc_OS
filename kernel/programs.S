@@ -15,3 +15,5 @@ PROGRAM hog
 PROGRAM bigmem
 PROGRAM crash
 PROGRAM spy
+PROGRAM files
+PROGRAM modelcheck

@@ -8,10 +8,12 @@
 #include "vm.h"
 #include "page.h"
 #include "string.h"
+#include "knocfs.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
 #define SYSCALL_SLEEP_MAX 6000
+#define SYSCALL_FILE_IO_MAX (16UL * 1024 * 1024)
 
 static const char *syscall_names[SYS_COUNT] = {
     [SYS_EXIT] = "exit",
@@ -23,6 +25,13 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_UPTIME] = "uptime",
     [SYS_SPAWN] = "spawn",
     [SYS_MEM_ALLOC] = "mem_alloc",
+    [SYS_OPEN] = "open",
+    [SYS_CLOSE] = "close",
+    [SYS_SEEK] = "seek",
+    [SYS_STAT] = "stat",
+    [SYS_READDIR] = "readdir",
+    [SYS_MKDIR] = "mkdir",
+    [SYS_REMOVE] = "remove",
 };
 
 const char *syscall_name(uint64_t number)
@@ -122,6 +131,16 @@ static const char *capability_name(uint32_t capability)
         return "SPAWN";
     }
 
+    if (capability == CAP_FILES_READ)
+    {
+        return "FILES_READ";
+    }
+
+    if (capability == CAP_FILES_WRITE)
+    {
+        return "FILES_WRITE";
+    }
+
     return "MEMORY";
 }
 
@@ -147,7 +166,7 @@ static int allowed(uint64_t number, uint32_t capability)
     return 0;
 }
 
-static int64_t sys_write(uintptr_t buffer, uint64_t length)
+static int64_t console_write(uintptr_t buffer, uint64_t length)
 {
     char chunk[SYSCALL_CHUNK];
     device_t *console = device_find("uart0");
@@ -179,20 +198,20 @@ static int64_t sys_write(uintptr_t buffer, uint64_t length)
     return (int64_t)written;
 }
 
-static int64_t sys_read(uintptr_t buffer, uint64_t length)
+static int64_t console_read(uintptr_t buffer, uint64_t length)
 {
     char chunk[SYSCALL_CHUNK];
+    int64_t count;
 
     if (length > SYSCALL_CHUNK)
     {
         length = SYSCALL_CHUNK;
     }
 
-    int64_t count = device_read(device_find("uart0"), chunk, length);
-
-    if (count <= 0)
+    /* Blocks until at least one key arrives */
+    while ((count = device_read(device_find("uart0"), chunk, length)) <= 0)
     {
-        return 0;
+        uart_wait_input();
     }
 
     if (copy_to_user(buffer, chunk, (uint64_t)count) != 0)
@@ -201,6 +220,282 @@ static int64_t sys_read(uintptr_t buffer, uint64_t length)
     }
 
     return count;
+}
+
+/* File data goes straight between the disk and the program's own pages:
+   each page is checked in its page table and used through its physical
+   address, so big reads (model weights) need no extra copy */
+static int64_t file_io(open_file_t *file, uintptr_t buffer, uint64_t length, int writing)
+{
+    uint64_t done = 0;
+
+    if (length > SYSCALL_FILE_IO_MAX)
+    {
+        length = SYSCALL_FILE_IO_MAX;
+    }
+
+    while (done < length)
+    {
+        uintptr_t address = buffer + done;
+        uintptr_t physical;
+        uint64_t chunk = PAGE_SIZE - (address & (PAGE_SIZE - 1));
+
+        if (chunk > length - done)
+        {
+            chunk = length - done;
+        }
+
+        if (vm_user_translate(process_user_root(), address, writing ? PTE_R : PTE_W, &physical) != 0)
+        {
+            return done > 0 ? (int64_t)done : E_FAULT;
+        }
+
+        int64_t result = writing
+                             ? knocfs_write(file->inode, file->offset, (const void *)physical, chunk)
+                             : knocfs_read(file->inode, file->offset, (void *)physical, chunk);
+
+        if (result < 0)
+        {
+            return done > 0 ? (int64_t)done : result;
+        }
+
+        file->offset += (uint64_t)result;
+        done += (uint64_t)result;
+
+        if ((uint64_t)result < chunk)
+        {
+            break;
+        }
+    }
+
+    return (int64_t)done;
+}
+
+static int64_t sys_write(uint64_t fd, uintptr_t buffer, uint64_t length)
+{
+    if (fd == FD_STDOUT || fd == FD_STDERR)
+    {
+        if (!allowed(SYS_WRITE, CAP_CONSOLE))
+        {
+            return E_PERM;
+        }
+
+        return console_write(buffer, length);
+    }
+
+    open_file_t *file = process_file((int)fd);
+
+    if (file == 0 || !(file->flags & O_WRITE))
+    {
+        return E_BADF;
+    }
+
+    return file_io(file, buffer, length, 1);
+}
+
+static int64_t sys_read(uint64_t fd, uintptr_t buffer, uint64_t length)
+{
+    if (fd == FD_STDIN)
+    {
+        if (!allowed(SYS_READ, CAP_CONSOLE))
+        {
+            return E_PERM;
+        }
+
+        return console_read(buffer, length);
+    }
+
+    open_file_t *file = process_file((int)fd);
+
+    if (file == 0 || !(file->flags & O_READ))
+    {
+        return E_BADF;
+    }
+
+    return file_io(file, buffer, length, 0);
+}
+
+static int64_t sys_open(uintptr_t path_address, uint64_t flags)
+{
+    char path[PATH_MAX];
+    uint32_t inode;
+    knocfs_stat_t stat;
+
+    if (flags & (O_WRITE | O_CREATE | O_TRUNC))
+    {
+        if (!allowed(SYS_OPEN, CAP_FILES_WRITE))
+        {
+            return E_PERM;
+        }
+    }
+    else if (!allowed(SYS_OPEN, CAP_FILES_READ))
+    {
+        return E_PERM;
+    }
+
+    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    int result = knocfs_lookup(path, &inode);
+
+    if (result == E_NOTFOUND && (flags & O_CREATE))
+    {
+        result = knocfs_create(path, KNOCFS_TYPE_FILE, &inode);
+    }
+
+    if (result != 0)
+    {
+        return result;
+    }
+
+    if (knocfs_stat(inode, &stat) != 0)
+    {
+        return E_IO;
+    }
+
+    if (stat.type == KNOCFS_TYPE_DIR && (flags & (O_WRITE | O_TRUNC)))
+    {
+        return E_ISDIR;
+    }
+
+    if ((flags & O_TRUNC) && knocfs_truncate(inode) != 0)
+    {
+        return E_IO;
+    }
+
+    int fd = process_file_open(inode, (uint32_t)flags);
+
+    return fd < 0 ? E_NOSPACE : fd;
+}
+
+static int64_t sys_close(uint64_t fd)
+{
+    open_file_t *file = process_file((int)fd);
+
+    if (file == 0)
+    {
+        return E_BADF;
+    }
+
+    file->used = 0;
+    return 0;
+}
+
+static int64_t sys_seek(uint64_t fd, uint64_t offset)
+{
+    open_file_t *file = process_file((int)fd);
+
+    if (file == 0)
+    {
+        return E_BADF;
+    }
+
+    file->offset = offset;
+    return (int64_t)offset;
+}
+
+static int64_t sys_stat(uintptr_t path_address, uintptr_t out)
+{
+    char path[PATH_MAX];
+    uint32_t inode;
+    knocfs_stat_t stat;
+    file_stat_t result;
+
+    if (!allowed(SYS_STAT, CAP_FILES_READ))
+    {
+        return E_PERM;
+    }
+
+    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    int error = knocfs_lookup(path, &inode);
+
+    if (error == 0)
+    {
+        error = knocfs_stat(inode, &stat);
+    }
+
+    if (error != 0)
+    {
+        return error;
+    }
+
+    result.type = stat.type;
+    result.extents = stat.extents;
+    result.size = stat.size;
+
+    return copy_to_user(out, &result, sizeof(result)) == 0 ? 0 : E_FAULT;
+}
+
+static int64_t sys_readdir(uintptr_t path_address, uint64_t index, uintptr_t out)
+{
+    char path[PATH_MAX];
+    uint32_t directory;
+    knocfs_dirent_t entry;
+    knocfs_stat_t stat;
+    dir_entry_t result;
+
+    if (!allowed(SYS_READDIR, CAP_FILES_READ))
+    {
+        return E_PERM;
+    }
+
+    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    int error = knocfs_lookup(path, &directory);
+
+    if (error == 0)
+    {
+        error = knocfs_readdir(directory, (uint32_t)index, &entry);
+    }
+
+    if (error == 0)
+    {
+        error = knocfs_stat(entry.inode, &stat);
+    }
+
+    if (error != 0)
+    {
+        return error;
+    }
+
+    memset(&result, 0, sizeof(result));
+    memcpy(result.name, entry.name, FILE_NAME_MAX);
+    result.type = stat.type;
+    result.size = stat.size;
+
+    return copy_to_user(out, &result, sizeof(result)) == 0 ? 0 : E_FAULT;
+}
+
+static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
+{
+    char path[PATH_MAX];
+    uint32_t inode;
+
+    if (!allowed(number, CAP_FILES_WRITE))
+    {
+        return E_PERM;
+    }
+
+    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    if (number == SYS_MKDIR)
+    {
+        return knocfs_create(path, KNOCFS_TYPE_DIR, &inode);
+    }
+
+    return knocfs_remove(path);
 }
 
 static int64_t sys_spawn(uintptr_t name_address)
@@ -236,20 +531,10 @@ int64_t syscall_handle(trap_frame_t *frame)
         process_exit_code((int)frame->a0);
 
     case SYS_WRITE:
-        if (!allowed(number, CAP_CONSOLE))
-        {
-            return E_PERM;
-        }
-
-        return sys_write(frame->a0, frame->a1);
+        return sys_write(frame->a0, frame->a1, frame->a2);
 
     case SYS_READ:
-        if (!allowed(number, CAP_CONSOLE))
-        {
-            return E_PERM;
-        }
-
-        return sys_read(frame->a0, frame->a1);
+        return sys_read(frame->a0, frame->a1, frame->a2);
 
     case SYS_GETPID:
         return process_current_pid();
@@ -280,6 +565,25 @@ int64_t syscall_handle(trap_frame_t *frame)
         }
 
         return process_mem_alloc(frame->a0);
+
+    case SYS_OPEN:
+        return sys_open(frame->a0, frame->a1);
+
+    case SYS_CLOSE:
+        return sys_close(frame->a0);
+
+    case SYS_SEEK:
+        return sys_seek(frame->a0, frame->a1);
+
+    case SYS_STAT:
+        return sys_stat(frame->a0, frame->a1);
+
+    case SYS_READDIR:
+        return sys_readdir(frame->a0, frame->a1, frame->a2);
+
+    case SYS_MKDIR:
+    case SYS_REMOVE:
+        return sys_path_change(number, frame->a0);
 
     default:
         return E_BADCALL;

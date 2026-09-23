@@ -163,6 +163,7 @@ void supervisor_trap_handler(trap_frame_t *frame)
         (scause & SCAUSE_CODE_MASK) == INTERRUPT_SUPERVISOR_EXTERNAL)
     {
         handle_external_interrupt();
+        scheduler_preempt();
 
         write_sepc(sepc);
         write_sstatus(sstatus);

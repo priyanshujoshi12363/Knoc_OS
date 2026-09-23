@@ -76,6 +76,8 @@ int elf_load(uintptr_t root,
         return -1;
     }
 
+    uintptr_t mapped_end = USER_BASE;
+
     for (uint16_t i = 0; i < header->phnum; i++)
     {
         const elf64_program_header_t *segment =
@@ -96,6 +98,15 @@ int elf_load(uintptr_t root,
 
         uintptr_t start = segment->vaddr & ~(PAGE_SIZE - 1);
         uintptr_t end = (segment->vaddr + segment->memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+        /* Segments come in address order and may not share a page: a
+           second mapping would silently replace the first one's page */
+        if (start < mapped_end)
+        {
+            return -1;
+        }
+
+        mapped_end = end;
         uint8_t *memory = alloc(context, end - start);
 
         if (memory == 0)

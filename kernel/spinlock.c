@@ -35,6 +35,25 @@ int spin_trylock(spinlock_t *lock)
     return __atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE) == 0;
 }
 
+uint64_t irq_save(void)
+{
+    uint64_t previous;
+
+    asm volatile("csrrc %0, sstatus, %1"
+                 : "=r"(previous)
+                 : "r"((uint64_t)SSTATUS_SIE));
+
+    return previous & SSTATUS_SIE;
+}
+
+void irq_restore(uint64_t interrupts)
+{
+    if (interrupts)
+    {
+        asm volatile("csrs sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
+    }
+}
+
 int spin_is_locked(spinlock_t *lock)
 {
     return __atomic_load_n(&lock->locked, __ATOMIC_RELAXED) != 0;

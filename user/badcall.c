@@ -5,7 +5,7 @@
 
 int main(void)
 {
-    long result = write((const void *)0x80000000UL, 16);
+    long result = write(FD_STDOUT, (const void *)0x80000000UL, 16);
 
     if (result != E_FAULT)
     {
@@ -13,7 +13,7 @@ int main(void)
         return 1;
     }
 
-    result = write((const void *)0x1050000000UL, 16);
+    result = write(FD_STDOUT, (const void *)0x1050000000UL, 16);
 
     if (result != E_FAULT)
     {

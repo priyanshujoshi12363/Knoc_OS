@@ -579,6 +579,13 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_UPTIME] = "uptime",
         [SYS_SPAWN] = "spawn",
         [SYS_MEM_ALLOC] = "mem_alloc",
+        [SYS_OPEN] = "open",
+        [SYS_CLOSE] = "close",
+        [SYS_SEEK] = "seek",
+        [SYS_STAT] = "stat",
+        [SYS_READDIR] = "readdir",
+        [SYS_MKDIR] = "mkdir",
+        [SYS_REMOVE] = "remove",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

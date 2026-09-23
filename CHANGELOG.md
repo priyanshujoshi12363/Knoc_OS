@@ -2,6 +2,33 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.12.0] - 2026-09-23
+
+Wait queues and the KnocFS filesystem: programs and AI models live on disk.
+
+### Added
+- Wait queues: `process_block(channel, timeout)` / `process_wake(channel)`, a `BLOCKED` state, and `scheduler_preempt()` after device interrupts so an interactive process runs as soon as it's woken
+- Sleep locks (`sleeplock_acquire` / `release`); a process that crashes has its sleep locks released
+- The console and the `read` system call sleep until a key arrives (the UART interrupt wakes them); `process_wait()` sleeps until the process exits; the guardian is woken at once by a crash
+- Disk: requests of up to 8 sectors (`read_blocks` / `write_blocks`, `device_read_blocks` / `device_write_blocks`), a sleep lock, and the requesting process sleeps until the completion interrupt
+- KnocFS (`kernel/knocfs.c`): superblock, free-block bitmap, 1024 inodes with up to 12 extents each, directories, absolute paths; `mount`, `lookup`, `create`, `remove`, `stat`, `readdir`, `truncate`, `read`, `write`, `usage`
+- File system calls: `open`, `close`, `seek`, `stat`, `readdir`, `mkdir`, `remove`; `read`/`write` take a file descriptor (0 keyboard, 1–2 screen, 3+ files); capabilities `FILES_READ` / `FILES_WRITE`; 8 open files per process; file I/O goes directly into the program's pages
+- Programs load from `/bin/<name>` on disk, with the built-in copies as a fallback
+- Host tool `tools/knocfs.py` (format, mkdir, put, put-text, ls, cat, rm, info, make-test-model) and `scripts/mkdisk.sh`; `make put`, `make ls`, `make sync-programs` (run by `make run`)
+- Programs `files` (a note that survives reboots, `/bin` listing, 20 KB write/read/remove) and `modelcheck` (AI_AGENT, loads an 8 MiB model file and checks every byte)
+- Self-tests: 200 disk reads while another process runs, a multi-sector read equal to 8 single reads, programs loaded from disk
+- `make test`: the Boot 1 note is found on Boot 2
+
+### Changed
+- `disk.img` is 64 MiB (`DISK_MB`) with a KnocFS filesystem; `make reset-disk` builds it with `scripts/mkdisk.sh`
+- `process_restart()` reloads a program outside the interrupts-off region (it may read from disk)
+- `noperm` also checks that `open` is refused without a FILES capability
+
+### Fixed
+- Program data segments could start inside the last code page; the loader then mapped a zeroed page over the code. User programs now page-align their data segment, and `elf_load()` rejects segments that share a page
+- Two processes using the disk at the same time could mix up their requests (shared descriptors and buffer); the disk now has a sleep lock
+- `make reset-disk` with a bad size (for example `DISK_MB=4096.`) deleted `disk.img` before failing; `mkdisk.sh` now checks the size first
+
 ## [0.11.0] - 2026-09-23
 
 User mode and system calls: programs can't touch the kernel.

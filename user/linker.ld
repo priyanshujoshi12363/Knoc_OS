@@ -19,7 +19,11 @@ SECTIONS
         *(.rodata .rodata.* .srodata .srodata.*)
     } :text
 
-    .data : ALIGN(4096) {
+    /* The data segment must start on a new page: sharing a page with the
+       code segment would let the loader map one over the other */
+    . = ALIGN(4096);
+
+    .data : {
         *(.data .data.* .sdata .sdata.*)
     } :data
 

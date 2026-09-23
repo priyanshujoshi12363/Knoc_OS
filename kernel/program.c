@@ -12,6 +12,8 @@ PROGRAM(hog)
 PROGRAM(bigmem)
 PROGRAM(crash)
 PROGRAM(spy)
+PROGRAM(files)
+PROGRAM(modelcheck)
 
 #define ENTRY(name, class, caps) \
     {#name, program_##name##_start, program_##name##_end, class, caps}
@@ -24,6 +26,8 @@ static const program_t programs[] = {
     ENTRY(bigmem, PROCESS_CLASS_AI_AGENT, CAP_CONSOLE | CAP_MEMORY),
     ENTRY(crash, PROCESS_CLASS_NORMAL, CAP_CONSOLE),
     ENTRY(spy, PROCESS_CLASS_NORMAL, CAP_CONSOLE),
+    ENTRY(files, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_FILES_READ | CAP_FILES_WRITE),
+    ENTRY(modelcheck, PROCESS_CLASS_AI_AGENT, CAP_CONSOLE | CAP_FILES_READ | CAP_MEMORY),
 };
 
 #define PROGRAM_COUNT (sizeof(programs) / sizeof(programs[0]))

@@ -15,4 +15,7 @@ void spin_unlock(spinlock_t *lock, uint64_t interrupts);
 int spin_trylock(spinlock_t *lock);
 int spin_is_locked(spinlock_t *lock);
 
+uint64_t irq_save(void);
+void irq_restore(uint64_t interrupts);
+
 #endif

@@ -183,6 +183,61 @@ int device_write_block(device_t *dev, uint64_t block, const void *buffer)
     return result;
 }
 
+/* Several blocks in one request when the driver supports it */
+int device_read_blocks(device_t *dev, uint64_t block, uint64_t count, void *buffer)
+{
+    if (dev == 0 || !dev->ready || buffer == 0 || block + count > dev->block_count)
+    {
+        return -1;
+    }
+
+    if (dev->read_blocks == 0)
+    {
+        for (uint64_t i = 0; i < count; i++)
+        {
+            if (device_read_block(dev, block + i, (uint8_t *)buffer + i * dev->block_size) != 0)
+            {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
+    const char *previous = process_driver_enter(dev->name);
+    int result = dev->read_blocks(dev, block, count, buffer);
+    process_driver_leave(previous);
+
+    return result;
+}
+
+int device_write_blocks(device_t *dev, uint64_t block, uint64_t count, const void *buffer)
+{
+    if (dev == 0 || !dev->ready || buffer == 0 || block + count > dev->block_count)
+    {
+        return -1;
+    }
+
+    if (dev->write_blocks == 0)
+    {
+        for (uint64_t i = 0; i < count; i++)
+        {
+            if (device_write_block(dev, block + i, (const uint8_t *)buffer + i * dev->block_size) != 0)
+            {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
+    const char *previous = process_driver_enter(dev->name);
+    int result = dev->write_blocks(dev, block, count, buffer);
+    process_driver_leave(previous);
+
+    return result;
+}
+
 int device_handle_irq(uint32_t irq)
 {
     for (uint32_t i = 0; i < registered_count; i++)

@@ -2,6 +2,8 @@
 #include "device.h"
 #include "mailbox.h"
 #include "timer.h"
+#include "process.h"
+#include "spinlock.h"
 
 #define UART_RBR 0
 #define UART_THR 0
@@ -24,6 +26,7 @@ static volatile char rx_buffer[UART_RX_BUFFER_SIZE];
 static volatile uint32_t rx_head = 0;
 static volatile uint32_t rx_tail = 0;
 static int console_line_open = 0;
+static char rx_channel;
 
 static uint8_t uart_read_reg(uint32_t reg)
 {
@@ -165,6 +168,30 @@ static void uart_interrupt(void)
             rx_head = next;
         }
     }
+
+    process_wake(&rx_channel);
+}
+
+/* Sleep until a key arrives (no polling): the RX interrupt wakes us */
+void uart_wait_input(void)
+{
+    uint64_t enabled = irq_save();
+
+    while (rx_head == rx_tail)
+    {
+        if (process_can_block())
+        {
+            process_block(&rx_channel, 0);
+        }
+        else
+        {
+            irq_restore(enabled);
+            asm volatile("wfi");
+            enabled = irq_save();
+        }
+    }
+
+    irq_restore(enabled);
 }
 
 static int uart_getc(void)

@@ -12,8 +12,7 @@ trap 'rm -f "$LOG" "$DISK"' EXIT
 FAILED=0
 
 new_disk() {
-    dd if=/dev/zero of="$DISK" bs=512 count=2048 status=none
-    printf 'Hello from the host!' | dd of="$DISK" conv=notrunc status=none
+    ./scripts/mkdisk.sh "$DISK" > /dev/null
 }
 
 qemu() {
@@ -100,6 +99,9 @@ check \
     "Disk write/read test passed" \
     "Disk says: Hello from the host!" \
     "Disk boot count: 1" \
+    "KnocFS mounted on disk0" \
+    "Wait queues verified" \
+    "Multi-sector disk read verified" \
     "Scheduler started" \
     "AI-aware scheduling verified" \
     "Preemption verified" \
@@ -107,20 +109,27 @@ check \
     "[hello] Hello from user mode!" \
     "[badcall] kernel pointer, unmapped pointer and unknown call were all refused" \
     "[SECURITY] noperm" \
-    "[noperm] spawn was refused" \
     "[hog] 8 MiB allowed, 16 MiB more refused" \
     "[bigmem] AI agent got 256 MiB" \
+    "[noperm] spawn and open were refused" \
+    "[files] no note yet, writing /home/note.txt" \
+    "[files] /hello.txt says: Hello from a file on KnocFS!" \
+    "[files] /bin: badcall bigmem crash files hello hog modelcheck noperm spy" \
+    "[files] 20000 bytes written across 5 blocks, read back, removed" \
+    "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
+    "Programs loaded from /bin on disk: 8" \
     "User mode verified" \
     "All self-tests passed" \
     "knocos-echo-test" \
     "Powering off"
 show_log_on_failure
 
-echo "Boot 2: disk data survives a reboot"
+echo "Boot 2: disk data and files survive a reboot"
 boot
 check \
     "Disk boot count: 2" \
+    "[files] found my note from the last boot: KnocOS remembers this" \
     "Powering off"
 show_log_on_failure
 

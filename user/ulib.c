@@ -24,14 +24,49 @@ void exit(int code)
     }
 }
 
-long write(const void *buffer, unsigned long length)
+long write(int fd, const void *buffer, unsigned long length)
 {
-    return syscall(SYS_WRITE, (long)buffer, (long)length, 0);
+    return syscall(SYS_WRITE, fd, (long)buffer, (long)length);
 }
 
-long read(void *buffer, unsigned long length)
+long read(int fd, void *buffer, unsigned long length)
 {
-    return syscall(SYS_READ, (long)buffer, (long)length, 0);
+    return syscall(SYS_READ, fd, (long)buffer, (long)length);
+}
+
+int open(const char *path, int flags)
+{
+    return (int)syscall(SYS_OPEN, (long)path, flags, 0);
+}
+
+int close(int fd)
+{
+    return (int)syscall(SYS_CLOSE, fd, 0, 0);
+}
+
+long seek(int fd, unsigned long offset)
+{
+    return syscall(SYS_SEEK, fd, (long)offset, 0);
+}
+
+int stat(const char *path, file_stat_t *result)
+{
+    return (int)syscall(SYS_STAT, (long)path, (long)result, 0);
+}
+
+int readdir(const char *path, unsigned long index, dir_entry_t *entry)
+{
+    return (int)syscall(SYS_READDIR, (long)path, (long)index, (long)entry);
+}
+
+int mkdir(const char *path)
+{
+    return (int)syscall(SYS_MKDIR, (long)path, 0, 0);
+}
+
+int remove(const char *path)
+{
+    return (int)syscall(SYS_REMOVE, (long)path, 0, 0);
 }
 
 int getpid(void)
@@ -80,7 +115,7 @@ void print(const char *text)
         length++;
     }
 
-    write(text, length);
+    write(FD_STDOUT, text, length);
 }
 
 void print_uint(unsigned long value)

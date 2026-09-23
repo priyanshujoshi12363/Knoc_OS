@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.11.0-blue)
+![Version](https://img.shields.io/badge/version-v0.12.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -40,7 +40,9 @@ KnocOS currently has:
 - **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
 - **AI space (Guardian core)**: CPU core 1 runs a protected space the kernel can't touch (PMP hardware). It watches the kernel, and when the kernel crashes or freezes it **keeps running**: it diagnoses the problem, saves a crash report (black box) to disk, and **restarts only the kernel from a clean copy** (warm restart), so the AI itself never stops
 - **Fault containment**: a crashing process is stopped alone, like a Linux "oops". The AI space diagnoses it and decides the fix: restart the process, leave it stopped if it keeps crashing, or **disable the driver** the crash happened in
-- **User mode + system calls**: programs run in RISC-V **U-mode** with their own page tables, so they can't touch the kernel, devices or each other. They ask the kernel for things through 9 **system calls** (`ecall`), checked against each program's **capabilities** and **memory quota**, and every call is recorded for the AI space
+- **KnocFS filesystem**: files and folders on the disk, stored as contiguous extents so large AI model files load fast. Programs load from `/bin`, files survive reboots, and `tools/knocfs.py` copies files (models) onto the disk from your PC
+- **Wait queues**: processes sleep until an event wakes them (a key press, a finished disk read, a process exit) instead of polling. The disk has a sleep lock, so processes can use it safely at the same time
+- **User mode + system calls**: programs run in RISC-V **U-mode** with their own page tables, so they can't touch the kernel, devices or each other. They ask the kernel for things through 9 **system calls** (`ecall`), checked against each program's **capabilities** and **memory quota**, and every call is recorded for the AI space. 16 system calls, including files (`open`, `read`, `write`, `readdir`...)
 - **Processes and an AI-aware scheduler**: kernel processes with their own stacks, context switching, timer preemption, and 4 scheduling classes where **AI agent work gets the largest CPU share** (60%) while the keyboard stays instant and nothing starves
 - **Automated tests** (`make test`) and **GitHub Actions CI** on every push
 - Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
@@ -48,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.11.0 starting
+[INFO] KnocOS v0.12.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -131,37 +133,36 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: User Mode + System Calls (v0.11.0)
+## ✅ Just Completed: Wait Queues + KnocFS Filesystem (v0.12.0)
 
-**A buggy or hostile program can't touch the kernel anymore.** Programs are separate ELF files that run in **U-mode**, the CPU's lowest privilege level, each with its **own page table**. The only way into the kernel is a **system call**:
+**Programs and AI models live on disk now.**
 
-- **9 system calls:** `exit`, `write`, `read`, `getpid`, `yield`, `sleep`, `uptime`, `spawn`, `mem_alloc`
-- **Safe pointers:** every pointer a program passes is checked in *its own* page table. A kernel or unmapped address gets `E_FAULT`, and the kernel never crashes
-- **Capabilities:** each program gets permission bits (`CONSOLE`, `SPAWN`, `MEMORY`). A forbidden call is refused and logged as `[SECURITY]`
-- **Memory quotas by class:** normal programs 16 MiB, **AI_AGENT programs 1 GiB** (room for models). Big blocks are mapped with 2 MiB megapages
-- **The AI sees what programs do:** every system call is recorded. When a program crashes, the AI space gets its last calls and how many were forbidden, and **won't restart a program that tried forbidden things**. This is the first step of intent-based security
-- **No leaks:** every page and page table is returned when a program exits, which the self-test checks
+**Part 1, wait queues (no more polling):**
+- A process waiting for something **sleeps** until the event wakes it: the keyboard interrupt wakes the console, the disk interrupt wakes the process that asked for a sector, a process exit wakes `process_wait()`, a crash wakes the guardian at once
+- The disk has a **sleep lock**: before, two processes using the disk at once could mix up their requests. A process that crashes while holding a lock has it released automatically
+- Disk requests carry up to **8 sectors** (one 4 KiB filesystem block) at a time
+
+**Part 2, KnocFS:**
+- Files and directories on `disk0`, 4 KiB blocks, with an inode table and a free-block bitmap
+- Files are stored as **extents** (start block + count): a model file copied in one piece is one contiguous run on the disk
+- **Programs load from `/bin` on disk** (the built-in copies are only a fallback, for example when the AI space disabled the disk)
+- **16 system calls:** new `open`, `close`, `seek`, `stat`, `readdir`, `mkdir`, `remove`, and file descriptors for `read`/`write` (0 = keyboard, 1/2 = screen, 3+ = files), with new capabilities `FILES_READ` and `FILES_WRITE`
+- File reads go **straight into the program's memory**: an AI_AGENT program loads an 8 MiB test model in about 0.6 s and checks every byte
+- **Host tool** `tools/knocfs.py`: format a disk, copy files onto it from your PC (`make put FILE=model.gguf DEST=/models/model.gguf`), list (`make ls DIR=/models`)
 
 ```text
-[hello] Hello from user mode! pid 6, uptime ticks 129
-[badcall] kernel pointer, unmapped pointer and unknown call were all refused
-[SECURITY] noperm (pid 8) called spawn without the SPAWN capability: denied
-[hog] 8 MiB allowed, 16 MiB more refused: quota is 16 MiB
-[bigmem] AI agent got 256 MiB at 0x0000001100000000 and used all of it
-[INFO] User memory verified: every page and page table was returned when the programs exited
-
-[spy] trying to start another program without permission
-[SECURITY] spy (pid 16) called spawn without the SPAWN capability: denied
-[spy] trying to read kernel memory at 0x80000000
-[OOPS] Load page fault in user program spy (pid 16): stopping only this program
-[AI] Process crash contained: spy (pid 16, user program), the kernel keeps running
-[AI]   last system calls: write, spawn, write  (forbidden: 1)
-[AI] Diagnosis: The program tried to touch memory outside its own space (kernel or devices). The page table blocked it.
-[AI] Security: it made 1 forbidden system call(s) before crashing: treated as suspicious
-[AI] Action: leave spy stopped (suspicious program, not restarted)
+[INFO] KnocFS mounted on disk0: 62 MiB, 11 files, 54 MiB free
+[INFO] Wait queues verified: 200 disk reads, the reader slept 200 times and another process ran meanwhile
+[files] found my note from the last boot: KnocOS remembers this
+[files] /hello.txt says: Hello from a file on KnocFS!
+[files] /bin: badcall bigmem crash files hello hog modelcheck noperm spy
+[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent) in 570 ms, every byte verified
+[INFO] Programs loaded from /bin on disk: 8
 ```
 
-Before this: **v0.10.0**, big memory (device tree, buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space). **Next up: v0.12.0, the filesystem (KnocFS)**, so programs and AI models live on disk instead of inside the kernel image.
+**Fixed along the way:** the program linker script let a program's data segment start inside its last code page, and the loader then mapped a zeroed page over that code page. Programs with a large `.bss` lost part of their text. The data segment is now page-aligned, and `elf_load()` refuses segments that share a page.
+
+Before this: **v0.11.0**, user mode + system calls (per-program page tables, capabilities, quotas, a system call trace for the AI). **Next up: v0.13.0, the shell (`knocsh`)**, so you can type `ls`, `cat`, `ps`, `run` and more.
 
 Recent progress:
 
@@ -179,7 +180,8 @@ Recent progress:
 | `04db193` | AI space on core 1 (PMP-protected), heartbeat mailbox, crash/freeze detection, black box, rule brain, safe mode, boot-loop protection, version `v0.8.0` |
 | `2773100` | Fault containment, AI verdicts (restart process / disable driver), warm kernel restart from a clean copy, kernel code check, version `v0.9.0` |
 | `4447fb6` | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
-| *(uncommitted)* | User mode, per-program page tables, 9 system calls, capabilities, memory quotas, system call trace for the AI, ELF loader, 7 user programs, version `v0.11.0` |
+| `4197404` | User mode, per-program page tables, 9 system calls, capabilities, memory quotas, system call trace for the AI, ELF loader, 7 user programs, version `v0.11.0` |
+| *(uncommitted)* | Wait queues, sleep locks, multi-sector disk requests, KnocFS (extents), file system calls, programs from `/bin`, host tool, version `v0.12.0` |
 
 What works right now:
 
@@ -208,7 +210,8 @@ Next steps:
 - [x] v0.9.0: fault containment (a crashing process only kills itself), process auto-restart, disabling a crashing driver, warm kernel restart by the AI space
 - [x] v0.10.0: big memory (2–4 GiB+) for AI models
 - [x] v0.11.0: user mode + system calls, capabilities, quotas, system call trace for the AI
-- [ ] v0.12.0+: filesystem, shell (see the Milestone Roadmap)
+- [x] v0.12.0: wait queues, KnocFS filesystem, programs and models on disk
+- [ ] v0.13.0+: shell, small NN runtime (see the Milestone Roadmap)
 
 ---
 
@@ -676,10 +679,14 @@ kernel, RAM, devices: mapped too, but WITHOUT the U bit → the program can't to
 | Call | Capability | What it does |
 |---|---|---|
 | `exit(code)` | | End the program, free all its memory |
-| `write(buf, len)` / `read(buf, len)` | `CONSOLE` | Console output / input (non-blocking) |
+| `write(fd, buf, len)` / `read(fd, buf, len)` | `CONSOLE` (fd 0–2) | Screen output / keyboard input (waits for a key) or file data (fd 3+) |
 | `getpid()`, `yield()`, `sleep(ticks)`, `uptime()` | | Process basics |
 | `spawn(name)` | `SPAWN` | Start a built-in program |
 | `mem_alloc(bytes)` | `MEMORY` | Get zeroed memory, within the quota |
+| `open(path, flags)` | `FILES_READ` / `FILES_WRITE` | Open a file (`O_READ`, `O_WRITE`, `O_CREATE`, `O_TRUNC`), returns a file descriptor |
+| `close(fd)`, `seek(fd, offset)` | | Close / move in an open file |
+| `stat(path, out)`, `readdir(path, i, out)` | `FILES_READ` | Size and type / the i-th entry of a directory |
+| `mkdir(path)`, `remove(path)` | `FILES_WRITE` | Create a directory / remove a file or empty directory |
 
 **Safety:**
 - `copy_from_user()` / `copy_to_user()` look up every page in **the program's own page table** (must be a user page with the right permission) and copy through its physical address. Bad pointers give `E_FAULT`
@@ -687,7 +694,7 @@ kernel, RAM, devices: mapped too, but WITHOUT the U bit → the program can't to
 - **Capabilities** per program; a denied call is refused, counted and logged `[SECURITY]`
 - **Quotas:** 16 MiB for normal programs, 1 GiB for `AI_AGENT` programs. Memory is always zeroed before a program gets it
 
-**Programs** (`user/`): `crt0.S` + `ulib.c` (system call wrappers, `print`) + one `.c` file each, linked at `0x1000000000` by `user/linker.ld`. Until the filesystem exists, `kernel/programs.S` embeds the ELF files in the kernel image with `.incbin`, and `kernel/program.c` gives each one a class and capabilities. `elf_load()` checks the header and maps each `PT_LOAD` segment with its permissions.
+**Programs** (`user/`): `crt0.S` + `ulib.c` (system call wrappers, `print`) + one `.c` file each, linked at `0x1000000000` by `user/linker.ld`. Programs are loaded from `/bin/<name>` on the KnocFS disk. `kernel/programs.S` also embeds them in the kernel image (`.incbin`) as a fallback, and `kernel/program.c` gives each one a class and capabilities (the kernel decides permissions, not the file). The data segment is page-aligned, and `elf_load()` refuses segments that share a page. `elf_load()` checks the header and maps each `PT_LOAD` segment with its permissions.
 
 | Program | Class, capabilities | Shows |
 |---|---|---|
@@ -698,6 +705,8 @@ kernel, RAM, devices: mapped too, but WITHOUT the U bit → the program can't to
 | `bigmem` | **AI_AGENT**, CONSOLE + MEMORY | An AI program gets 256 MiB |
 | `crash` (Ctrl-U) | NORMAL, CONSOLE | Null pointer → AI restarts it 3 times, then stops it |
 | `spy` (Ctrl-E) | NORMAL, CONSOLE | Forbidden call + reading kernel memory → blocked, AI won't restart it |
+| `files` | NORMAL, CONSOLE + FILES | Note that survives reboots, read, list `/bin`, 20 KB write/read/remove |
+| `modelcheck` | **AI_AGENT**, CONSOLE + FILES_READ + MEMORY | Loads the 8 MiB test model from `/models` and checks every byte |
 
 ### Disk: `kernel/virtio_blk.c`
 
@@ -710,9 +719,35 @@ A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio
   - **available ring:** the driver says "new request here"
   - **used ring:** the device says "request finished"
 - Each request is a chain of 3 descriptors: **header** (read/write + sector number) → **data** (512 bytes) → **status** byte (written by the device, 0 = OK)
-- The driver adds the chain to the available ring, **notifies** the device, and sleeps with `wfi` until the interrupt handler sees the used ring move
-- Data goes through a sector buffer inside the driver, so callers can pass any kernel buffer (including heap addresses, which aren't physical addresses)
+- Each request carries 1–8 sectors (`read_blocks` / `write_blocks`), so one 4 KiB filesystem block is one request
+- The driver adds the chain to the available ring, **notifies** the device, and the process **sleeps on a wait queue** until the interrupt handler sees the used ring move and wakes it. Other processes run meanwhile
+- A **sleep lock** lets one process use the disk at a time (the descriptors and buffer are shared)
+- Data goes through a 4 KiB buffer inside the driver, so callers can pass any kernel buffer (including heap addresses, which aren't physical addresses)
 - If no disk is attached, `init` fails, the boot log shows `Device failed: disk0`, and KnocOS keeps running
+
+### Wait queues: `kernel/process.c`
+
+- `process_block(channel, timeout)` puts the current process to sleep (state `BLOCKED`) until `process_wake(channel)`, or until the timeout. A channel is just an address: the keyboard buffer, the disk, a process
+- The caller checks its condition and blocks **with interrupts off**, so a wake-up can't slip in between the check and the sleep
+- Interrupt handlers call `process_wake()`. If the woken process is interactive (or the CPU was idle), `scheduler_preempt()` switches to it right after the interrupt
+- **Sleep locks** (`sleeplock_acquire` / `release`) are locks a process can hold while it sleeps (disk, filesystem). A process that crashes has its sleep locks released
+- Users: keyboard (`uart_wait_input()`), disk requests, `process_wait()`, the guardian (woken at once by a crash)
+
+### Filesystem: `kernel/knocfs.c`, `tools/knocfs.py`
+
+```text
+disk0 sectors:  [0..2047] boot test data │ KnocFS │ last 8: AI black box
+KnocFS blocks:  superblock │ free-block bitmap │ inode table (1024 × 128 B) │ data
+```
+
+- **Inode:** type (file/dir), size, and up to **12 extents** `{start block, count}`. A file written in one piece is one extent, so reading it is one contiguous run
+- **Directory:** a file of 64-byte entries `{inode, name}`. Paths are absolute (`/models/test-model.bin`), names up to 59 characters
+- **Allocation:** a file grows in place when the next blocks are free, otherwise it gets the first run of free blocks that is long enough (or the longest one). New blocks are zeroed, so old data never shows up in a file
+- **Locking:** one sleep lock for the whole filesystem (operations sleep during disk I/O)
+- **API:** `knocfs_mount`, `lookup`, `create`, `remove`, `stat`, `readdir`, `truncate`, `read`, `write`, `usage`
+- **Host tool:** `tools/knocfs.py` writes the same layout from Linux: `format`, `mkdir`, `put`, `put-text`, `ls`, `cat`, `rm`, `info`, `make-test-model`. `scripts/mkdisk.sh` builds the default disk (64 MiB: `/bin` programs, `/hello.txt`, `/models/test-model.bin`, `/home`, `/tmp`)
+
+**Limits:** no caching yet (every access reads the disk), a file can have at most 12 extents, files have no timestamps or owners, and the whole filesystem has one lock.
 
 ### Early memory info: `kernel/memory.c`
 
@@ -722,14 +757,18 @@ Helpers from the first milestone: total RAM (B/KB/MB/GB), kernel size, stack siz
 
 ## Building
 
-Requirements: `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-ld`, `qemu-system-riscv64`, `python3` (for inspection targets).
+Requirements: `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-ld`, `qemu-system-riscv64`, `python3` (disk tool and inspection targets).
+
+`make run` first copies the freshly built programs into `/bin` on `disk.img` (other files stay). A `disk.img` from before v0.12 has no filesystem: run `make reset-disk` once.
 
 ```bash
 make            # build knocos.elf
 make run        # boot KnocOS in QEMU (power off: Ctrl-D, force quit: Ctrl-A then X)
 make test       # boot twice with a fresh test disk, run every self-test, print PASS/FAIL
 make clean      # remove build artifacts (keeps disk.img)
-make reset-disk # recreate disk.img (1 MiB, "Hello from the host!" in sector 0)
+make reset-disk # recreate disk.img: 64 MiB KnocFS with /bin, /models, /home, /tmp (DISK_MB=4096 for a bigger one)
+make put FILE=x DEST=/models/x  # copy a file from your PC onto the disk (for example a model)
+make ls DIR=/models             # list a directory on the disk
 make size       # kernel / stack size info
 make pages      # physical page layout summary
 make timer-test # run the standalone mtime printer (timer.elf)
@@ -742,7 +781,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.11.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.12.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -751,11 +790,11 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 
 `make test` runs `scripts/test.sh`, which:
 
-1. Creates a fresh temporary disk image with `Hello from the host!` in sector 0
+1. Creates a fresh temporary disk image with `scripts/mkdisk.sh` (`Hello from the host!` in sector 0, a KnocFS filesystem with the programs and the test model)
 2. **Boot 1:** checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
 3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
-5. **Boot 2** with the same disk image: checks `Disk boot count: 2`, which proves data written to the disk survives a reboot
+5. **Boot 2** with the same disk image: checks `Disk boot count: 2` and that the `files` program finds the note it wrote on Boot 1, which proves sectors and files survive a reboot
 6. **Run 3** (user programs, fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-U → the `crash` program is restarted 3 times by the AI, then left stopped. Ctrl-E → `spy`'s forbidden call is logged, its read of kernel memory is blocked, and the AI refuses to restart it (the test fails if `spy` ever reads kernel memory). Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
 7. **Run 4**, same disk: one more panic is the 4th crash in a row → the kernel stays halted and the AI space says it stays online
 
@@ -870,7 +909,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] AI-aware scheduling classes (INTERACTIVE, AI_AGENT, NORMAL, BACKGROUND)
 - [x] Multiple processes
 - [x] Fault containment (a crashing process only stops itself)
-- [ ] Event-based waiting (no polling)
+- [x] Event-based waiting (wait queues, no polling)
 - [x] User mode
 - [x] System calls
 
@@ -878,9 +917,9 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 
 - [x] Block device (virtio-blk)
 - [x] Disk driver (`disk0`, interrupt-driven sector read/write)
-- [ ] Filesystem
-- [ ] File descriptors
-- [ ] VFS layer
+- [x] Filesystem (KnocFS, extents)
+- [x] File descriptors
+- [ ] VFS layer (more than one filesystem type)
 
 ### Phase 7: User Space
 
@@ -947,7 +986,7 @@ KnocOS aims to become a production-grade operating system. This is what that req
 | System calls | ✅ (9 calls, capabilities, quotas) |
 | Multi-core (SMP) support and locking | 🚧 (spinlocks, shared UART lock; the kernel itself runs on one core) |
 | Disk driver (virtio-blk) | ✅ |
-| Filesystem | ⬜ |
+| Filesystem | ✅ (KnocFS) |
 | Networking stack | ⬜ |
 | Graphics and input devices | ⬜ |
 
@@ -988,6 +1027,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.11.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.12.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls. Processes sleep on wait queues instead of polling, and KnocFS stores programs, files and AI model files on the disk.

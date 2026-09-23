@@ -1,4 +1,6 @@
 #include "virtio_blk.h"
+#include "process.h"
+#include "spinlock.h"
 #include "virtio.h"
 #include "device.h"
 #include "page.h"
@@ -44,7 +46,12 @@ static uint16_t used_seen = 0;
 static volatile int request_done = 0;
 
 static virtio_blk_request_t request;
-static uint8_t sector_buffer[VIRTIO_BLK_SECTOR_SIZE];
+static uint8_t sector_buffer[VIRTIO_BLK_SECTOR_SIZE * VIRTIO_BLK_MAX_SECTORS]
+    __attribute__((aligned(16)));
+
+/* One request at a time: the descriptors and the buffer are shared */
+static sleeplock_t disk_lock = SLEEPLOCK_INIT;
+static char done_channel;
 static volatile uint8_t request_status;
 
 static uint32_t virtio_read(uint32_t reg)
@@ -197,9 +204,33 @@ static void virtio_blk_interrupt(device_t *dev)
         used_seen++;
         request_done = 1;
     }
+
+    process_wake(&done_channel);
 }
 
-static int virtio_blk_request(uint32_t type, uint64_t sector)
+static void wait_done(void)
+{
+    uint64_t enabled = irq_save();
+
+    while (!request_done)
+    {
+        if (process_can_block())
+        {
+            /* Other processes run while the disk works */
+            process_block(&done_channel, 0);
+        }
+        else
+        {
+            irq_restore(enabled);
+            asm volatile("wfi");
+            enabled = irq_save();
+        }
+    }
+
+    irq_restore(enabled);
+}
+
+static int virtio_blk_request(uint32_t type, uint64_t sector, uint64_t count)
 {
     request.type = type;
     request.reserved = 0;
@@ -212,7 +243,7 @@ static int virtio_blk_request(uint32_t type, uint64_t sector)
     desc[0].next = 1;
 
     desc[1].addr = (uintptr_t)sector_buffer;
-    desc[1].len = VIRTIO_BLK_SECTOR_SIZE;
+    desc[1].len = VIRTIO_BLK_SECTOR_SIZE * count;
     desc[1].flags = VIRTQ_DESC_F_NEXT;
 
     if (type == VIRTIO_BLK_T_IN)
@@ -239,10 +270,7 @@ static int virtio_blk_request(uint32_t type, uint64_t sector)
 
     virtio_write(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-    while (!request_done)
-    {
-        asm volatile("wfi");
-    }
+    wait_done();
 
     __sync_synchronize();
 
@@ -254,27 +282,50 @@ static int virtio_blk_request(uint32_t type, uint64_t sector)
     return 0;
 }
 
-static int virtio_blk_read_block(device_t *dev, uint64_t block, void *buffer)
+static int virtio_blk_read_blocks(device_t *dev, uint64_t block, uint64_t count, void *buffer)
 {
-    (void)dev;
-
-    if (virtio_blk_request(VIRTIO_BLK_T_IN, block) != 0)
+    if (count == 0 || count > VIRTIO_BLK_MAX_SECTORS || block + count > dev->block_count)
     {
         return -1;
     }
 
-    copy_bytes(buffer, sector_buffer, VIRTIO_BLK_SECTOR_SIZE);
+    sleeplock_acquire(&disk_lock);
 
-    return 0;
+    int result = virtio_blk_request(VIRTIO_BLK_T_IN, block, count);
+
+    if (result == 0)
+    {
+        copy_bytes(buffer, sector_buffer, VIRTIO_BLK_SECTOR_SIZE * count);
+    }
+
+    sleeplock_release(&disk_lock);
+    return result;
+}
+
+static int virtio_blk_write_blocks(device_t *dev, uint64_t block, uint64_t count, const void *buffer)
+{
+    if (count == 0 || count > VIRTIO_BLK_MAX_SECTORS || block + count > dev->block_count)
+    {
+        return -1;
+    }
+
+    sleeplock_acquire(&disk_lock);
+
+    copy_bytes(sector_buffer, buffer, VIRTIO_BLK_SECTOR_SIZE * count);
+    int result = virtio_blk_request(VIRTIO_BLK_T_OUT, block, count);
+
+    sleeplock_release(&disk_lock);
+    return result;
+}
+
+static int virtio_blk_read_block(device_t *dev, uint64_t block, void *buffer)
+{
+    return virtio_blk_read_blocks(dev, block, 1, buffer);
 }
 
 static int virtio_blk_write_block(device_t *dev, uint64_t block, const void *buffer)
 {
-    (void)dev;
-
-    copy_bytes(sector_buffer, buffer, VIRTIO_BLK_SECTOR_SIZE);
-
-    return virtio_blk_request(VIRTIO_BLK_T_OUT, block);
+    return virtio_blk_write_blocks(dev, block, 1, buffer);
 }
 
 static device_t virtio_blk_device = {
@@ -284,6 +335,8 @@ static device_t virtio_blk_device = {
     .interrupt = virtio_blk_interrupt,
     .read_block = virtio_blk_read_block,
     .write_block = virtio_blk_write_block,
+    .read_blocks = virtio_blk_read_blocks,
+    .write_blocks = virtio_blk_write_blocks,
 };
 
 void virtio_blk_register(void)

@@ -10,6 +10,12 @@ int main(void)
         return 1;
     }
 
-    print("[noperm] spawn was refused: this program has no SPAWN capability\n");
+    if (open("/hello.txt", O_READ) != E_PERM)
+    {
+        print("[noperm] open without the FILES_READ capability was not refused\n");
+        return 2;
+    }
+
+    print("[noperm] spawn and open were refused: this program has no SPAWN or FILES capability\n");
     return 0;
 }

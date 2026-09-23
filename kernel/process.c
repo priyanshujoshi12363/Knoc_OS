@@ -11,6 +11,8 @@
 #include "program.h"
 #include "string.h"
 #include "syscall_abi.h"
+#include "spinlock.h"
+#include "knocfs.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -52,6 +54,13 @@ typedef struct process
     uint8_t trace[PROCESS_TRACE_MAX];
     uint32_t trace_count;
     uint32_t denied;
+
+    /* Wait queues */
+    void *wait_channel;
+    int woken;
+    sleeplock_t *locks[PROCESS_LOCKS_MAX];
+
+    open_file_t files[PROCESS_FILES_MAX];
 } process_t;
 
 typedef struct class_info
@@ -77,12 +86,19 @@ static const char *state_names[] = {
     [PROCESS_EXITED] = "EXITED",
     [PROCESS_CRASHED] = "CRASHED",
     [PROCESS_LOADING] = "LOADING",
+    [PROCESS_BLOCKED] = "BLOCKED",
 };
 
 static process_t processes[PROCESS_MAX];
 static process_t *current = 0;
 static int next_pid = 1;
 static int scheduler_running = 0;
+static int resched_pending = 0;
+static uint64_t block_count = 0;
+static char crash_channel;
+static uint64_t disk_loads = 0;
+
+#define PROGRAM_FILE_MAX (16UL * 1024 * 1024)
 static const char *boot_driver = 0;
 
 extern void context_switch(process_context_t *old_context,
@@ -336,6 +352,19 @@ static process_t *create_locked(const char *name,
     p->mem_used = 0;
     p->trace_count = 0;
     p->denied = 0;
+    p->wait_channel = 0;
+    p->woken = 0;
+
+    for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+    {
+        p->locks[i] = 0;
+    }
+
+    for (int i = 0; i < PROCESS_FILES_MAX; i++)
+    {
+        p->files[i].used = 0;
+    }
+
     reset_context(p);
     p->state = PROCESS_READY;
 
@@ -416,9 +445,59 @@ static void user_space_free(process_t *p)
     p->satp = vm_kernel_satp();
 }
 
+/* Programs load from /bin/<name> on disk. The copy built into the
+   kernel is the fallback: no disk, no filesystem, or disk0 disabled */
+static void *load_from_disk(const program_t *program, uint64_t *size)
+{
+    char path[PROCESS_NAME_MAX + 8] = "/bin/";
+    uint32_t inode;
+    knocfs_stat_t stat;
+    int length = 5;
+
+    for (int i = 0; program->name[i] && length < (int)sizeof(path) - 1; i++)
+    {
+        path[length++] = program->name[i];
+    }
+
+    path[length] = 0;
+
+    if (!knocfs_mounted() ||
+        knocfs_lookup(path, &inode) != 0 ||
+        knocfs_stat(inode, &stat) != 0 ||
+        stat.type != KNOCFS_TYPE_FILE ||
+        stat.size == 0 || stat.size > PROGRAM_FILE_MAX)
+    {
+        return 0;
+    }
+
+    void *buffer = page_alloc_contiguous(stat.size);
+
+    if (buffer == 0)
+    {
+        return 0;
+    }
+
+    if (knocfs_read(inode, 0, buffer, stat.size) != (int64_t)stat.size)
+    {
+        page_free(buffer);
+        return 0;
+    }
+
+    *size = stat.size;
+    return buffer;
+}
+
 static int user_space_load(process_t *p)
 {
     const program_t *program = p->program;
+    uint64_t size = (uint64_t)(program->end - program->start);
+    void *file = load_from_disk(program, &size);
+    const uint8_t *image = file != 0 ? (const uint8_t *)file : program->start;
+
+    for (int i = 0; i < PROCESS_FILES_MAX; i++)
+    {
+        p->files[i].used = 0;
+    }
 
     p->user_root = vm_user_create();
     p->block_count = 0;
@@ -427,17 +506,16 @@ static int user_space_load(process_t *p)
     p->trace_count = 0;
     p->denied = 0;
 
-    if (p->user_root == 0)
+    int loaded = p->user_root != 0 &&
+                 elf_load(p->user_root, image, size, user_block, p, &p->user_entry) == 0;
+
+    if (file != 0)
     {
-        return -1;
+        page_free(file);
+        disk_loads += loaded;
     }
 
-    if (elf_load(p->user_root,
-                 program->start,
-                 (uint64_t)(program->end - program->start),
-                 user_block,
-                 p,
-                 &p->user_entry) != 0)
+    if (!loaded)
     {
         user_space_free(p);
         return -1;
@@ -545,8 +623,51 @@ int process_wait(int pid, int *exit_code)
             return 0;
         }
 
-        process_sleep(1);
+        uint64_t enabled = interrupts_disable();
+
+        if (p->pid == pid && p->state != PROCESS_EXITED && p->state != PROCESS_CRASHED)
+        {
+            process_block(p, 0);
+        }
+
+        interrupts_restore(enabled);
     }
+}
+
+open_file_t *process_file(int fd)
+{
+    if (fd < FD_FIRST_FILE || fd >= FD_FIRST_FILE + PROCESS_FILES_MAX)
+    {
+        return 0;
+    }
+
+    open_file_t *file = &current->files[fd - FD_FIRST_FILE];
+
+    return file->used ? file : 0;
+}
+
+int process_file_open(uint32_t inode, uint32_t flags)
+{
+    for (int i = 0; i < PROCESS_FILES_MAX; i++)
+    {
+        open_file_t *file = &current->files[i];
+
+        if (!file->used)
+        {
+            file->used = 1;
+            file->inode = inode;
+            file->flags = flags;
+            file->offset = 0;
+            return FD_FIRST_FILE + i;
+        }
+    }
+
+    return -1;
+}
+
+uint64_t process_disk_loads(void)
+{
+    return disk_loads;
 }
 
 int process_is_user(void)
@@ -638,7 +759,8 @@ void scheduler_tick(void)
     {
         process_t *p = &processes[i];
 
-        if (p->state == PROCESS_SLEEPING && now >= p->wake_tick)
+        if ((p->state == PROCESS_SLEEPING && now >= p->wake_tick) ||
+            (p->state == PROCESS_BLOCKED && p->wake_tick != 0 && now >= p->wake_tick))
         {
             p->state = PROCESS_READY;
             place_vruntime(p);
@@ -673,6 +795,157 @@ void scheduler_tick(void)
     }
 }
 
+int process_can_block(void)
+{
+    return scheduler_running && current != 0 && current != &processes[0];
+}
+
+int process_block(void *channel, uint64_t timeout)
+{
+    uint64_t enabled = interrupts_disable();
+
+    current->wait_channel = channel;
+    current->wake_tick = timeout != 0 ? timer_ticks() + timeout : 0;
+    current->woken = 0;
+    current->state = PROCESS_BLOCKED;
+    block_count++;
+
+    schedule();
+
+    current->wait_channel = 0;
+
+    interrupts_restore(enabled);
+    return current->woken;
+}
+
+void process_wake(void *channel)
+{
+    uint64_t enabled = interrupts_disable();
+
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->state != PROCESS_BLOCKED || p->wait_channel != channel)
+        {
+            continue;
+        }
+
+        p->woken = 1;
+        p->state = PROCESS_READY;
+        place_vruntime(p);
+
+        /* Run it right away if it's interactive, or if the CPU is idle */
+        if (current == &processes[0] ||
+            (p->process_class == PROCESS_CLASS_INTERACTIVE &&
+             current->process_class != PROCESS_CLASS_INTERACTIVE))
+        {
+            resched_pending = 1;
+        }
+    }
+
+    interrupts_restore(enabled);
+}
+
+/* Called at the end of a device interrupt: switch now if a wake-up asked for it */
+void scheduler_preempt(void)
+{
+    if (scheduler_running && resched_pending)
+    {
+        resched_pending = 0;
+        schedule();
+    }
+}
+
+uint64_t process_block_count(void)
+{
+    return block_count;
+}
+
+static int unreported_crash(void)
+{
+    for (int i = 1; i < PROCESS_MAX; i++)
+    {
+        if (processes[i].state == PROCESS_CRASHED && !processes[i].fault_reported)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void process_wait_crash(uint64_t timeout)
+{
+    uint64_t enabled = interrupts_disable();
+
+    if (!unreported_crash())
+    {
+        process_block(&crash_channel, timeout);
+    }
+
+    interrupts_restore(enabled);
+}
+
+void sleeplock_acquire(sleeplock_t *lock)
+{
+    uint64_t enabled = interrupts_disable();
+
+    while (lock->locked)
+    {
+        if (process_can_block())
+        {
+            process_block(lock, 0);
+        }
+        else
+        {
+            interrupts_restore(enabled);
+            asm volatile("wfi");
+            enabled = interrupts_disable();
+        }
+    }
+
+    lock->locked = 1;
+    lock->owner = current != 0 ? current->pid : 0;
+
+    if (current != 0)
+    {
+        for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+        {
+            if (current->locks[i] == 0)
+            {
+                current->locks[i] = lock;
+                break;
+            }
+        }
+    }
+
+    interrupts_restore(enabled);
+}
+
+void sleeplock_release(sleeplock_t *lock)
+{
+    uint64_t enabled = interrupts_disable();
+
+    lock->locked = 0;
+    lock->owner = 0;
+
+    if (current != 0)
+    {
+        for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+        {
+            if (current->locks[i] == lock)
+            {
+                current->locks[i] = 0;
+            }
+        }
+    }
+
+    process_wake(lock);
+
+    interrupts_restore(enabled);
+}
+
 void process_yield(void)
 {
     uint64_t enabled = interrupts_disable();
@@ -705,6 +978,7 @@ void process_exit_code(int code)
     }
 
     current->state = PROCESS_EXITED;
+    process_wake(current);
     schedule();
 
     while (1)
@@ -758,6 +1032,22 @@ void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
 
     current->state = PROCESS_CRASHED;
     current->fault_reported = 0;
+
+    /* A crashed process never releases its locks itself: do it now, so
+       the disk (or anything else it held) doesn't stay locked forever */
+    for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+    {
+        if (current->locks[i] != 0)
+        {
+            current->locks[i]->locked = 0;
+            current->locks[i]->owner = 0;
+            process_wake(current->locks[i]);
+            current->locks[i] = 0;
+        }
+    }
+
+    process_wake(current);
+    process_wake(&crash_channel);
     current->fault_driver = current->driver;
     current->fault_scause = scause;
     current->fault_sepc = sepc;
@@ -835,18 +1125,25 @@ int process_restart(int pid)
         return -1;
     }
 
+    /* Keep the slot while the program is reloaded (it may sleep on the disk) */
+    p->state = PROCESS_LOADING;
+    interrupts_restore(enabled);
+
     if (p->user)
     {
         user_space_free(p);
 
         if (user_space_load(p) != 0)
         {
+            enabled = interrupts_disable();
             p->user = 0;
             p->state = PROCESS_EXITED;
             interrupts_restore(enabled);
             return -1;
         }
     }
+
+    enabled = interrupts_disable();
 
     p->pid = next_pid++;
     p->restarts++;

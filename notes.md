@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** the device tree, the buddy allocator, virtual memory (Sv39) and megapages, kernel heap, spinlocks
-- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart, user mode and system calls
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart, user mode and system calls, wait queues, the KnocFS filesystem
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** filesystem, shell, AI-OS
+- **Part 8: What comes next:** shell, NN runtime, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -690,11 +690,12 @@ used ring          device → driver: "request finished"                        
 2. Chain 3 descriptors: header → data buffer (device WRITEs it) → status byte
 3. Put descriptor 0 in the available ring, then idx++          (fence before and after)
 4. Write QUEUE_NOTIFY: "you have work"
-5. Sleep with wfi
+5. Sleep on a wait queue (v0.12; before that: wfi). Other processes run
        QEMU reads sector 7 of disk.img into our buffer, writes status = 0,
        moves the used ring, raises IRQ 1
 6. IRQ 1 → PLIC → trap → device_handle_irq(1) → disk0's interrupt handler
-       acknowledges the interrupt, sees the used ring moved → request_done = 1
+       acknowledges the interrupt, sees the used ring moved → request_done = 1,
+       process_wake() → our process is READY again
 7. Wake up, check status == 0 (OK), copy the 512 bytes to the caller
 ```
 
@@ -807,9 +808,9 @@ over this cycle: agent 12 ticks, normal 6, background 2  =  60% / 30% / 10%
 
 ### Known limits (next steps)
 
-- **No locks yet:** the heap isn't safe if two processes use `kmalloc` at the same time, so `process_create` turns interrupts off around it
-- **The console polls** every 10 ms instead of sleeping until a key arrives (event-based **wait queues** will fix this)
-- **Disk requests** wait with `wfi` instead of letting another process run
+- ~~**No locks yet**~~: fixed in v0.10 (spinlocks on the heap and page allocator, 4.7)
+- ~~**The console polls** every 10 ms~~: fixed in v0.12 (wait queues, 5.15)
+- ~~**Disk requests** wait with `wfi`~~: fixed in v0.12, the process sleeps and others run (5.15)
 
 ---
 
@@ -1106,6 +1107,123 @@ Programs are normal ELF files built from `user/`: `crt0.S` (calls `main`, then `
 
 Every block a program gets (code, stack, `mem_alloc`) is recorded in its process. On `exit`, the kernel first switches back to the kernel page table (it can't free the table it's standing on), then frees the program's page tables and every block. The self-test checks that the number of free pages is exactly the same after running 5 programs, including the 256 MiB AI block.
 
+## 5.15 Wait queues: sleeping until something happens (v0.12.0)
+
+### Polling vs waiting
+
+Up to v0.11, a process that had to wait **polled**: the console asked "is there a key?" 100 times a second, `process_wait()` checked every tick whether a program had ended, and the guardian looked for crashes every 100 ms. Worse, the disk driver waited with a `wfi` loop, which wasted the waiting process's whole time slice.
+
+**Event-based waiting** turns it around: the process says "wake me when X happens" and sleeps. The code that makes X happen (usually an interrupt handler) wakes it. Like a phone that rings instead of checking it every 10 seconds.
+
+### How it works
+
+A **channel** is just an address that names the event: the keyboard buffer, the disk, a process slot.
+
+```c
+process_block(channel, timeout);   // state = BLOCKED, remember the channel, schedule()
+process_wake(channel);             // every process BLOCKED on channel → READY
+```
+
+The classic trap is the **lost wake-up**:
+
+```text
+console: buffer empty?  yes
+                               ← key arrives, interrupt: process_wake(&rx) → nobody sleeping yet!
+console: process_block(&rx)       sleeps forever (well, until the next key)
+```
+
+The fix: check the condition and go to sleep **with interrupts off**. The interrupt can't run between the check and the sleep; it runs after the switch, when the process really is on the queue:
+
+```c
+irq_save();                       // interrupts off
+while (buffer is empty)
+    process_block(&rx_channel, 0);  // schedule() switches away with interrupts off
+irq_restore();
+```
+
+**Waking up fast:** `process_wake()` just marks the process READY. If it's interactive (the console) or the CPU was idle, it also sets `resched_pending`, and `scheduler_preempt()` switches to it right after the interrupt. So a key press reaches the console at once, not at the next tick.
+
+A **timeout** (in ticks) makes the scheduler tick wake the process anyway. The guardian uses it: it's woken **at once** by a crash, and otherwise every second for its other checks.
+
+### Sleep locks
+
+A spinlock (4.7) turns interrupts off, so it can't be held across a disk read that takes a while. A **sleep lock** can: a process that finds it taken **sleeps** on the lock's channel until the owner releases it. The disk driver has one. Before v0.12 there was a hidden bug: if a timer tick switched processes during a disk read, and the other process also used the disk, both used the same descriptors and buffer. It never happened only because no two processes used the disk at once.
+
+**Crash safety:** a process that crashes can't release its locks itself. So each process remembers the sleep locks it holds, and `process_crash()` releases them. Otherwise one contained crash could freeze the disk for everyone.
+
+### Proof
+
+The self-test reads 200 sectors while a CPU-bound worker runs. When a read has to wait, the reader sleeps, and the worker's counter moves between reads, with no timer tick needed:
+
+```text
+[INFO] Wait queues verified: 200 disk reads, the reader slept 200 times and another process ran meanwhile
+```
+
+(Sometimes QEMU finishes a request before the driver even checks. Then there's nothing to wait for, and the process doesn't sleep. The test accepts that.)
+
+## 5.16 KnocFS: files and folders on the disk (v0.12.0)
+
+### Why a filesystem?
+
+Before v0.12 the disk was 2048 numbered sectors, and programs were built into the kernel. An AI OS needs **files**: model weights, programs, notes, crash logs. A filesystem is the table of contents that turns "sectors 70000–72047" into `/models/qwen.gguf`. **Windows comparison:** NTFS on `C:`.
+
+### The layout
+
+```text
+disk sectors   0 ─ 2047 │ 2048 ─────────────────────────────── N-9 │ N-8 ─ N-1
+               test data │ KnocFS                                   │ AI black box
+
+KnocFS (4 KiB blocks):
+block 0         superblock: magic "KNOCFS01", sizes, where everything is
+block 1..       free-block bitmap: 1 bit per block (1 = used)
+next 32 blocks  inode table: 1024 inodes × 128 bytes (inode 1 = the root directory)
+the rest        data blocks
+```
+
+An **inode** describes one file or directory: type, size, and where its data is. A **directory** is a file whose data is a list of 64-byte entries `{inode number, name}`. Looking up `/models/test-model.bin` means: root directory (inode 1) → find `models` → its inode → find `test-model.bin` → its inode.
+
+### Extents: made for big model files
+
+Many filesystems list every block of a file (ext2, FAT). KnocFS stores **extents**, `{start block, count}` pairs (like ext4, NTFS and XFS). A 1 GiB model copied onto the disk in one piece is **one extent**: 262,144 blocks in a row, which can be read back to back. An inode has room for 12 extents. When a file grows, KnocFS first tries to extend the last extent in place, and otherwise takes the first free run that's long enough.
+
+### Safety details
+
+- **New blocks are zeroed** (or fully written) before they belong to a file, so a file can never show another file's old data
+- **One sleep lock** for the whole filesystem, since operations sleep during disk I/O
+- The **black box area** at the end of the disk is outside KnocFS. `knocfs_mount()` checks that, so the AI space's crash reports are never overwritten
+
+### Files for programs
+
+Programs see files through **file descriptors** (small numbers): 0 = keyboard, 1 and 2 = screen, 3 and up = open files. This is the Unix design, and the same idea as Windows handles.
+
+```c
+int fd = open("/home/note.txt", O_WRITE | O_CREATE | O_TRUNC);
+write(fd, "KnocOS remembers this", 21);
+close(fd);
+```
+
+New capabilities `FILES_READ` and `FILES_WRITE` guard them. File reads go **directly into the program's pages**: the kernel finds each page's physical address in the program's page table (as in 5.14) and the filesystem reads into it. There's no extra copy, which matters when an AI program loads gigabytes of weights. `modelcheck` loads an 8 MiB test model in about 0.6 s under QEMU.
+
+### Programs from the disk
+
+`process_spawn()` now loads `/bin/<name>` from KnocFS. The copies built into the kernel are only a **fallback**, for example if the AI space disabled `disk0` after it crashed. The **kernel** decides a program's class and capabilities, not the file, so replacing `/bin/spy` can't give it more permissions.
+
+### Getting files onto the disk from your PC
+
+`tools/knocfs.py` is a Python version of the same format:
+
+```bash
+make reset-disk                                   # fresh 64 MiB disk (DISK_MB=4096 for more)
+make put FILE=qwen.gguf DEST=/models/qwen.gguf    # copy a model onto the disk
+make ls DIR=/models
+```
+
+### A bug found on the way
+
+The `files` program printed empty error messages. The cause: the program's data segment started at `0x10000010e0`, **in the same page** as the end of its code. The loader mapped a fresh zeroed page for the data segment over the code page, wiping the program's text strings. The fix: the program linker script page-aligns the data segment, and `elf_load()` now **rejects** segments that share a page instead of silently mapping over one. Lesson: a loader must never assume the file it loads is well-formed.
+
+---
+
 ---
 
 # Part 6: Engineering
@@ -1148,8 +1266,9 @@ Every block a program gets (code, stack, `mem_alloc`) is recorded in its process
 | 0.9.0 | Fault containment, AI verdicts, warm kernel restart: the AI never stops |
 | 0.10.0 | Big memory: device tree, buddy allocator, megapages, spinlocks, 256 MiB AI space |
 | 0.11.0 | User mode, system calls, capabilities, quotas, system call trace for the AI |
+| 0.12.0 | Wait queues, KnocFS filesystem, programs and models on disk |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.11.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.12.0 && git push --tags`.
 
 ---
 
@@ -1204,13 +1323,13 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 A filesystem (v0.12.0)
+## 8.1 A shell (v0.13.0)
 
-Right now the disk is just 2048 numbered sectors. A **filesystem** organizes them into **files and folders**: a small table on the disk says "file `hello.txt` is in sectors 10–12, 1234 bytes long". It will use `device_read_block` / `device_write_block` on `disk0`, without knowing it's virtio. **Windows comparison:** NTFS on your C: drive. Programs and AI models will then load from disk instead of being embedded in the kernel, with `open`/`read`/`write`/`close` system calls guarded by capabilities.
+`knocsh`, the first interactive user program: `ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`. It owns the keyboard (the kernel's console process steps aside) and needs a few new system calls, for example a process list.
 
-## 8.2 A shell (v0.13.0)
+## 8.2 The small NN runtime (v0.14.0)
 
-`knocsh`, the first interactive user program: `ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`.
+Tensors and int8 math inside the AI space, loading its weights from `/models`, to replace the rule brain with a trained crash classifier (v0.15).
 
 ## 8.3 Toward the AI-OS
 
@@ -1284,6 +1403,11 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | Term | Meaning |
 |---|---|
 | **Bare metal** | Running with no OS underneath |
+| **Extent** | A run of consecutive disk blocks `{start, count}` holding part of a file |
+| **File descriptor** | A small number a program uses for an open file (0 keyboard, 1–2 screen) |
+| **Inode** | The on-disk record of one file: type, size and where its data is |
+| **Sleep lock** | A lock a process can hold while it sleeps; waiters sleep instead of spinning |
+| **Wait queue** | Processes sleeping until an event (a channel) wakes them |
 | **Buddy allocator** | Page allocator with power-of-two blocks that split on allocation and merge with their "buddy" on free |
 | **Capability** | A permission bit a program must have to use a system call (`CONSOLE`, `SPAWN`, `MEMORY`) |
 | **Device tree** | Binary description of the machine (RAM, CPUs, devices) passed by the firmware |

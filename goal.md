@@ -128,7 +128,7 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), **wait queues** and the **KnocFS filesystem** (programs and model files on disk), automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
@@ -158,7 +158,8 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | Fault containment + warm kernel restart (v0.9.0) | ✅ Done | A crashing process only kills itself, the AI decides the fix (restart it / disable its driver), and the AI never stops while the kernel restarts from a clean copy |
 | Big memory (v0.10.0) | ✅ Done | Room for real AI models: RAM size from the device tree, a buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space |
 | User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
-| Filesystem (v0.12.0) | 🚧 Next | Programs and AI models live on disk |
+| Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
+| Shell (v0.13.0) | 🚧 Next | Type commands: `ls`, `cat`, `ps`, `run`, `crashes`, `mem` |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
 
@@ -181,7 +182,7 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 |---|---|---|---|---|
 | 3 | **v0.10.0** ✅ | Big memory | RAM size from the device tree, 2–4 GiB+, 2 MiB megapages, buddy page allocator, spinlocks for 2 cores, bigger AI region | Room for real AI models |
 | 4 | **v0.11.0** ✅ | User mode + system calls | U-mode programs with their own page tables, `ecall` system calls, program loader | A buggy program can't hurt the OS |
-| 5 | v0.12.0 | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
+| 5 | **v0.12.0** ✅ | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
 | 6 | v0.13.0 | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
 
 ### Phase C: The first real AI inside KnocOS
@@ -287,7 +288,7 @@ request / event → Tier 0: rules (no AI, never wrong)
 - **No model is hallucination-free.** The design makes mistakes harmless: closed-set classification, confidence thresholds, grammar-constrained output, verification of results, and grounding in real data
 - **Model-agnostic:** models load from the standard **GGUF** format through a **model registry** (a config that maps roles to model files), so a better model is a file swap, not a code change
 - **Runtime:** our own small int8 runtime for small NNs (Stage 3). A port of **llama.cpp** for big LLMs (Stage 5), which needs a filesystem, memory mapping, threads and a C library
-- **Getting models onto KnocOS:** first by copying them onto the disk image from the host, later by downloading them over KnocNet / TCP/IP
+- **Getting models onto KnocOS:** first by copying them onto the disk image from the host (built in v0.12.0: `make put FILE=model.gguf DEST=/models/model.gguf`), later by downloading them over KnocNet / TCP/IP
 
 ---
 

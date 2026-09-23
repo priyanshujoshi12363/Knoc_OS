@@ -8,6 +8,8 @@
 #define PROCESS_STACK_SIZE (16 * 1024)
 #define PROCESS_TRACE_MAX 8
 #define PROCESS_BLOCKS_MAX 32
+#define PROCESS_LOCKS_MAX 4
+#define PROCESS_FILES_MAX 8
 
 /* Memory quota for user programs, by class: AI agents get room for models */
 #define PROCESS_QUOTA_AI_AGENT (1024UL * 1024 * 1024)
@@ -40,7 +42,26 @@ typedef enum process_state
     PROCESS_EXITED,
     PROCESS_CRASHED,
     PROCESS_LOADING,
+    PROCESS_BLOCKED,
 } process_state_t;
+
+/* A lock a process can hold while it sleeps (for example during disk I/O).
+   Waiters block on it instead of spinning. */
+typedef struct sleeplock
+{
+    volatile int locked;
+    int owner;
+} sleeplock_t;
+
+#define SLEEPLOCK_INIT {0, 0}
+
+typedef struct open_file
+{
+    int used;
+    uint32_t inode;
+    uint32_t flags;
+    uint64_t offset;
+} open_file_t;
 
 typedef struct process_context
 {
@@ -78,6 +99,19 @@ void scheduler_start(void);
 void scheduler_tick(void);
 
 void process_yield(void);
+
+/* Wait queues: block until process_wake(channel), or until the timeout
+   (in ticks, 0 = none). Check the condition and block with interrupts
+   off, so a wake-up can't slip in between. Returns 1 if woken by an event. */
+int process_block(void *channel, uint64_t timeout);
+void process_wake(void *channel);
+int process_can_block(void);
+void scheduler_preempt(void);
+uint64_t process_block_count(void);
+void process_wait_crash(uint64_t timeout);
+
+void sleeplock_acquire(sleeplock_t *lock);
+void sleeplock_release(sleeplock_t *lock);
 void process_sleep(uint64_t ticks);
 void process_exit(void);
 void process_exit_code(int code) __attribute__((noreturn));
@@ -105,6 +139,10 @@ uint32_t process_capabilities(void);
 void process_record_syscall(uint64_t number);
 void process_note_denied(void);
 int64_t process_mem_alloc(uint64_t bytes);
+
+open_file_t *process_file(int fd);
+int process_file_open(uint32_t inode, uint32_t flags);
+uint64_t process_disk_loads(void);
 uint64_t process_cpu_ticks(int pid);
 void process_list(void);
 

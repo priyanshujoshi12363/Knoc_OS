@@ -16,8 +16,8 @@ RAM ?= 2G
 QEMU_FLAGS = -machine virt -smp 2 -m $(RAM) -bios none -nographic
 
 DISK = disk.img
-DISK_SECTORS = 2048
-DISK_MESSAGE = Hello from the host!
+DISK_MB ?= 64
+KNOCFS = python3 tools/knocfs.py
 QEMU_DISK_FLAGS = -global virtio-mmio.force-legacy=false \
                   -drive file=$(DISK),if=none,format=raw,id=disk0 \
                   -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0
@@ -47,18 +47,19 @@ KERNEL_OBJS = boot/boot.o \
               kernel/elf.o \
               kernel/program.o \
               kernel/programs.o \
+              kernel/knocfs.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck
 USER_LIB_OBJS = user/crt0.o user/ulib.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) $(USER_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
-.PHONY: all clean run test timer-test size pages reset-disk
+.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls
 
 all: knocos.elf
 
@@ -86,15 +87,28 @@ kernel/main.o: VERSION
 clean:
 	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(USER_OBJS) $(USER_ELFS) $(DEPS)
 
-$(DISK):
-	dd if=/dev/zero of=$(DISK) bs=512 count=$(DISK_SECTORS) status=none
-	printf '$(DISK_MESSAGE)' | dd of=$(DISK) conv=notrunc status=none
+$(DISK): | $(USER_ELFS)
+	./scripts/mkdisk.sh $(DISK) $(DISK_MB)
 
-reset-disk:
-	rm -f $(DISK)
-	$(MAKE) $(DISK)
+reset-disk: $(USER_ELFS)
+	./scripts/mkdisk.sh $(DISK) $(DISK_MB)
 
-run: knocos.elf $(DISK)
+# Copy freshly built programs into /bin, keeping every other file on the disk
+sync-programs: $(USER_ELFS) $(DISK)
+	@for program in $(USER_PROGRAMS); do \
+		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
+			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
+	done
+
+# make put FILE=model.gguf DEST=/models/model.gguf
+put: $(DISK)
+	$(KNOCFS) put $(DISK) $(FILE) $(DEST)
+
+# make ls DIR=/models
+ls: $(DISK)
+	$(KNOCFS) ls $(DISK) $(or $(DIR),/)
+
+run: knocos.elf sync-programs
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISK_FLAGS) -kernel knocos.elf
 
 test: knocos.elf

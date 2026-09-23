@@ -472,7 +472,9 @@ void guardian_process(void *arg)
 
     while (1)
     {
-        process_sleep(GUARDIAN_POLL_TICKS);
+        /* Woken at once by a crash; while waiting for the AI's verdict,
+           check the mailbox every tick */
+        process_wait_crash(pending ? 1 : GUARDIAN_POLL_TICKS);
 
         if (!pending && process_next_crash(&fault) == 0)
         {

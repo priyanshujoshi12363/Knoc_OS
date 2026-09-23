@@ -18,6 +18,7 @@
 #include "fdt.h"
 #include "spinlock.h"
 #include "program.h"
+#include "knocfs.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
@@ -276,7 +277,99 @@ static void memory_self_test(void)
     uart_puts(" read and written through megapages\n");
 }
 
-static const char *user_test_programs[] = {"hello", "badcall", "noperm", "hog", "bigmem"};
+#define WAIT_TEST_READS 200
+
+static volatile uint64_t wait_test_work;
+static uint8_t wait_test_single[VIRTIO_BLK_SECTOR_SIZE * VIRTIO_BLK_MAX_SECTORS];
+static uint8_t wait_test_multi[VIRTIO_BLK_SECTOR_SIZE * VIRTIO_BLK_MAX_SECTORS];
+
+static void wait_test_worker(void *arg)
+{
+    (void)arg;
+
+    while (1)
+    {
+        wait_test_work++;
+    }
+}
+
+/* While this process waits for the disk it must sleep, so another
+   process gets the CPU even between timer ticks */
+static void wait_queue_test(void)
+{
+    device_t *disk = device_find("disk0");
+
+    if (disk == 0 || !disk->ready)
+    {
+        log_warn("Wait queue test skipped: no disk");
+        return;
+    }
+
+    int worker = process_create("wait-worker", PROCESS_CLASS_NORMAL, wait_test_worker, 0);
+
+    if (worker < 0)
+    {
+        panic("Could not create the wait test worker");
+    }
+
+    uint64_t blocks_before = process_block_count();
+    uint64_t work_before = wait_test_work;
+
+    for (int i = 0; i < WAIT_TEST_READS; i++)
+    {
+        if (device_read_block(disk, (uint64_t)(i % 16), wait_test_single) != 0)
+        {
+            panic("Disk read failed");
+        }
+    }
+
+    uint64_t blocks = process_block_count() - blocks_before;
+    uint64_t work = wait_test_work - work_before;
+
+    process_kill(worker);
+
+    /* A read that finished before the driver checked needs no sleep, but
+       every read that did sleep must have let the worker run */
+    if (blocks > 0 && work == 0)
+    {
+        panic("Disk reads slept but no other process ran");
+    }
+
+    for (int i = 0; i < VIRTIO_BLK_MAX_SECTORS; i++)
+    {
+        if (device_read_block(disk, (uint64_t)i, wait_test_single + i * VIRTIO_BLK_SECTOR_SIZE) != 0)
+        {
+            panic("Disk read failed");
+        }
+    }
+
+    if (device_read_blocks(disk, 0, VIRTIO_BLK_MAX_SECTORS, wait_test_multi) != 0)
+    {
+        panic("Multi-sector read failed");
+    }
+
+    for (uint64_t i = 0; i < sizeof(wait_test_multi); i++)
+    {
+        if (wait_test_multi[i] != wait_test_single[i])
+        {
+            panic("Multi-sector read returned different data");
+        }
+    }
+
+    uart_puts("[INFO] Wait queues verified: ");
+    uart_put_uint(WAIT_TEST_READS);
+    uart_puts(" disk reads, the reader slept ");
+    uart_put_uint(blocks);
+    uart_puts(" times and another process ran meanwhile\n");
+
+    if (blocks == 0)
+    {
+        log_info("(the disk answered every read instantly, so there was nothing to wait for)");
+    }
+    log_info("Multi-sector disk read verified: 8 sectors in one request");
+}
+
+static const char *user_test_programs[] = {"hello", "badcall", "noperm", "hog", "bigmem", "files", "modelcheck"};
 
 #define USER_TEST_COUNT (sizeof(user_test_programs) / sizeof(user_test_programs[0]))
 
@@ -321,7 +414,18 @@ static void user_mode_test(void)
     }
 
     log_info("User memory verified: every page and page table was returned when the programs exited");
-    log_info("User mode verified: 5 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced");
+
+    if (knocfs_mounted())
+    {
+        if (process_disk_loads() == 0)
+        {
+            panic("Programs were not loaded from the disk");
+        }
+
+        log_info_uint("Programs loaded from /bin on disk: ", process_disk_loads());
+    }
+
+    log_info("User mode verified: 7 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced");
 }
 
 static void start_program(const char *name)
@@ -346,7 +450,7 @@ static void console_process(void *arg)
 
         if (device_read(console, &c, 1) <= 0)
         {
-            process_sleep(1);
+            uart_wait_input();
             continue;
         }
 
@@ -531,6 +635,7 @@ static void scheduler_test(void *arg)
         process_kill(sched_workers[i].pid);
     }
 
+    wait_queue_test();
     user_mode_test();
 
     log_info("All self-tests passed");
@@ -826,6 +931,25 @@ void kernel_main(uintptr_t dtb)
     else
     {
         log_warn("No disk attached");
+    }
+
+    if (disk != 0 && disk->ready && knocfs_mount(disk) == 0)
+    {
+        uint64_t total_bytes;
+        uint64_t free_bytes;
+        uint32_t files;
+
+        knocfs_usage(&total_bytes, &free_bytes, &files);
+
+        print_mib("[INFO] KnocFS mounted on disk0: ", total_bytes);
+        uart_puts(", ");
+        uart_put_uint(files);
+        print_mib(" files, ", free_bytes);
+        uart_puts(" free\n");
+    }
+    else
+    {
+        log_warn("No KnocFS on disk0: programs run from the kernel's built-in copies (make reset-disk)");
     }
 
     uint64_t consecutive_crashes = guardian_boot_report(disk);
