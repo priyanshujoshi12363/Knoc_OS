@@ -63,6 +63,8 @@ clear_bss_done:
     li t0, SSTATUS_SIE
     csrc mstatus, t0
 
+    csrw sscratch, zero
+
     li t0, AISPACE_PMP_NAPOT_ADDR
     csrw pmpaddr0, t0
 
@@ -255,10 +257,7 @@ trap_output:
 trap_loop:
     j trap_loop
 
-.align 2
-supervisor_trap:
-    addi sp, sp, -256
-
+.macro SAVE_REGISTERS
     sd ra, 0(sp)
     sd gp, 8(sp)
     sd tp, 16(sp)
@@ -289,13 +288,9 @@ supervisor_trap:
     sd t4, 216(sp)
     sd t5, 224(sp)
     sd t6, 232(sp)
+.endm
 
-    addi t0, sp, 256
-    sd t0, 240(sp)
-
-    mv a0, sp
-    call supervisor_trap_handler
-
+.macro RESTORE_REGISTERS
     ld ra, 0(sp)
     ld gp, 8(sp)
     ld tp, 16(sp)
@@ -326,8 +321,50 @@ supervisor_trap:
     ld t4, 216(sp)
     ld t5, 224(sp)
     ld t6, 232(sp)
+.endm
 
+/* sscratch is 0 while the CPU runs kernel code, and holds the top of the
+   current process's kernel stack while it runs a user program. So one
+   swap tells us where the trap came from, and gives us a safe stack. */
+.align 2
+supervisor_trap:
+    csrrw sp, sscratch, sp
+    bnez sp, supervisor_trap_from_user
+    csrrw sp, sscratch, sp
+
+    addi sp, sp, -256
+    SAVE_REGISTERS
+
+    addi t0, sp, 256
+    sd t0, 240(sp)
+    j supervisor_trap_call
+
+supervisor_trap_from_user:
+    addi sp, sp, -256
+    SAVE_REGISTERS
+
+    csrr t0, sscratch
+    sd t0, 240(sp)
+    csrw sscratch, zero
+
+supervisor_trap_call:
+    mv a0, sp
+    call supervisor_trap_handler
+
+    csrr t0, sstatus
+    andi t0, t0, SSTATUS_SPP
+    beqz t0, supervisor_return_to_user
+
+    RESTORE_REGISTERS
     addi sp, sp, 256
+    sret
+
+supervisor_return_to_user:
+    addi t0, sp, 256
+    csrw sscratch, t0
+
+    RESTORE_REGISTERS
+    ld sp, 240(sp)
     sret
 
 trap_message:

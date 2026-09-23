@@ -1,0 +1,287 @@
+#include "syscall.h"
+#include "syscall_abi.h"
+#include "process.h"
+#include "program.h"
+#include "device.h"
+#include "timer.h"
+#include "uart.h"
+#include "vm.h"
+#include "page.h"
+#include "string.h"
+
+#define SYSCALL_WRITE_MAX 4096
+#define SYSCALL_CHUNK 64
+#define SYSCALL_SLEEP_MAX 6000
+
+static const char *syscall_names[SYS_COUNT] = {
+    [SYS_EXIT] = "exit",
+    [SYS_WRITE] = "write",
+    [SYS_READ] = "read",
+    [SYS_GETPID] = "getpid",
+    [SYS_YIELD] = "yield",
+    [SYS_SLEEP] = "sleep",
+    [SYS_UPTIME] = "uptime",
+    [SYS_SPAWN] = "spawn",
+    [SYS_MEM_ALLOC] = "mem_alloc",
+};
+
+const char *syscall_name(uint64_t number)
+{
+    return number < SYS_COUNT ? syscall_names[number] : "unknown";
+}
+
+/* A user pointer is never used directly: every page is looked up in the
+   program's own page table (it must be a user page with the right
+   permission) and copied through its physical address. A bad pointer
+   becomes E_FAULT instead of a kernel crash. */
+static int copy_from_user(void *destination, uintptr_t source, uint64_t length)
+{
+    uint8_t *to = (uint8_t *)destination;
+
+    while (length > 0)
+    {
+        uintptr_t physical;
+
+        if (vm_user_translate(process_user_root(), source, PTE_R, &physical) != 0)
+        {
+            return -1;
+        }
+
+        uint64_t chunk = PAGE_SIZE - (source & (PAGE_SIZE - 1));
+
+        if (chunk > length)
+        {
+            chunk = length;
+        }
+
+        memcpy(to, (const void *)physical, chunk);
+        to += chunk;
+        source += chunk;
+        length -= chunk;
+    }
+
+    return 0;
+}
+
+static int copy_to_user(uintptr_t destination, const void *source, uint64_t length)
+{
+    const uint8_t *from = (const uint8_t *)source;
+
+    while (length > 0)
+    {
+        uintptr_t physical;
+
+        if (vm_user_translate(process_user_root(), destination, PTE_W, &physical) != 0)
+        {
+            return -1;
+        }
+
+        uint64_t chunk = PAGE_SIZE - (destination & (PAGE_SIZE - 1));
+
+        if (chunk > length)
+        {
+            chunk = length;
+        }
+
+        memcpy((void *)physical, from, chunk);
+        from += chunk;
+        destination += chunk;
+        length -= chunk;
+    }
+
+    return 0;
+}
+
+static int copy_string_from_user(char *destination, uintptr_t source, uint64_t max)
+{
+    for (uint64_t i = 0; i < max; i++)
+    {
+        if (copy_from_user(&destination[i], source + i, 1) != 0)
+        {
+            return -1;
+        }
+
+        if (destination[i] == 0)
+        {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+static const char *capability_name(uint32_t capability)
+{
+    if (capability == CAP_CONSOLE)
+    {
+        return "CONSOLE";
+    }
+
+    if (capability == CAP_SPAWN)
+    {
+        return "SPAWN";
+    }
+
+    return "MEMORY";
+}
+
+static int allowed(uint64_t number, uint32_t capability)
+{
+    if (process_capabilities() & capability)
+    {
+        return 1;
+    }
+
+    process_note_denied();
+
+    uart_puts("[SECURITY] ");
+    uart_puts(process_current_name());
+    uart_puts(" (pid ");
+    uart_put_uint((uint64_t)process_current_pid());
+    uart_puts(") called ");
+    uart_puts(syscall_name(number));
+    uart_puts(" without the ");
+    uart_puts(capability_name(capability));
+    uart_puts(" capability: denied\n");
+
+    return 0;
+}
+
+static int64_t sys_write(uintptr_t buffer, uint64_t length)
+{
+    char chunk[SYSCALL_CHUNK];
+    device_t *console = device_find("uart0");
+    uint64_t written = 0;
+
+    if (length > SYSCALL_WRITE_MAX)
+    {
+        return E_INVAL;
+    }
+
+    while (written < length)
+    {
+        uint64_t size = length - written;
+
+        if (size > SYSCALL_CHUNK)
+        {
+            size = SYSCALL_CHUNK;
+        }
+
+        if (copy_from_user(chunk, buffer + written, size) != 0)
+        {
+            return written > 0 ? (int64_t)written : E_FAULT;
+        }
+
+        device_write(console, chunk, size);
+        written += size;
+    }
+
+    return (int64_t)written;
+}
+
+static int64_t sys_read(uintptr_t buffer, uint64_t length)
+{
+    char chunk[SYSCALL_CHUNK];
+
+    if (length > SYSCALL_CHUNK)
+    {
+        length = SYSCALL_CHUNK;
+    }
+
+    int64_t count = device_read(device_find("uart0"), chunk, length);
+
+    if (count <= 0)
+    {
+        return 0;
+    }
+
+    if (copy_to_user(buffer, chunk, (uint64_t)count) != 0)
+    {
+        return E_FAULT;
+    }
+
+    return count;
+}
+
+static int64_t sys_spawn(uintptr_t name_address)
+{
+    char name[PROCESS_NAME_MAX];
+
+    if (copy_string_from_user(name, name_address, PROCESS_NAME_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    const program_t *program = program_find(name);
+
+    if (program == 0)
+    {
+        return E_NOTFOUND;
+    }
+
+    int pid = process_spawn(program);
+
+    return pid < 0 ? E_NOMEM : pid;
+}
+
+int64_t syscall_handle(trap_frame_t *frame)
+{
+    uint64_t number = frame->a7;
+
+    process_record_syscall(number);
+
+    switch (number)
+    {
+    case SYS_EXIT:
+        process_exit_code((int)frame->a0);
+
+    case SYS_WRITE:
+        if (!allowed(number, CAP_CONSOLE))
+        {
+            return E_PERM;
+        }
+
+        return sys_write(frame->a0, frame->a1);
+
+    case SYS_READ:
+        if (!allowed(number, CAP_CONSOLE))
+        {
+            return E_PERM;
+        }
+
+        return sys_read(frame->a0, frame->a1);
+
+    case SYS_GETPID:
+        return process_current_pid();
+
+    case SYS_YIELD:
+        process_yield();
+        return 0;
+
+    case SYS_SLEEP:
+        process_sleep(frame->a0 < SYSCALL_SLEEP_MAX ? frame->a0 : SYSCALL_SLEEP_MAX);
+        return 0;
+
+    case SYS_UPTIME:
+        return (int64_t)timer_ticks();
+
+    case SYS_SPAWN:
+        if (!allowed(number, CAP_SPAWN))
+        {
+            return E_PERM;
+        }
+
+        return sys_spawn(frame->a0);
+
+    case SYS_MEM_ALLOC:
+        if (!allowed(number, CAP_MEMORY))
+        {
+            return E_PERM;
+        }
+
+        return process_mem_alloc(frame->a0);
+
+    default:
+        return E_BADCALL;
+    }
+}

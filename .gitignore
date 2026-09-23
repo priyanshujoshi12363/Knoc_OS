@@ -7,3 +7,4 @@ virt.dtb
 virt.dts
 /.claude
 disk.img
+user/*.elf

@@ -43,11 +43,20 @@ KERNEL_OBJS = boot/boot.o \
               kernel/faulty.o \
               kernel/fdt.o \
               kernel/spinlock.o \
+              kernel/syscall.o \
+              kernel/elf.o \
+              kernel/program.o \
+              kernel/programs.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 
-DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d)
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy
+USER_LIB_OBJS = user/crt0.o user/ulib.o
+USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
+USER_OBJS = $(USER_LIB_OBJS) $(USER_PROGRAMS:%=user/%.o)
+
+DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
 .PHONY: all clean run test timer-test size pages reset-disk
 
@@ -55,6 +64,11 @@ all: knocos.elf
 
 knocos.elf: $(KERNEL_OBJS) boot/linker.ld
 	$(LD) -T boot/linker.ld -o knocos.elf $(KERNEL_OBJS)
+
+user/%.elf: user/%.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) $<
+
+kernel/programs.o: $(USER_ELFS)
 
 timer.elf: $(TIMER_OBJS) timer/linker.ld
 	$(LD) -T timer/linker.ld -o timer.elf $(TIMER_OBJS)
@@ -70,7 +84,7 @@ kernel/main.o: VERSION
 -include $(DEPS)
 
 clean:
-	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(DEPS)
+	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(USER_OBJS) $(USER_ELFS) $(DEPS)
 
 $(DISK):
 	dd if=/dev/zero of=$(DISK) bs=512 count=$(DISK_SECTORS) status=none

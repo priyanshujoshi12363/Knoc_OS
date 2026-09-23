@@ -6,6 +6,7 @@
 #include "process.h"
 #include "guardian.h"
 #include "uart.h"
+#include "syscall.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -13,6 +14,7 @@
 #define EXCEPTION_BREAKPOINT 3
 #define EXCEPTION_LOAD_ACCESS_FAULT 5
 #define EXCEPTION_LOAD_PAGE_FAULT 13
+#define EXCEPTION_USER_ECALL 8
 #define INTERRUPT_SUPERVISOR_SOFTWARE 1
 #define INTERRUPT_SUPERVISOR_EXTERNAL 9
 #define INSTRUCTION_SIZE 4
@@ -190,6 +192,32 @@ void supervisor_trap_handler(trap_frame_t *frame)
         write_sepc(sepc + INSTRUCTION_SIZE);
         write_sstatus(sstatus);
         return;
+    }
+
+    /* From a user program (sstatus.SPP = 0) */
+    if (!(scause & SCAUSE_INTERRUPT) && !(sstatus & SSTATUS_SPP))
+    {
+        if ((scause & SCAUSE_CODE_MASK) == EXCEPTION_USER_ECALL)
+        {
+            frame->a0 = (uint64_t)syscall_handle(frame);
+
+            write_sepc(sepc + INSTRUCTION_SIZE);
+            write_sstatus(sstatus);
+            return;
+        }
+
+        /* A user program can't have touched kernel memory: always contain it */
+        uart_puts("[OOPS] ");
+        uart_puts(trap_name(scause));
+        uart_puts(" in user program ");
+        uart_puts(process_current_name());
+        uart_puts(" (pid ");
+        uart_put_uint((uint64_t)process_current_pid());
+        uart_puts("): stopping only this program\n");
+        log_trap_hex("sepc   = ", sepc);
+        log_trap_hex("stval  = ", stval);
+
+        process_crash(scause, sepc, stval);
     }
 
     if (!(scause & SCAUSE_INTERRUPT) &&

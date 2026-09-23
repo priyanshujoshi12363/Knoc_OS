@@ -17,9 +17,12 @@
 #include "faulty.h"
 #include "fdt.h"
 #include "spinlock.h"
+#include "program.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
+#define KEY_CTRL_E 0x05
+#define KEY_CTRL_U 0x15
 #define KEY_BACKSPACE 0x7F
 #define KEY_CTRL_F 0x06
 #define KEY_CTRL_K 0x0B
@@ -273,12 +276,69 @@ static void memory_self_test(void)
     uart_puts(" read and written through megapages\n");
 }
 
+static const char *user_test_programs[] = {"hello", "badcall", "noperm", "hog", "bigmem"};
+
+#define USER_TEST_COUNT (sizeof(user_test_programs) / sizeof(user_test_programs[0]))
+
+static void run_user_program(const char *name)
+{
+    int pid = process_spawn(program_find(name));
+    int exit_code = -1;
+
+    if (pid < 0)
+    {
+        panic("Could not start a user program");
+    }
+
+    if (process_wait(pid, &exit_code) != 0 || exit_code != 0)
+    {
+        uart_puts("[WARN] User program failed: ");
+        uart_puts(name);
+        uart_puts(", exit code ");
+        uart_put_uint((uint64_t)exit_code);
+        uart_putc('\n');
+        panic("User mode test failed");
+    }
+}
+
+static void user_mode_test(void)
+{
+    /* The first run may grow the kernel heap (process stacks), so count
+       free pages only around the second run */
+    run_user_program("hello");
+
+    unsigned long free_before = page_free_count();
+
+    for (uint32_t i = 0; i < USER_TEST_COUNT; i++)
+    {
+        run_user_program(user_test_programs[i]);
+    }
+
+    if (page_free_count() != free_before)
+    {
+        log_info_uint("Pages lost: ", free_before - page_free_count());
+        panic("User programs leaked memory");
+    }
+
+    log_info("User memory verified: every page and page table was returned when the programs exited");
+    log_info("User mode verified: 5 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced");
+}
+
+static void start_program(const char *name)
+{
+    if (process_spawn(program_find(name)) < 0)
+    {
+        log_warn("Could not start the program");
+    }
+}
+
 static void console_process(void *arg)
 {
     (void)arg;
 
     log_info("Keyboard echo ready, start typing (Ctrl-D power off)");
     log_info("Test keys: Ctrl-F process fault, Ctrl-X driver fault, Ctrl-K kernel fault, Ctrl-O overwrite kernel code, Ctrl-P panic, Ctrl-W freeze");
+    log_info("Program keys: Ctrl-U run the crash program, Ctrl-E run the spy program");
 
     while (1)
     {
@@ -310,6 +370,18 @@ static void console_process(void *arg)
 
             asm volatile("fence.i");
             log_info("unreachable");
+        }
+        else if (c == KEY_CTRL_U)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test user crash (Ctrl-U): starting the crash program");
+            start_program("crash");
+        }
+        else if (c == KEY_CTRL_E)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test user security (Ctrl-E): starting the spy program");
+            start_program("spy");
         }
         else if (c == KEY_CTRL_F)
         {
@@ -458,6 +530,8 @@ static void scheduler_test(void *arg)
     {
         process_kill(sched_workers[i].pid);
     }
+
+    user_mode_test();
 
     log_info("All self-tests passed");
 

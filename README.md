@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.10.0-blue)
+![Version](https://img.shields.io/badge/version-v0.11.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -40,6 +40,7 @@ KnocOS currently has:
 - **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
 - **AI space (Guardian core)**: CPU core 1 runs a protected space the kernel can't touch (PMP hardware). It watches the kernel, and when the kernel crashes or freezes it **keeps running**: it diagnoses the problem, saves a crash report (black box) to disk, and **restarts only the kernel from a clean copy** (warm restart), so the AI itself never stops
 - **Fault containment**: a crashing process is stopped alone, like a Linux "oops". The AI space diagnoses it and decides the fix: restart the process, leave it stopped if it keeps crashing, or **disable the driver** the crash happened in
+- **User mode + system calls**: programs run in RISC-V **U-mode** with their own page tables, so they can't touch the kernel, devices or each other. They ask the kernel for things through 9 **system calls** (`ecall`), checked against each program's **capabilities** and **memory quota**, and every call is recorded for the AI space
 - **Processes and an AI-aware scheduler**: kernel processes with their own stacks, context switching, timer preemption, and 4 scheduling classes where **AI agent work gets the largest CPU share** (60%) while the keyboard stays instant and nothing starves
 - **Automated tests** (`make test`) and **GitHub Actions CI** on every push
 - Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
@@ -47,7 +48,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.10.0 starting
+[INFO] KnocOS v0.11.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -101,6 +102,15 @@ KnocOS currently has:
 [INFO] Preemption verified: CPU-bound workers never yield, all made progress
 [INFO] Interactive wake latency (ticks): 0
 [INFO] Interactive response verified
+[hello] Hello from user mode! pid 6, uptime ticks 129   ← a program in U-mode, using system calls
+[hello] got 4 KiB at 0x0000001100000000, slept and yielded, exiting
+[badcall] kernel pointer, unmapped pointer and unknown call were all refused
+[SECURITY] noperm (pid 8) called spawn without the SPAWN capability: denied
+[noperm] spawn was refused: this program has no SPAWN capability
+[hog] 8 MiB allowed, 16 MiB more refused: quota is 16 MiB
+[bigmem] AI agent got 256 MiB at 0x0000001100000000 and used all of it
+[INFO] User memory verified: every page and page table was returned when the programs exited
+[INFO] User mode verified: 5 programs ran in U-mode with system calls, bad pointers refused, capabilities and quotas enforced
 [INFO] All self-tests passed
 [INFO] Keyboard echo ready, start typing (Ctrl-D power off)
 [INFO] Test keys: Ctrl-F process fault, Ctrl-X driver fault, Ctrl-K kernel fault, Ctrl-O overwrite kernel code, Ctrl-P panic, Ctrl-W freeze
@@ -121,27 +131,37 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Big Memory (v0.10.0)
+## ✅ Just Completed: User Mode + System Calls (v0.11.0)
 
-**Room for real AI models.** KnocOS used to assume exactly 128 MiB of RAM, with a 16 MiB AI space. Now:
+**A buggy or hostile program can't touch the kernel anymore.** Programs are separate ELF files that run in **U-mode**, the CPU's lowest privilege level, each with its **own page table**. The only way into the kernel is a **system call**:
 
-- **The firmware says how much RAM there is.** The kernel reads the **device tree** QEMU passes at boot (RAM size, CPU count) and uses all of it: 1 GiB to 8 GiB+ tested, `make run` uses 2 GiB
-- **Buddy page allocator:** hands out anything from one 4 KiB page up to a **1 GiB contiguous block** (model weights need big contiguous memory), and freed blocks merge back
-- **2 MiB megapages:** all RAM is mapped with 1026 page-table entries instead of 524,288
-- **AI space grows from 16 MiB to 256 MiB** (`0x90000000`), room for the small NN runtime (v0.14)
-- **Spinlocks:** the heap and the page allocator are locked, and the kernel and the AI space share the UART **one whole line at a time**, so their output no longer mixes
+- **9 system calls:** `exit`, `write`, `read`, `getpid`, `yield`, `sleep`, `uptime`, `spawn`, `mem_alloc`
+- **Safe pointers:** every pointer a program passes is checked in *its own* page table. A kernel or unmapped address gets `E_FAULT`, and the kernel never crashes
+- **Capabilities:** each program gets permission bits (`CONSOLE`, `SPAWN`, `MEMORY`). A forbidden call is refused and logged as `[SECURITY]`
+- **Memory quotas by class:** normal programs 16 MiB, **AI_AGENT programs 1 GiB** (room for models). Big blocks are mapped with 2 MiB megapages
+- **The AI sees what programs do:** every system call is recorded. When a program crashes, the AI space gets its last calls and how many were forbidden, and **won't restart a program that tried forbidden things**. This is the first step of intent-based security
+- **No leaks:** every page and page table is returned when a program exits, which the self-test checks
 
 ```text
-[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
-[INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
-[INFO] RAM mapped with 2 MiB megapages: 1026
-[INFO] AI space online (core 1, 256 MiB protected at 0x0000000090000000)
-[INFO] Spinlock verified: exclusive, interrupts off while held
-[INFO] Buddy allocator verified: 64 MiB contiguous block, 1024 single pages freed and merged back
-[INFO] Large memory verified: 1024 MiB block at 0x00000000C0000000 read and written through megapages
+[hello] Hello from user mode! pid 6, uptime ticks 129
+[badcall] kernel pointer, unmapped pointer and unknown call were all refused
+[SECURITY] noperm (pid 8) called spawn without the SPAWN capability: denied
+[hog] 8 MiB allowed, 16 MiB more refused: quota is 16 MiB
+[bigmem] AI agent got 256 MiB at 0x0000001100000000 and used all of it
+[INFO] User memory verified: every page and page table was returned when the programs exited
+
+[spy] trying to start another program without permission
+[SECURITY] spy (pid 16) called spawn without the SPAWN capability: denied
+[spy] trying to read kernel memory at 0x80000000
+[OOPS] Load page fault in user program spy (pid 16): stopping only this program
+[AI] Process crash contained: spy (pid 16, user program), the kernel keeps running
+[AI]   last system calls: write, spawn, write  (forbidden: 1)
+[AI] Diagnosis: The program tried to touch memory outside its own space (kernel or devices). The page table blocked it.
+[AI] Security: it made 1 forbidden system call(s) before crashing: treated as suspicious
+[AI] Action: leave spy stopped (suspicious program, not restarted)
 ```
 
-Before this: **v0.9.0**, fault containment and warm kernel restart. A crashing process stops alone and the AI space decides the fix (restart it or disable its driver). A crashing kernel is restored from a clean copy while the AI keeps running. **Next up: v0.11.0, user mode + system calls**, so a buggy program can't touch the kernel at all.
+Before this: **v0.10.0**, big memory (device tree, buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space). **Next up: v0.12.0, the filesystem (KnocFS)**, so programs and AI models live on disk instead of inside the kernel image.
 
 Recent progress:
 
@@ -158,7 +178,8 @@ Recent progress:
 | `bf051b7` | Processes, context switching, AI-aware scheduler, M-mode private stack, version `v0.7.0` |
 | `04db193` | AI space on core 1 (PMP-protected), heartbeat mailbox, crash/freeze detection, black box, rule brain, safe mode, boot-loop protection, version `v0.8.0` |
 | `2773100` | Fault containment, AI verdicts (restart process / disable driver), warm kernel restart from a clean copy, kernel code check, version `v0.9.0` |
-| *(uncommitted)* | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
+| `4447fb6` | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
+| *(uncommitted)* | User mode, per-program page tables, 9 system calls, capabilities, memory quotas, system call trace for the AI, ELF loader, 7 user programs, version `v0.11.0` |
 
 What works right now:
 
@@ -186,7 +207,8 @@ Next steps:
 
 - [x] v0.9.0: fault containment (a crashing process only kills itself), process auto-restart, disabling a crashing driver, warm kernel restart by the AI space
 - [x] v0.10.0: big memory (2–4 GiB+) for AI models
-- [ ] v0.11.0+: user mode, filesystem, shell (see the Milestone Roadmap)
+- [x] v0.11.0: user mode + system calls, capabilities, quotas, system call trace for the AI
+- [ ] v0.12.0+: filesystem, shell (see the Milestone Roadmap)
 
 ---
 
@@ -250,6 +272,7 @@ kernel_main(dtb) (Supervisor mode)  kernel/main.c
    ├─ scheduler_start()
    └─ idle loop (wfi)
         sched-test: start 3 workers, sleep 1 s, check CPU shares, kill workers,
+                    run the user programs (U-mode) and check their exit codes,
                     start "console" (INTERACTIVE) → keyboard echo
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
@@ -317,6 +340,11 @@ KnocOS/
 │   ├── page.c/h      # Buddy page allocator (4 KiB pages up to 1 GiB blocks)
 │   ├── fdt.c/h       # Device tree parser: RAM size, CPU count
 │   ├── spinlock.c/h  # Spinlocks (interrupts off while held)
+│   ├── syscall.c/h   # System call dispatch, safe user copies, capabilities
+│   ├── syscall_abi.h # System call numbers, errors, capabilities, user address layout
+│   ├── elf.c/h       # ELF loader for user programs
+│   ├── program.c/h   # Built-in program table (class + capabilities)
+│   ├── programs.S    # Embeds the user program ELF files (.incbin)
 │   ├── vm.c/h        # Sv39 page tables, mapping, satp enable, debug
 │   ├── heap.c/h      # kmalloc / kfree kernel heap
 │   ├── timer.c/h     # rdtime, tick counter, timer interrupt, shared timer constants
@@ -335,6 +363,11 @@ KnocOS/
 │   ├── faulty.c/h    # faulty0: a test driver with a bug on purpose (Ctrl-X)
 │   ├── mailbox.h     # Shared kernel ↔ AI space mailbox layout
 │   └── blackbox.h    # On-disk crash report format
+├── user/
+│   ├── crt0.S        # Program entry: call main, then exit
+│   ├── ulib.c/h      # System call wrappers, print, memset/memcpy
+│   ├── linker.ld     # Programs are linked at 0x1000000000
+│   └── *.c           # hello, badcall, noperm, hog, bigmem, crash, spy
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -622,6 +655,50 @@ A process is restarted up to 3 times, then left stopped. With no AI space (`-smp
 
 **Limits (next steps):** the brain is rules for now (a small NN in v0.15, an LLM later). The disabled-driver list lives in the AI space's memory, so a full power cycle clears it. The AI space and the kernel share the UART without a lock, so their output can mix if both print at once (spinlocks come in v0.10). All processes are still kernel threads, so a process bug can still corrupt kernel memory; real isolation comes with user mode (v0.11).
 
+### User mode and system calls: `kernel/syscall.c`, `kernel/elf.c`, `user/`
+
+```text
+virtual address space of one program (its own page table)
+0x1000000000  program code + data      (from the ELF file, R-X / RW-, U bit)
+0x1100000000  mem_alloc() blocks       (grows up, megapages for blocks >= 2 MiB)
+0x1F80000000  top of the 64 KiB stack  (grows down)
+kernel, RAM, devices: mapped too, but WITHOUT the U bit → the program can't touch them
+```
+
+**Entering and leaving U-mode:**
+- `user_enter()` (`switch.S`) sets `sepc` = program entry, `sstatus.SPP` = 0 (U-mode), `sscratch` = the process's kernel stack, clears every register and runs `sret`
+- `sscratch` is 0 while in the kernel and holds the kernel stack while in a program. `supervisor_trap` swaps it with `sp` to know where the trap came from, so a program's stack pointer is never trusted
+- On the way back, `sstatus.SPP` decides: `sret` to the program (after restoring `sscratch`) or to kernel code
+- Each process has a `satp` value. The scheduler switches page tables on every process switch (`vm_switch()`)
+
+**System calls** (`kernel/syscall_abi.h`, shared by kernel, AI space and programs): number in `a7`, arguments in `a0`–`a5`, `ecall`, result in `a0` (negative = error: `E_FAULT`, `E_PERM`, `E_NOMEM`...).
+
+| Call | Capability | What it does |
+|---|---|---|
+| `exit(code)` | | End the program, free all its memory |
+| `write(buf, len)` / `read(buf, len)` | `CONSOLE` | Console output / input (non-blocking) |
+| `getpid()`, `yield()`, `sleep(ticks)`, `uptime()` | | Process basics |
+| `spawn(name)` | `SPAWN` | Start a built-in program |
+| `mem_alloc(bytes)` | `MEMORY` | Get zeroed memory, within the quota |
+
+**Safety:**
+- `copy_from_user()` / `copy_to_user()` look up every page in **the program's own page table** (must be a user page with the right permission) and copy through its physical address. Bad pointers give `E_FAULT`
+- Any exception in U-mode is contained: the program is stopped and reported to the AI space, whatever it was doing
+- **Capabilities** per program; a denied call is refused, counted and logged `[SECURITY]`
+- **Quotas:** 16 MiB for normal programs, 1 GiB for `AI_AGENT` programs. Memory is always zeroed before a program gets it
+
+**Programs** (`user/`): `crt0.S` + `ulib.c` (system call wrappers, `print`) + one `.c` file each, linked at `0x1000000000` by `user/linker.ld`. Until the filesystem exists, `kernel/programs.S` embeds the ELF files in the kernel image with `.incbin`, and `kernel/program.c` gives each one a class and capabilities. `elf_load()` checks the header and maps each `PT_LOAD` segment with its permissions.
+
+| Program | Class, capabilities | Shows |
+|---|---|---|
+| `hello` | NORMAL, all | System calls work, memory, sleep, yield |
+| `badcall` | NORMAL, CONSOLE + SPAWN | Kernel/unmapped pointers and unknown calls are refused |
+| `noperm` | NORMAL, CONSOLE | A call without its capability is denied |
+| `hog` | NORMAL, CONSOLE + MEMORY | The 16 MiB quota |
+| `bigmem` | **AI_AGENT**, CONSOLE + MEMORY | An AI program gets 256 MiB |
+| `crash` (Ctrl-U) | NORMAL, CONSOLE | Null pointer → AI restarts it 3 times, then stops it |
+| `spy` (Ctrl-E) | NORMAL, CONSOLE | Forbidden call + reading kernel memory → blocked, AI won't restart it |
+
 ### Disk: `kernel/virtio_blk.c`
 
 A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio block device, like the `.vdi` file behind a VirtualBox disk.
@@ -665,7 +742,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.10.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.11.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -675,11 +752,11 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 `make test` runs `scripts/test.sh`, which:
 
 1. Creates a fresh temporary disk image with `Hello from the host!` in sector 0
-2. **Boot 1:** checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests and `Disk boot count: 1`) and there is no `[PANIC]`
+2. **Boot 1:** checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
 3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
 5. **Boot 2** with the same disk image: checks `Disk boot count: 2`, which proves data written to the disk survives a reboot
-6. **Run 3** (fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
+6. **Run 3** (user programs, fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-U → the `crash` program is restarted 3 times by the AI, then left stopped. Ctrl-E → `spy`'s forbidden call is logged, its read of kernel memory is blocked, and the AI refuses to restart it (the test fails if `spy` ever reads kernel memory). Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
 7. **Run 4**, same disk: one more panic is the 4th crash in a row → the kernel stays halted and the AI space says it stays online
 
 QEMU runs with `-smp 2 -m 2G` (core 0 = kernel, core 1 = AI space, 2 GiB of RAM). `make run RAM=8G` runs with more memory (at least `1G`).
@@ -794,8 +871,8 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Multiple processes
 - [x] Fault containment (a crashing process only stops itself)
 - [ ] Event-based waiting (no polling)
-- [ ] User mode
-- [ ] System calls
+- [x] User mode
+- [x] System calls
 
 ### Phase 6: Storage & Filesystems
 
@@ -807,7 +884,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 
 ### Phase 7: User Space
 
-- [ ] User programs
+- [x] User programs (built in, ELF loader)
 - [ ] Shell
 - [ ] Standard library
 - [ ] Process management
@@ -866,9 +943,9 @@ KnocOS aims to become a production-grade operating system. This is what that req
 | Device driver model (device abstraction) | ✅ |
 | Processes, scheduler, context switching | ✅ (kernel threads) |
 | AI-aware scheduling | ✅ |
-| User mode and memory isolation between programs | ⬜ |
-| System calls | ⬜ |
-| Multi-core (SMP) support and locking | ⬜ |
+| User mode and memory isolation between programs | ✅ |
+| System calls | ✅ (9 calls, capabilities, quotas) |
+| Multi-core (SMP) support and locking | 🚧 (spinlocks, shared UART lock; the kernel itself runs on one core) |
 | Disk driver (virtio-blk) | ✅ |
 | Filesystem | ⬜ |
 | Networking stack | ⬜ |
@@ -911,6 +988,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.10.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.11.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls.

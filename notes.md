@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** the device tree, the buddy allocator, virtual memory (Sv39) and megapages, kernel heap, spinlocks
-- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart, user mode and system calls
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** user mode, filesystem, AI-OS
+- **Part 8: What comes next:** filesystem, shell, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -452,7 +452,7 @@ One twist: the owner might **crash in the middle of a line** (the kernel panics 
 
 ---
 
-# Part 5: Traps, Interrupts and Devices
+# Part 5: Traps, Interrupts, Devices and Processes
 
 ## 5.1 Vocabulary
 
@@ -1015,8 +1015,96 @@ Same lesson as v0.8.0's warm-reboot bugs: **never assume the hardware is clean a
 ### Known limits
 
 - The disabled-driver list lives in AI memory: a full power cycle forgets it (a filesystem will store it, v0.12)
-- Both cores print to the same UART with no lock, so lines can mix if both print at once (spinlocks in v0.10)
-- Processes are still kernel threads: a "contained" bug may already have damaged kernel memory. Real isolation needs user mode (v0.11)
+- Both cores print to the same UART with no lock, so lines can mix if both print at once (fixed in v0.10 with a line lock, see 4.7)
+- Kernel processes are kernel threads: a "contained" bug may already have damaged kernel memory. User programs (v0.11, see 5.14) can't, because they run in U-mode
+
+## 5.14 User mode and system calls (v0.11.0)
+
+### Why user mode?
+
+Up to v0.10, every process ran in S-mode, the kernel's own privilege level. A bug in any process could overwrite anything: the heap, the page tables, other processes. Fault containment helped, but only **after** the damage. **User mode** stops the damage from happening at all.
+
+RISC-V has three privilege levels, and KnocOS now uses all of them:
+
+| Mode | Who | Can touch |
+|---|---|---|
+| M (machine) | Boot code, the timer handler, the AI space | Everything (PMP limits the others) |
+| S (supervisor) | The kernel | Pages without the U bit, CSRs like `satp` |
+| **U (user)** | **Programs** | **Only pages with the U bit.** No CSRs, no devices |
+
+A program that touches anything else gets a page fault, and the kernel stops it. **Windows comparison:** ring 3 (apps) vs ring 0 (the kernel). An app crash shows "X has stopped working", never a blue screen.
+
+### One page table per program
+
+Each program gets its own root page table (`vm_user_create()`):
+
+```text
+root slot 0        MMIO (UART, PLIC, virtio...)   ┐
+root slots 2..9    RAM, identity megapages        │ copied from the kernel root:
+root slot 128      kernel heap                    ┘ the SAME tables, no U bit
+root slots 64..127 0x1000000000..0x1FFFFFFFFF     ← private to this program, U bit
+```
+
+Copying the kernel's root entries means the kernel stays mapped while it handles a trap, so there's no need to switch page tables on every system call. Without the U bit, the program still can't read any of it. Linux did exactly this for many years (until the Meltdown CPU bug, which needed the kernel to be fully unmapped).
+
+On every process switch, the scheduler loads the next process's `satp` (`vm_switch()`) and flushes the TLB with `sfence.vma`, because the same virtual address now means different memory.
+
+### Getting into U-mode (and back)
+
+There's no "jump to U-mode" instruction. The kernel pretends it's **returning** from a trap: `sret` goes to `sepc` in the mode stored in `sstatus.SPP`. `user_enter()` sets `sepc` = the program's entry point, `SPP` = 0 (U-mode), `SPIE` = 1 (interrupts on afterwards), clears **every register** (so no kernel values leak into the program), and runs `sret`.
+
+Coming back is the harder part. A trap from U-mode lands in `supervisor_trap`, but `sp` is the **program's** stack pointer, which could be anything. So KnocOS uses `sscratch`:
+
+```text
+sscratch = 0                 while the CPU runs kernel code
+sscratch = kernel stack top  while the CPU runs a program
+
+supervisor_trap:
+  csrrw sp, sscratch, sp     swap them
+  sp != 0?  → came from a program: sp is now a safe kernel stack,
+              the program's sp is in sscratch (saved into the frame)
+  sp == 0?  → came from the kernel: swap back, continue as before
+```
+
+On the way out, `sstatus.SPP` says where to return. If it's 0 (a program), `sscratch` gets the kernel stack top again before `sret`.
+
+### System calls
+
+A program asks the kernel for something with `ecall`. That's a trap with `scause = 8` ("environment call from U-mode"):
+
+```text
+program:  a7 = 1 (write), a0 = buffer, a1 = length, ecall
+kernel:   syscall_handle(frame): switch on frame->a7, result → frame->a0, sepc += 4
+program:  continues after the ecall, result in a0
+```
+
+`sepc += 4` matters: `sepc` points **at** the `ecall`, and returning there would call the kernel forever. The numbers, errors and capabilities are in one header (`kernel/syscall_abi.h`) shared by the kernel, the AI space and every program.
+
+### Never trust a pointer from a program
+
+`write(buf, len)` gives the kernel an address. The program could pass a **kernel** address, hoping the kernel reads its own secrets and prints them. The kernel can read kernel memory, so a naive `memcpy` would leak it. KnocOS checks every page **in the program's page table**: it must be a user page (U bit) with read permission, and the copy goes through the physical address found there. A bad pointer returns `E_FAULT`. The `badcall` program tests exactly this.
+
+### Capabilities, quotas and the trace: first steps of intent security
+
+- **Capabilities:** each built-in program has permission bits (`CONSOLE`, `SPAWN`, `MEMORY`). A call without its capability is refused (`E_PERM`), counted and logged: `[SECURITY] noperm (pid 8) called spawn without the SPAWN capability: denied`
+- **Quotas:** 16 MiB for normal programs, 1 GiB for `AI_AGENT` programs. AI-aware scheduling now extends to memory. Memory is **zeroed** before a program gets it, so it can never see another program's old data
+- **Trace:** the kernel records every program's last 8 system calls. When a program crashes, the AI space gets the trace and the number of forbidden calls:
+
+```text
+[AI]   last system calls: write, spawn, write  (forbidden: 1)
+[AI] Security: it made 1 forbidden system call(s) before crashing: treated as suspicious
+[AI] Action: leave spy stopped (suspicious program, not restarted)
+```
+
+This is the seed of goal.md's **intent-based security**: judge programs by *what they try to do*. Today it's one rule. The recorded traces are the kind of data the intent classifier NN will learn from (v0.15).
+
+### Loading programs: ELF
+
+Programs are normal ELF files built from `user/`: `crt0.S` (calls `main`, then `exit`), `ulib.c` (system call wrappers) and one `.c` file each, linked at `0x1000000000`. `elf_load()` reads the program headers and, for each `PT_LOAD` segment, allocates memory, copies the bytes, zeroes the rest (`.bss`) and maps it with the segment's permissions (code `R-X`, data `RW-`). There's no filesystem yet, so `kernel/programs.S` embeds the ELF files in the kernel with `.incbin`. v0.12 will load them from disk instead.
+
+### Cleaning up
+
+Every block a program gets (code, stack, `mem_alloc`) is recorded in its process. On `exit`, the kernel first switches back to the kernel page table (it can't free the table it's standing on), then frees the program's page tables and every block. The self-test checks that the number of free pages is exactly the same after running 5 programs, including the 256 MiB AI block.
 
 ---
 
@@ -1059,8 +1147,9 @@ Same lesson as v0.8.0's warm-reboot bugs: **never assume the hardware is clean a
 | 0.8.0 | AI space: survives kernel crashes, black box, recovery |
 | 0.9.0 | Fault containment, AI verdicts, warm kernel restart: the AI never stops |
 | 0.10.0 | Big memory: device tree, buddy allocator, megapages, spinlocks, 256 MiB AI space |
+| 0.11.0 | User mode, system calls, capabilities, quotas, system call trace for the AI |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.10.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.11.0 && git push --tags`.
 
 ---
 
@@ -1115,15 +1204,13 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 User mode and system calls (v0.11.0)
+## 8.1 A filesystem (v0.12.0)
 
-- Programs run in **U-mode** with `U` bit page mappings, so they can't touch the kernel or devices.
-- To ask the kernel for something, a program runs **`ecall`**, which traps to S-mode (exception 8). The kernel reads the request number in `a7` and the arguments in `a0`–`a5`.
-- **Windows comparison:** `syscall` into `ntoskrnl`, like `NtReadFile` and `NtCreateFile`.
+Right now the disk is just 2048 numbered sectors. A **filesystem** organizes them into **files and folders**: a small table on the disk says "file `hello.txt` is in sectors 10–12, 1234 bytes long". It will use `device_read_block` / `device_write_block` on `disk0`, without knowing it's virtio. **Windows comparison:** NTFS on your C: drive. Programs and AI models will then load from disk instead of being embedded in the kernel, with `open`/`read`/`write`/`close` system calls guarded by capabilities.
 
-## 8.2 A filesystem (v0.12.0)
+## 8.2 A shell (v0.13.0)
 
-Right now the disk is just 2048 numbered sectors. A **filesystem** organizes them into **files and folders**: a small table on the disk says "file `hello.txt` is in sectors 10–12, 1234 bytes long". It will use `device_read_block` / `device_write_block` on `disk0`, without knowing it's virtio. **Windows comparison:** NTFS on your C: drive.
+`knocsh`, the first interactive user program: `ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`.
 
 ## 8.3 Toward the AI-OS
 
@@ -1197,6 +1284,14 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | Term | Meaning |
 |---|---|
 | **Bare metal** | Running with no OS underneath |
+| **Buddy allocator** | Page allocator with power-of-two blocks that split on allocation and merge with their "buddy" on free |
+| **Capability** | A permission bit a program must have to use a system call (`CONSOLE`, `SPAWN`, `MEMORY`) |
+| **Device tree** | Binary description of the machine (RAM, CPUs, devices) passed by the firmware |
+| **ELF** | The executable file format of KnocOS programs (and of Linux) |
+| **Megapage** | A 2 MiB mapping made by one leaf entry in a level-1 page table |
+| **Spinlock** | A lock that waits by looping on an atomic instruction |
+| **System call** | A program's request to the kernel: `ecall` with a number in `a7` |
+| **U-mode** | User mode: the CPU's lowest privilege level, where programs run |
 | **CLINT** | Core-local interruptor: the timer (and software interrupts) hardware |
 | **Coalescing** | Merging neighbouring free heap blocks |
 | **Context switch** | Saving one program's registers and loading another's |

@@ -2,6 +2,7 @@
 #include "mailbox.h"
 #include "blackbox.h"
 #include "virtio.h"
+#include "syscall_abi.h"
 
 #define AI_UART 0x10000000UL
 #define AI_UART_LSR 5
@@ -566,6 +567,53 @@ static void ai_diagnose(blackbox_record_t *record)
     }
 }
 
+static const char *ai_syscall_name(uint8_t number)
+{
+    static const char *names[SYS_COUNT] = {
+        [SYS_EXIT] = "exit",
+        [SYS_WRITE] = "write",
+        [SYS_READ] = "read",
+        [SYS_GETPID] = "getpid",
+        [SYS_YIELD] = "yield",
+        [SYS_SLEEP] = "sleep",
+        [SYS_UPTIME] = "uptime",
+        [SYS_SPAWN] = "spawn",
+        [SYS_MEM_ALLOC] = "mem_alloc",
+    };
+
+    return number < SYS_COUNT ? names[number] : "unknown";
+}
+
+/* A user program lives in USER_BASE..USER_END and can't touch anything
+   else, so the fault address says what it tried to do */
+static void ai_diagnose_user(blackbox_record_t *record)
+{
+    uint64_t code = record->scause & AI_SCAUSE_CODE_MASK;
+    uint64_t address = record->stval;
+    char *d = record->diagnosis;
+
+    if (code != 12 && code != 13 && code != 15)
+    {
+        ai_diagnose(record);
+        return;
+    }
+
+    d[0] = 0;
+
+    if (address < AI_NULL_LIMIT)
+    {
+        ai_append(d, "Null pointer: the program used an address near 0.", BLACKBOX_DIAGNOSIS_MAX);
+    }
+    else if (address >= USER_BASE && address < USER_END)
+    {
+        ai_append(d, "Bad pointer inside the program's own space: memory it never allocated.", BLACKBOX_DIAGNOSIS_MAX);
+    }
+    else
+    {
+        ai_append(d, "The program tried to touch memory outside its own space (kernel or devices). The page table blocked it.", BLACKBOX_DIAGNOSIS_MAX);
+    }
+}
+
 static void ai_collect(uint32_t crash_type)
 {
     volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
@@ -997,13 +1045,24 @@ static void ai_handle_process_fault(void)
     ai_copy_text(record->driver, mailbox->fault_driver, BLACKBOX_NAME_MAX);
 
     uint32_t restarts = mailbox->fault_restarts;
+    uint32_t user = mailbox->fault_user;
+    uint32_t denied = mailbox->fault_denied;
+    uint32_t trace_count = mailbox->fault_trace_count;
 
-    ai_diagnose(record);
+    if (user)
+    {
+        ai_diagnose_user(record);
+    }
+    else
+    {
+        ai_diagnose(record);
+    }
 
     ai_puts("[AI] Process crash contained: ");
     ai_puts(record->process_name);
     ai_puts(" (pid ");
     ai_put_uint((uint64_t)record->pid);
+    ai_puts(user ? ", user program" : ", kernel process");
     ai_puts("), the kernel keeps running\n");
 
     ai_puts("[AI]   scause = ");
@@ -1014,9 +1073,36 @@ static void ai_handle_process_fault(void)
     ai_put_hex(record->stval);
     ai_putc('\n');
 
+    if (user)
+    {
+        ai_puts("[AI]   last system calls:");
+
+        if (trace_count == 0)
+        {
+            ai_puts(" none");
+        }
+
+        for (uint32_t i = 0; i < trace_count && i < MAILBOX_TRACE_MAX; i++)
+        {
+            ai_puts(i == 0 ? " " : ", ");
+            ai_puts(ai_syscall_name(mailbox->fault_trace[i]));
+        }
+
+        ai_puts("  (forbidden: ");
+        ai_put_uint(denied);
+        ai_puts(")\n");
+    }
+
     ai_puts("[AI] Diagnosis: ");
     ai_puts(record->diagnosis);
     ai_putc('\n');
+
+    if (denied > 0)
+    {
+        ai_puts("[AI] Security: it made ");
+        ai_put_uint(denied);
+        ai_puts(" forbidden system call(s) before crashing: treated as suspicious\n");
+    }
 
     uint32_t action = 0;
 
@@ -1032,7 +1118,13 @@ static void ai_handle_process_fault(void)
         ai_puts(" (the crash happened inside it),");
     }
 
-    if (restarts < AI_PROCESS_RESTART_LIMIT)
+    if (denied > 0)
+    {
+        ai_puts(" leave ");
+        ai_puts(record->process_name);
+        ai_puts(" stopped (suspicious program, not restarted)\n");
+    }
+    else if (restarts < AI_PROCESS_RESTART_LIMIT)
     {
         action |= VERDICT_RESTART_PROCESS;
 

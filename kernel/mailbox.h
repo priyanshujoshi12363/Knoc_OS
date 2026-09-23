@@ -13,6 +13,7 @@
 #define MAILBOX_NAME_MAX 16
 #define MAILBOX_MESSAGE_MAX 64
 #define MAILBOX_DISABLED_MAX 4
+#define MAILBOX_TRACE_MAX 8
 
 #define KERNEL_STATE_BOOTING 0
 #define KERNEL_STATE_RUNNING 1
@@ -91,6 +92,12 @@ typedef struct guardian_mailbox
 
     /* End of RAM, from the device tree (written by the kernel) */
     volatile uint64_t ram_end;
+
+    /* Process fault, user programs: forbidden calls and the last system calls */
+    volatile uint32_t fault_user;
+    volatile uint32_t fault_denied;
+    volatile uint32_t fault_trace_count;
+    volatile uint8_t fault_trace[MAILBOX_TRACE_MAX];
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;

@@ -65,6 +65,7 @@ An AI agent that can operate system capabilities through **controlled tools**: c
 The OS understands **what** an AI or app is trying to do, not just which syscall it made, and enforces permissions on that intent.
 - *Small NN:* classifies action sequences (e.g. "reading many personal files, then network upload" → suspicious)
 - *Kernel:* capability-based permissions, with user approval for sensitive intents
+- *Built in v0.11.0:* per-program capabilities, `[SECURITY]` logging of denied system calls, and a system call trace the AI space reads when a program crashes (a program that made forbidden calls is not restarted). The trace is the future training data for the intent NN
 
 ### 🧠 Personal Knowledge Layer
 Persistent memory about authorized files, projects and activity, so the AI knows *you*.
@@ -127,11 +128,11 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
-| **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, ~~crash black box~~ ✅, ~~watchdog~~ ✅, ~~fault containment~~ ✅, ~~warm kernel restart~~ ✅, user mode, syscalls |
+| **1. Kernel foundation** ✅ | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, ~~crash black box~~ ✅, ~~watchdog~~ ✅, ~~fault containment~~ ✅, ~~warm kernel restart~~ ✅, ~~user mode~~ ✅, ~~syscalls~~ ✅ |
 | **1b. Resilient AI + memory for models** ✅ | Guardian, large RAM | ~~Crash black box~~ ✅, ~~watchdog~~ ✅, ~~isolated AI runtime space~~ ✅, ~~more RAM + large-memory support (2 MiB pages, memory map from the device tree)~~ ✅ |
 | **2. Real OS** | Storage, drivers, userland | ~~virtio disk~~ ✅, virtio net, filesystem, ELF loader, shell, libc |
 | **3. NN runtime** | Small AI inside the OS | Tensor math library (integer/quantized), NN model format, background inference service |
@@ -156,7 +157,8 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | AI space: black box + watchdog + recovery (v0.8.0) | ✅ Done | Core 1 survives kernel crashes and freezes, diagnoses them, saves a report and recovers |
 | Fault containment + warm kernel restart (v0.9.0) | ✅ Done | A crashing process only kills itself, the AI decides the fix (restart it / disable its driver), and the AI never stops while the kernel restarts from a clean copy |
 | Big memory (v0.10.0) | ✅ Done | Room for real AI models: RAM size from the device tree, a buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space |
-| User mode + system calls (v0.11.0) | 🚧 Next | Isolate programs from the kernel, the base for intent-based security |
+| User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
+| Filesystem (v0.12.0) | 🚧 Next | Programs and AI models live on disk |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
 
@@ -178,7 +180,7 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | # | Version | Milestone | What we build | Result |
 |---|---|---|---|---|
 | 3 | **v0.10.0** ✅ | Big memory | RAM size from the device tree, 2–4 GiB+, 2 MiB megapages, buddy page allocator, spinlocks for 2 cores, bigger AI region | Room for real AI models |
-| 4 | v0.11.0 | User mode + system calls | U-mode programs with their own page tables, `ecall` system calls, program loader | A buggy program can't hurt the OS |
+| 4 | **v0.11.0** ✅ | User mode + system calls | U-mode programs with their own page tables, `ecall` system calls, program loader | A buggy program can't hurt the OS |
 | 5 | v0.12.0 | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
 | 6 | v0.13.0 | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
 

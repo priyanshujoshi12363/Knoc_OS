@@ -33,6 +33,22 @@ void vm_init(uintptr_t ram_start, uintptr_t ram_end);
 void vm_enable(void);
 uint64_t vm_megapage_count(void);
 
+uint64_t vm_make_satp(uintptr_t root);
+uint64_t vm_kernel_satp(void);
+void vm_switch(uint64_t satp);
+
+uintptr_t vm_user_create(void);
+int vm_user_map(uintptr_t root,
+                uintptr_t virtual_address,
+                uintptr_t physical_address,
+                uint64_t size,
+                uint64_t flags);
+int vm_user_translate(uintptr_t root,
+                      uintptr_t virtual_address,
+                      uint64_t need,
+                      uintptr_t *physical_address);
+void vm_user_destroy(uintptr_t root);
+
 int vm_map(uintptr_t virtual_address,
            uintptr_t physical_address,
            uint64_t flags);

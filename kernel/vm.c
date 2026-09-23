@@ -4,6 +4,7 @@
 #include "plic.h"
 #include "power.h"
 #include "virtio.h"
+#include "syscall_abi.h"
 
 static page_table_t *root_page_table;
 static uint64_t megapages_mapped;
@@ -93,11 +94,11 @@ void vm_init(uintptr_t ram_start, uintptr_t ram_end)
     }
 }
 
-static page_table_t *vm_level1(uintptr_t virtual_address)
+static page_table_t *vm_level1(page_table_t *root, uintptr_t virtual_address)
 {
     unsigned long vpn2 = VA_VPN2(virtual_address);
 
-    if (!((*root_page_table)[vpn2] & PTE_V))
+    if (!((*root)[vpn2] & PTE_V))
     {
         page_table_t *level1 = (page_table_t *)page_alloc();
 
@@ -108,28 +109,34 @@ static page_table_t *vm_level1(uintptr_t virtual_address)
 
         vm_clear_page_table(level1);
 
-        (*root_page_table)[vpn2] =
+        (*root)[vpn2] =
             vm_make_pte((uintptr_t)level1, PTE_V);
 
         return level1;
     }
 
-    return (page_table_t *)PPN_TO_PA((*root_page_table)[vpn2] >> 10);
+    if ((*root)[vpn2] & PTE_LEAF)
+    {
+        return 0;
+    }
+
+    return (page_table_t *)PPN_TO_PA((*root)[vpn2] >> 10);
 }
 
 /* A megapage is a leaf entry in the level-1 table: one entry maps
    2 MiB directly, with no level-0 table below it */
-static int vm_map_mega(uintptr_t virtual_address,
+static int vm_map_mega(page_table_t *root,
+                       uintptr_t virtual_address,
                        uintptr_t physical_address,
                        uint64_t flags)
 {
-    if (root_page_table == 0 ||
+    if (root == 0 ||
         (virtual_address | physical_address) & (VM_MEGAPAGE_SIZE - 1))
     {
         return -1;
     }
 
-    page_table_t *level1 = vm_level1(virtual_address);
+    page_table_t *level1 = vm_level1(root, virtual_address);
 
     if (level1 == 0)
     {
@@ -144,14 +151,19 @@ static int vm_map_mega(uintptr_t virtual_address,
     }
 
     (*level1)[vpn1] = vm_make_pte(physical_address, flags | PTE_V);
-    megapages_mapped++;
+
+    if (root == root_page_table)
+    {
+        megapages_mapped++;
+    }
 
     return 0;
 }
 
-int vm_map(uintptr_t virtual_address,
-           uintptr_t physical_address,
-           uint64_t flags)
+static int vm_map_page(page_table_t *root,
+                       uintptr_t virtual_address,
+                       uintptr_t physical_address,
+                       uint64_t flags)
 {
     unsigned long vpn1 = VA_VPN1(virtual_address);
     unsigned long vpn0 = VA_VPN0(virtual_address);
@@ -159,12 +171,12 @@ int vm_map(uintptr_t virtual_address,
     page_table_t *level1;
     page_table_t *level0;
 
-    if (root_page_table == 0)
+    if (root == 0)
     {
         return -1;
     }
 
-    level1 = vm_level1(virtual_address);
+    level1 = vm_level1(root, virtual_address);
 
     if (level1 == 0)
     {
@@ -201,10 +213,12 @@ int vm_map(uintptr_t virtual_address,
 
     return 0;
 }
-int vm_map_range(uintptr_t virtual_start,
-                 uintptr_t physical_start,
-                 uintptr_t size,
-                 uint64_t flags)
+
+static int vm_map_range_in(page_table_t *root,
+                           uintptr_t virtual_start,
+                           uintptr_t physical_start,
+                           uintptr_t size,
+                           uint64_t flags)
 {
     uintptr_t offset = 0;
 
@@ -216,7 +230,7 @@ int vm_map_range(uintptr_t virtual_start,
         if (((virtual_address | physical_address) & (VM_MEGAPAGE_SIZE - 1)) == 0 &&
             size - offset >= VM_MEGAPAGE_SIZE)
         {
-            if (vm_map_mega(virtual_address, physical_address, flags) != 0)
+            if (vm_map_mega(root, virtual_address, physical_address, flags) != 0)
             {
                 return -1;
             }
@@ -225,7 +239,7 @@ int vm_map_range(uintptr_t virtual_start,
             continue;
         }
 
-        if (vm_map(virtual_address, physical_address, flags) != 0)
+        if (vm_map_page(root, virtual_address, physical_address, flags) != 0)
         {
             return -1;
         }
@@ -235,6 +249,169 @@ int vm_map_range(uintptr_t virtual_start,
 
     return 0;
 }
+
+int vm_map(uintptr_t virtual_address,
+           uintptr_t physical_address,
+           uint64_t flags)
+{
+    return vm_map_page(root_page_table, virtual_address, physical_address, flags);
+}
+
+int vm_map_range(uintptr_t virtual_start,
+                 uintptr_t physical_start,
+                 uintptr_t size,
+                 uint64_t flags)
+{
+    return vm_map_range_in(root_page_table, virtual_start, physical_start, size, flags);
+}
+
+/* User address spaces. Each program gets its own root table: a copy of
+   the kernel's root entries (so the kernel stays mapped while it handles
+   a trap, but without the U bit, so the program can't touch it), plus
+   private tables for the user slots (USER_BASE..USER_END). */
+
+uint64_t vm_make_satp(uintptr_t root)
+{
+    return (8ULL << 60) | (root >> 12);
+}
+
+uint64_t vm_kernel_satp(void)
+{
+    return vm_make_satp((uintptr_t)root_page_table);
+}
+
+void vm_switch(uint64_t satp)
+{
+    uint64_t current;
+
+    asm volatile("csrr %0, satp" : "=r"(current));
+
+    if (current != satp)
+    {
+        asm volatile("csrw satp, %0" :: "r"(satp));
+        asm volatile("sfence.vma zero, zero");
+    }
+}
+
+uintptr_t vm_user_create(void)
+{
+    page_table_t *root = (page_table_t *)page_alloc();
+
+    if (root == 0)
+    {
+        return 0;
+    }
+
+    for (unsigned long i = 0; i < 512; i++)
+    {
+        (*root)[i] = (*root_page_table)[i];
+    }
+
+    for (unsigned long i = VA_VPN2(USER_BASE); i < VA_VPN2(USER_END); i++)
+    {
+        (*root)[i] = 0;
+    }
+
+    return (uintptr_t)root;
+}
+
+static int user_range_valid(uintptr_t virtual_address, uint64_t size)
+{
+    return virtual_address >= USER_BASE &&
+           virtual_address < USER_END &&
+           size <= USER_END - virtual_address;
+}
+
+int vm_user_map(uintptr_t root,
+                uintptr_t virtual_address,
+                uintptr_t physical_address,
+                uint64_t size,
+                uint64_t flags)
+{
+    if (!user_range_valid(virtual_address, size))
+    {
+        return -1;
+    }
+
+    return vm_map_range_in((page_table_t *)root,
+                           virtual_address,
+                           physical_address,
+                           size,
+                           flags | PTE_U);
+}
+
+int vm_user_translate(uintptr_t root,
+                      uintptr_t virtual_address,
+                      uint64_t need,
+                      uintptr_t *physical_address)
+{
+    if (!user_range_valid(virtual_address, 1))
+    {
+        return -1;
+    }
+
+    pte_t entry = (*(page_table_t *)root)[VA_VPN2(virtual_address)];
+
+    if (!(entry & PTE_V) || (entry & PTE_LEAF))
+    {
+        return -1;
+    }
+
+    entry = (*(page_table_t *)PPN_TO_PA(entry >> 10))[VA_VPN1(virtual_address)];
+
+    if (!(entry & PTE_V))
+    {
+        return -1;
+    }
+
+    uintptr_t offset_mask = VM_MEGAPAGE_SIZE - 1;
+
+    if (!(entry & PTE_LEAF))
+    {
+        entry = (*(page_table_t *)PPN_TO_PA(entry >> 10))[VA_VPN0(virtual_address)];
+        offset_mask = VM_PAGE_SIZE - 1;
+    }
+
+    if (!(entry & PTE_V) || !(entry & PTE_U) || (entry & need) != need)
+    {
+        return -1;
+    }
+
+    *physical_address = PPN_TO_PA(entry >> 10) + (virtual_address & offset_mask);
+    return 0;
+}
+
+void vm_user_destroy(uintptr_t root)
+{
+    page_table_t *table = (page_table_t *)root;
+
+    for (unsigned long i = VA_VPN2(USER_BASE); i < VA_VPN2(USER_END); i++)
+    {
+        pte_t entry = (*table)[i];
+
+        if (!(entry & PTE_V) || (entry & PTE_LEAF))
+        {
+            continue;
+        }
+
+        page_table_t *level1 = (page_table_t *)PPN_TO_PA(entry >> 10);
+
+        for (unsigned long j = 0; j < 512; j++)
+        {
+            pte_t level1_entry = (*level1)[j];
+
+            if ((level1_entry & PTE_V) && !(level1_entry & PTE_LEAF))
+            {
+                page_free((void *)PPN_TO_PA(level1_entry >> 10));
+            }
+        }
+
+        page_free(level1);
+    }
+
+    page_free(table);
+}
+
 void vm_debug(uintptr_t virtual_address)
 {
     unsigned long vpn2 = VA_VPN2(virtual_address);

@@ -104,6 +104,14 @@ check \
     "AI-aware scheduling verified" \
     "Preemption verified" \
     "Interactive response verified" \
+    "[hello] Hello from user mode!" \
+    "[badcall] kernel pointer, unmapped pointer and unknown call were all refused" \
+    "[SECURITY] noperm" \
+    "[noperm] spawn was refused" \
+    "[hog] 8 MiB allowed, 16 MiB more refused" \
+    "[bigmem] AI agent got 256 MiB" \
+    "User memory verified" \
+    "User mode verified" \
     "All self-tests passed" \
     "knocos-echo-test" \
     "Powering off"
@@ -116,10 +124,12 @@ check \
     "Powering off"
 show_log_on_failure
 
-echo "Run 3: fault containment, driver disabling and warm kernel restarts"
+echo "Run 3: user programs, fault containment, driver disabling and warm kernel restarts"
 new_disk
 (
-    sleep 4;  printf '\006'
+    sleep 6;  printf '\025'
+    sleep 3;  printf '\005'
+    sleep 2;  printf '\006'
     sleep 2;  printf '\030'
     sleep 2;  printf '\030'
     sleep 2;  printf '\027'
@@ -131,17 +141,29 @@ new_disk
 STATUS=$?
 check_status "$GUARDIAN_TIMEOUT" panic-allowed
 check \
+    "[OOPS] Store page fault in user program crash" \
+    "[AI] Process crash contained: crash" \
+    "[AI] Diagnosis: Null pointer: the program used an address near 0." \
+    "Process crash restarted as pid" \
+    "[AI] Action: leave crash stopped (it crashed 4 times)" \
+    "Process crash left stopped: it keeps crashing" \
+    "[SECURITY] spy" \
+    "[OOPS] Load page fault in user program spy" \
+    "last system calls: write, spawn, write  (forbidden: 1)" \
+    "The page table blocked it." \
+    "[AI] Security: it made 1 forbidden system call(s)" \
+    "Process spy left stopped: suspicious" \
     "Test process fault (Ctrl-F)" \
     "[OOPS] Store page fault in process console" \
     "[AI] Process crash contained: console" \
     "[AI] Diagnosis: Bad pointer" \
     "[AI] Action: restart console" \
-    "Process console restarted as pid 7, restart #1 (AI verdict)" \
+    "restart #1 (AI verdict)" \
     "Test driver fault (Ctrl-X)" \
     "inside driver faulty0: stopping only this process" \
     "[AI] Action: disable driver faulty0" \
     "Driver faulty0 disabled (AI verdict)" \
-    "Process console restarted as pid 8, restart #2 (AI verdict)" \
+    "Process console restarted as pid" \
     "faulty0 is disabled, nothing happened" \
     "Test freeze (Ctrl-W)" \
     "[AI] Kernel freeze detected: FREEZE" \
@@ -167,6 +189,11 @@ check \
     "Previous crash detected: #3 TRAP" \
     "SAFE MODE" \
     "Powering off"
+
+if grep -q "\[spy\] read kernel memory!" "$LOG"; then
+    echo "  FAIL the spy program read kernel memory"
+    FAILED=1
+fi
 
 if grep -qE ".\[AI\] |\[AI\] .*\[(INFO|WARN|OOPS|TRAP)\]" "$LOG"; then
     echo "  FAIL AI space and kernel output mixed on one line (UART lock)"

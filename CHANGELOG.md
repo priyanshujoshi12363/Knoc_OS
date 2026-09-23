@@ -2,6 +2,30 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.11.0] - 2026-09-23
+
+User mode and system calls: programs can't touch the kernel.
+
+### Added
+- User programs run in U-mode with their own page table (`vm_user_create`): the kernel's root entries are shared without the U bit, and the user slots (`0x1000000000`–`0x1FFFFFFFFF`) are private. The scheduler switches `satp` on every process switch
+- Trap entry from U-mode: `sscratch` holds the process's kernel stack while a program runs (0 in the kernel); `supervisor_trap` swaps it with `sp` and returns with `sret` to the right mode. `user_enter()` starts a program with all registers cleared
+- 9 system calls (`kernel/syscall_abi.h`): `exit`, `write`, `read`, `getpid`, `yield`, `sleep`, `uptime`, `spawn`, `mem_alloc`, with error codes
+- Safe user copies: every user pointer is translated in the program's own page table (user page + right permission required), so bad pointers return `E_FAULT`
+- Capabilities per program (`CONSOLE`, `SPAWN`, `MEMORY`): denied calls are refused and logged `[SECURITY]`
+- Memory quotas: 16 MiB for normal programs, 1 GiB for `AI_AGENT` programs; blocks are zeroed and mapped with megapages when large
+- System call trace: the last 8 calls and the number of denied calls per process go to the AI space with a crash report. The AI prints them, diagnoses user faults (null pointer, own memory, outside its space) and does not restart a program that made forbidden calls (the kernel's fallback rule does the same)
+- ELF loader (`kernel/elf.c`) and built-in programs embedded with `.incbin` (`kernel/programs.S`, `kernel/program.c`)
+- User library (`user/crt0.S`, `user/ulib.c`) and 7 programs: `hello`, `badcall`, `noperm`, `hog`, `bigmem`, `crash`, `spy`
+- Self-test: 5 programs must exit with 0, and every page must be returned afterwards (no leaks)
+- Test keys: Ctrl-U (`crash` program), Ctrl-E (`spy` program)
+- `process_spawn`, `process_wait`, `process_exit_code`; a `LOADING` state so a program isn't scheduled before it's loaded
+- `make test`: user program checks, and a failure if `spy` ever reads kernel memory
+
+### Changed
+- `memset` writes 8 bytes at a time (large program blocks are cleared quickly)
+- `vm.c` mapping functions take a root table, so the same code maps the kernel and user programs
+- `boot.S` clears `sscratch` at boot
+
 ## [0.10.0] - 2026-09-23
 
 Big memory: room for AI models.

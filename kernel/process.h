@@ -6,6 +6,12 @@
 #define PROCESS_MAX 16
 #define PROCESS_NAME_MAX 16
 #define PROCESS_STACK_SIZE (16 * 1024)
+#define PROCESS_TRACE_MAX 8
+#define PROCESS_BLOCKS_MAX 32
+
+/* Memory quota for user programs, by class: AI agents get room for models */
+#define PROCESS_QUOTA_AI_AGENT (1024UL * 1024 * 1024)
+#define PROCESS_QUOTA_DEFAULT (16UL * 1024 * 1024)
 
 #define SCHED_WEIGHT_AI_AGENT 60
 #define SCHED_WEIGHT_NORMAL 30
@@ -33,6 +39,7 @@ typedef enum process_state
     PROCESS_SLEEPING,
     PROCESS_EXITED,
     PROCESS_CRASHED,
+    PROCESS_LOADING,
 } process_state_t;
 
 typedef struct process_context
@@ -53,7 +60,13 @@ typedef struct process_fault
     uint64_t sepc;
     uint64_t stval;
     uint32_t restarts;
+    int user;
+    uint32_t denied;
+    uint32_t trace_count;
+    uint8_t trace[PROCESS_TRACE_MAX];
 } process_fault_t;
+
+struct program;
 
 void process_init(void);
 int process_create(const char *name,
@@ -67,6 +80,9 @@ void scheduler_tick(void);
 void process_yield(void);
 void process_sleep(uint64_t ticks);
 void process_exit(void);
+void process_exit_code(int code) __attribute__((noreturn));
+int process_spawn(const struct program *program);
+int process_wait(int pid, int *exit_code);
 int process_kill(int pid);
 
 int process_can_contain_fault(void);
@@ -82,6 +98,13 @@ const char *process_current_driver(void);
 
 int process_current_pid(void);
 const char *process_current_name(void);
+
+int process_is_user(void);
+uintptr_t process_user_root(void);
+uint32_t process_capabilities(void);
+void process_record_syscall(uint64_t number);
+void process_note_denied(void);
+int64_t process_mem_alloc(uint64_t bytes);
 uint64_t process_cpu_ticks(int pid);
 void process_list(void);
 

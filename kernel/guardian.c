@@ -389,6 +389,14 @@ static void post_fault(process_fault_t *fault)
     guardian_mailbox.fault_scause = fault->scause;
     guardian_mailbox.fault_sepc = fault->sepc;
     guardian_mailbox.fault_stval = fault->stval;
+    guardian_mailbox.fault_user = (uint32_t)fault->user;
+    guardian_mailbox.fault_denied = fault->denied;
+    guardian_mailbox.fault_trace_count = fault->trace_count;
+
+    for (uint32_t i = 0; i < fault->trace_count && i < MAILBOX_TRACE_MAX; i++)
+    {
+        guardian_mailbox.fault_trace[i] = fault->trace[i];
+    }
 
     __sync_synchronize();
 
@@ -404,7 +412,7 @@ static uint32_t default_verdict(process_fault_t *fault)
         action |= VERDICT_DISABLE_DRIVER;
     }
 
-    if (fault->restarts < GUARDIAN_RESTART_LIMIT)
+    if (fault->restarts < GUARDIAN_RESTART_LIMIT && fault->denied == 0)
     {
         action |= VERDICT_RESTART_PROCESS;
     }
@@ -445,7 +453,8 @@ static void apply_verdict(process_fault_t *fault, uint32_t action, const char *s
 
         uart_puts("[WARN] Process ");
         uart_puts(fault->name);
-        uart_puts(" left stopped: it keeps crashing (");
+        uart_puts(fault->denied > 0 ? " left stopped: suspicious, it made forbidden system calls ("
+                                    : " left stopped: it keeps crashing (");
         uart_puts(source);
         uart_puts(")\n");
     }

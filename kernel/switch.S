@@ -1,5 +1,8 @@
+#include "trap.h"
+
 .section .text
 .global context_switch
+.global user_enter
 
 context_switch:
     sd ra, 0(a0)
@@ -33,3 +36,51 @@ context_switch:
     ld s11, 104(a1)
 
     ret
+
+/* user_enter(entry, user_sp, kernel_sp): start a user program.
+   sret jumps to sepc in the mode stored in sstatus.SPP (0 = U-mode),
+   and turns interrupts back on from SPIE. */
+user_enter:
+    csrw sepc, a0
+    csrw sscratch, a2
+
+    li t0, SSTATUS_SPP
+    csrc sstatus, t0
+
+    li t0, SSTATUS_SPIE
+    csrs sstatus, t0
+
+    mv sp, a1
+
+    li ra, 0
+    li gp, 0
+    li tp, 0
+    li t0, 0
+    li t1, 0
+    li t2, 0
+    li s0, 0
+    li s1, 0
+    li a0, 0
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    li a5, 0
+    li a6, 0
+    li a7, 0
+    li s2, 0
+    li s3, 0
+    li s4, 0
+    li s5, 0
+    li s6, 0
+    li s7, 0
+    li s8, 0
+    li s9, 0
+    li s10, 0
+    li s11, 0
+    li t3, 0
+    li t4, 0
+    li t5, 0
+    li t6, 0
+
+    sret
