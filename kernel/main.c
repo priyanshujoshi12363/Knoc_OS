@@ -10,6 +10,7 @@
 #include "power.h"
 #include "device.h"
 #include "virtio_blk.h"
+#include "process.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
@@ -27,7 +28,29 @@ typedef struct disk_boot_record
     uint64_t count;
 } disk_boot_record_t;
 
+#define SCHED_TEST_TICKS 100
+#define SCHED_TEST_WORKERS 3
+#define SCHED_TEST_TOLERANCE 10
+
+typedef struct sched_worker
+{
+    const char *name;
+    process_class_t process_class;
+    uint64_t expected_percent;
+    int pid;
+    volatile uint64_t work;
+} sched_worker_t;
+
 static uint8_t disk_buffer[VIRTIO_BLK_SECTOR_SIZE];
+
+static device_t *console;
+static device_t *power;
+
+static sched_worker_t sched_workers[SCHED_TEST_WORKERS] = {
+    {"agent-coder", PROCESS_CLASS_AI_AGENT, SCHED_WEIGHT_AI_AGENT, 0, 0},
+    {"normal-task", PROCESS_CLASS_NORMAL, SCHED_WEIGHT_NORMAL, 0, 0},
+    {"nn-sorter", PROCESS_CLASS_BACKGROUND, SCHED_WEIGHT_BACKGROUND, 0, 0},
+};
 
 static void disk_self_test(device_t *disk)
 {
@@ -103,6 +126,145 @@ static void disk_self_test(device_t *disk)
     }
 
     log_info_uint("Disk boot count: ", record->count);
+}
+
+static void console_process(void *arg)
+{
+    (void)arg;
+
+    log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
+
+    while (1)
+    {
+        char c;
+
+        if (device_read(console, &c, 1) <= 0)
+        {
+            process_sleep(1);
+            continue;
+        }
+
+        if (c == KEY_CTRL_D)
+        {
+            uint8_t command = POWER_COMMAND_OFF;
+
+            device_write(console, "\n", 1);
+            log_info("Powering off");
+            device_write(power, &command, 1);
+        }
+        else if (c == '\r')
+        {
+            device_write(console, "\n", 1);
+        }
+        else if (c == KEY_BACKSPACE)
+        {
+            device_write(console, "\b \b", 3);
+        }
+        else
+        {
+            device_write(console, &c, 1);
+        }
+    }
+}
+
+static void cpu_worker(void *arg)
+{
+    sched_worker_t *worker = (sched_worker_t *)arg;
+
+    while (1)
+    {
+        worker->work++;
+    }
+}
+
+static void scheduler_test(void *arg)
+{
+    (void)arg;
+
+    for (int i = 0; i < SCHED_TEST_WORKERS; i++)
+    {
+        sched_worker_t *worker = &sched_workers[i];
+
+        worker->pid = process_create(worker->name,
+                                     worker->process_class,
+                                     cpu_worker,
+                                     worker);
+
+        if (worker->pid < 0)
+        {
+            panic("Could not create worker process");
+        }
+    }
+
+    log_info("Workers created: agent-coder (AI_AGENT), normal-task (NORMAL), nn-sorter (BACKGROUND)");
+
+    uint64_t wake_target = timer_ticks() + SCHED_TEST_TICKS;
+
+    process_sleep(SCHED_TEST_TICKS);
+
+    uint64_t wake_latency = timer_ticks() - wake_target;
+
+    process_list();
+
+    uint64_t total = 0;
+
+    for (int i = 0; i < SCHED_TEST_WORKERS; i++)
+    {
+        total += process_cpu_ticks(sched_workers[i].pid);
+    }
+
+    if (total == 0)
+    {
+        panic("Workers did not run");
+    }
+
+    for (int i = 0; i < SCHED_TEST_WORKERS; i++)
+    {
+        sched_worker_t *worker = &sched_workers[i];
+        uint64_t percent = process_cpu_ticks(worker->pid) * 100 / total;
+
+        uart_puts("[INFO] CPU share: ");
+        uart_puts(worker->name);
+        uart_puts(" ");
+        uart_put_uint(percent);
+        uart_puts("% (expected ");
+        uart_put_uint(worker->expected_percent);
+        uart_puts("%)\n");
+
+        if (percent + SCHED_TEST_TOLERANCE < worker->expected_percent ||
+            percent > worker->expected_percent + SCHED_TEST_TOLERANCE)
+        {
+            panic("CPU share outside expected range");
+        }
+
+        if (worker->work == 0)
+        {
+            panic("A worker made no progress");
+        }
+    }
+
+    log_info("AI-aware scheduling verified");
+    log_info("Preemption verified: CPU-bound workers never yield, all made progress");
+
+    if (wake_latency > 1)
+    {
+        panic("Interactive process woke too late");
+    }
+
+    log_info_uint("Interactive wake latency (ticks): ", wake_latency);
+    log_info("Interactive response verified");
+
+    for (int i = 0; i < SCHED_TEST_WORKERS; i++)
+    {
+        process_kill(sched_workers[i].pid);
+    }
+
+    log_info("All self-tests passed");
+
+    if (process_create("console", PROCESS_CLASS_INTERACTIVE, console_process, 0) < 0)
+    {
+        panic("Could not create console process");
+    }
 }
 
 void kernel_main(void)
@@ -311,8 +473,8 @@ void kernel_main(void)
     device_init_all();
     device_list();
 
-    device_t *console = device_find("uart0");
-    device_t *power = device_find("power0");
+    console = device_find("uart0");
+    power = device_find("power0");
 
     if (console == 0 || power == 0)
     {
@@ -337,38 +499,17 @@ void kernel_main(void)
         log_warn("No disk attached");
     }
 
-    log_info("All self-tests passed");
-    log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
+    process_init();
+
+    if (process_create("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0) < 0)
+    {
+        panic("Could not create scheduler test process");
+    }
+
+    scheduler_start();
 
     while (1)
     {
-        char c;
-
-        if (device_read(console, &c, 1) <= 0)
-        {
-            asm volatile("wfi");
-            continue;
-        }
-
-        if (c == KEY_CTRL_D)
-        {
-            uint8_t command = POWER_COMMAND_OFF;
-
-            device_write(console, "\n", 1);
-            log_info("Powering off");
-            device_write(power, &command, 1);
-        }
-        else if (c == '\r')
-        {
-            device_write(console, "\n", 1);
-        }
-        else if (c == KEY_BACKSPACE)
-        {
-            device_write(console, "\b \b", 3);
-        }
-        else
-        {
-            device_write(console, &c, 1);
-        }
+        asm volatile("wfi");
     }
 }

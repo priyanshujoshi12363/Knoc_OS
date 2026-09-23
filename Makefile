@@ -34,7 +34,10 @@ KERNEL_OBJS = boot/boot.o \
               kernel/plic.o \
               kernel/power.o \
               kernel/device.o \
-              kernel/virtio_blk.o
+              kernel/virtio_blk.o \
+              kernel/process.o \
+              kernel/switch.o \
+              kernel/string.o
 
 TIMER_OBJS = timer/timer.o
 

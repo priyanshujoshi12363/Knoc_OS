@@ -127,11 +127,12 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
-| **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, scheduler, context switch, user mode, syscalls |
+| **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, crash black box, watchdog, user mode, syscalls |
+| **1b. Resilient AI + memory for models** | Guardian, large RAM | Crash black box, watchdog, isolated AI runtime space, more RAM + large-memory support (2 MiB pages, memory map from the device tree) |
 | **2. Real OS** | Storage, drivers, userland | ~~virtio disk~~ ✅, virtio net, filesystem, ELF loader, shell, libc |
 | **3. NN runtime** | Small AI inside the OS | Tensor math library (integer/quantized), NN model format, background inference service |
 | **4. First small NNs** | Train & deploy task models | File classifier → auto-organization; embeddings → semantic search; anomaly detector → diagnostics |
@@ -151,14 +152,100 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | Power-off driver, automated tests (`make test`), CI | ✅ Done | Every change is checked automatically, the first step toward production quality |
 | Device abstraction | ✅ Done | One common driver interface: the disk, network and GPU/NPU drivers the AI features need all plug in the same way |
 | virtio-blk disk driver | ✅ Done | Permanent storage for files, and later for NN and LLM model files |
-| Processes, context switch, scheduler | 🚧 Next | Run many programs at once, and later give AI workloads their own scheduling class |
+| Processes, context switch, AI-aware scheduler | ✅ Done | AI agent work gets the largest CPU share (60%), interactive work always responds first, background NNs never starve |
+| Crash black box + watchdog | 🚧 Next | First pieces of the Guardian: crashes and hangs leave a report the AI can analyze |
 | User mode + system calls | ⬜ | Isolate apps from the kernel, the base for intent-based security |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
 
 ---
 
-## 5. Key Challenges (Honest List)
+## 5. AI-Aware Scheduling ✅ (built in v0.7.0)
+
+The scheduler treats AI work as a first-class citizen, without letting it freeze the machine.
+
+| Class | Rule | Used for |
+|---|---|---|
+| **INTERACTIVE** | Always runs first, in tiny bursts | Keyboard, shell, UI: you never wait |
+| **AI_AGENT** | Weight 60, 30 ms slices | Agentic tasks: coding agents, LLM planning (Tier 3) |
+| **NORMAL** | Weight 30, 20 ms slices | Regular programs |
+| **BACKGROUND** | Weight 10, 10 ms slices | Small always-on NNs (Tier 1), maintenance |
+
+- **Largest share, not absolute priority:** an "AI always first" rule would freeze the keyboard and starve background work. Weighted sharing gives AI the most CPU while everything keeps moving
+- **Measured:** the self-test runs an AI agent, a normal task and a background NN together and checks they get 60% / 30% / 10%
+- **Later:** AI priority extends beyond the CPU, to memory (model memory never swapped out), the GPU/NPU queue and disk I/O for model loading
+
+---
+
+## 6. Resilient AI: the Guardian Architecture
+
+**Goal:** when the OS breaks, the AI must still work, figure out what went wrong and help fix it. An AI inside the kernel would die in the same crash, so the AI is protected in layers.
+
+| Layer | Where the AI runs | Survives | Real-world equivalent |
+|---|---|---|---|
+| **1. Protected AI service** | Its own user-mode process, outside the kernel | Crashed apps and buggy programs | Windows services |
+| **2. Black box + recovery mode** | The kernel saves a crash report to disk. On reboot, a small recovery environment (small NNs) analyzes it | Kernel crashes | Windows Recovery Environment, Linux kdump |
+| **3. Guardian** | A tiny monitor **below** the kernel (M-mode, later its own CPU core) that watches the kernel's heartbeat | A frozen kernel | Hardware watchdogs, management controllers |
+| **4. KnocNet peer** | Another KnocOS machine diagnoses this one | A completely broken machine | Remote support |
+
+- **Small NNs** are small enough to run in recovery mode and the guardian: they recognize crash patterns immediately
+- **The big LLM** needs a healthy system: after recovery it reads the black box and explains the problem in plain language
+- **Already in place (v0.7.0):** M-mode has its own private stack and gets the timer interrupt even when the kernel is stuck, which is the foundation for the watchdog
+
+---
+
+## 7. AI Model Plan
+
+### Router → worker design
+
+```text
+request / event → Tier 0: rules (no AI, never wrong)
+               → Tier 1: small classifier NN (my own, closed set of tasks, confidence score)
+               → Tier 2: small LLM router (only if Tier 1 isn't confident; constrained output)
+               → Tier 3: big task LLM (does the work, AI_AGENT class, acts via the permission-checked tool API)
+               → verification (compile, test, check results)
+```
+
+### Model roles
+
+| Role | Size | Candidates (families, exact versions chosen later) |
+|---|---|---|
+| Embeddings (classifier input + semantic file system) | 20M–600M | Small Qwen / Gemma / BGE embedding models, MiniLM |
+| Task classifier (Tier 1) | KBs–MBs | **My own trained NN** on top of embeddings |
+| Small LLM (router fallback, recovery explanations) | 0.5B–4B | Small Qwen, Gemma, Llama, SmolLM instruct models |
+| Coding agent | 7B–32B, quantized | Qwen Coder family, DeepSeek Coder |
+| General chat / planning | 7B–14B, quantized | Qwen, Gemma, Llama, Mistral |
+
+**Main family: Qwen.** It covers every size, is strong at coding and tool calling, and most models are Apache 2.0 (check each license before shipping).
+
+### Rules
+- **No model is hallucination-free.** The design makes mistakes harmless: closed-set classification, confidence thresholds, grammar-constrained output, verification of results, and grounding in real data
+- **Model-agnostic:** models load from the standard **GGUF** format through a **model registry** (a config that maps roles to model files), so a better model is a file swap, not a code change
+- **Runtime:** our own small int8 runtime for small NNs (Stage 3). A port of **llama.cpp** for big LLMs (Stage 5), which needs a filesystem, memory mapping, threads and a C library
+- **Getting models onto KnocOS:** first by copying them onto the disk image from the host, later by downloading them over KnocNet / TCP/IP
+
+---
+
+## 8. AI Memory Plan
+
+The Personal Knowledge Layer, built on ideas from open-source AI memory projects (mem0, Letta/MemGPT, Zep/Graphiti, Cognee). Those projects are mostly Python and need a full Linux stack, so KnocOS **uses their designs and ports small C libraries**, and can run the originals later through Linux compatibility.
+
+| Memory type | Holds | Example |
+|---|---|---|
+| Working | The current task | "Editing trap.c for the scheduler" |
+| Episodic | What happened | "Kernel crashed yesterday: store page fault in vm.c" |
+| Semantic | Facts | "The user's main project is KnocOS" |
+| Procedural | How to do things | "Test with `make test`" |
+
+- **Ideas used:** automatic fact extraction and updating (mem0), tiered core/archive memory (Letta), knowledge graph links (Zep/Graphiti, Cognee), decay of unused memories
+- **Storage:** **SQLite** (a single portable C file) + **sqlite-vec** for search by meaning, inside a `knoc-memory` service running as its own protected process
+- **Privacy:** local only, encrypted, only authorized data, and the user can view, edit and delete everything
+- **Connected to the Guardian:** black box crash reports become memories, so the AI remembers past failures when diagnosing
+- **When:** after the filesystem, user mode and a C library exist (goal.md Stage 6)
+
+---
+
+## 9. Key Challenges (Honest List)
 
 - **LLM speed on CPU:** needs quantization (4-bit / 8-bit), SIMD/vector instructions, and eventually GPU/NPU drivers.
 - **GPU drivers** are among the hardest parts of any OS, so early LLM work will be CPU-only.
@@ -168,7 +255,7 @@ README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 
 
 ---
 
-## 6. Guiding Principles
+## 10. Guiding Principles
 
 1. **Local first:** no cloud required; your data never leaves your machine unless you say so.
 2. **Small before big:** use a tiny NN whenever possible and wake the LLM only for heavy work.

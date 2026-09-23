@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
-- **Part 5: Traps, interrupts and devices:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** processes, user mode, filesystem, AI-OS
+- **Part 8: What comes next:** the Guardian, user mode, filesystem, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -33,7 +33,7 @@ An OS is the program that **manages the hardware** and **gives other programs a 
 | Start the computer | Windows boot logo | `boot.S` → `kernel_main` |
 | Manage memory | Gives Chrome its own RAM | Page allocator, Sv39 paging, heap |
 | React to hardware | Key press → Notepad | UART interrupt → echo |
-| Share the CPU | Chrome + Spotify at once | Timer heartbeat ready, scheduler not yet |
+| Share the CPU | Chrome + Spotify at once | Processes + AI-aware scheduler |
 | Store files | C: drive, NTFS | Disk driver ✅, filesystem not yet |
 | Protect programs from each other | One app can't read another's memory | Not yet (needs user mode) |
 
@@ -161,7 +161,7 @@ QEMU starts the CPU in **M-mode** at `_start` (`0x80000000`). Step by step:
 |---|---|---|
 | 1 | `la sp, stack_top` | C code needs a stack before any function call |
 | 2 | `pmpaddr0 = -1`, `pmpcfg0 = 0x1F` | **PMP** (physical memory protection) blocks S-mode from all memory by default. This entry says "S-mode may access everything" |
-| 3 | `mtvec = machine_trap` | Where the CPU jumps on an M-mode trap |
+| 3 | `mscratch = machine_stack_top`, `mtvec = machine_trap` | M-mode gets its own private stack, and the address where the CPU jumps on an M-mode trap |
 | 4 | `stvec = supervisor_trap` | Where the CPU jumps on an S-mode trap |
 | 5 | `medeleg = 0xB1FF` | **Delegate exceptions** (page faults, illegal instruction, ...) to S-mode so the kernel handles them |
 | 6 | `mideleg = SSIP \| SEIP` | Delegate the software interrupt (forwarded timer) and external interrupts (devices) to S-mode |
@@ -636,6 +636,100 @@ That's your kernel writing to a real file on your PC.
 
 ---
 
+## 5.11 Processes and the AI-aware scheduler (`kernel/process.c`)
+
+### What a process is
+
+A **process** is one running task: its own stack, its own saved registers, and a record in the **process table** (like one row in Task Manager). Right now they're **kernel threads**: they all share the kernel's memory. Separate protected memory comes with user mode.
+
+```c
+pid, name            identity
+process_class        INTERACTIVE / AI_AGENT / NORMAL / BACKGROUND / IDLE
+state                READY / RUNNING / SLEEPING / EXITED
+context              saved ra, sp, s0–s11
+stack                16 KiB from kmalloc
+cpu_ticks, vruntime  CPU time used, weighted virtual runtime
+```
+
+### The context switch: the magic trick
+
+One CPU can only run one thing. To "run many", the kernel keeps swapping which one is on the CPU:
+
+```text
+context_switch(&old->context, &new->context):
+  save    old's ra, sp, s0–s11 into old->context
+  load    new's ra, sp, s0–s11 from new->context
+  ret     → "returns" into wherever the NEW process was when it was switched out
+```
+
+**Why only `ra`, `sp` and `s0`–`s11`?** `context_switch` is called like a normal function. By the calling convention, a function may destroy `t` and `a` registers anyway, so only the **saved** registers (plus `ra` and `sp`) need keeping.
+
+**How a brand-new process starts:** its context is set up by hand with `ra = process_trampoline` and `sp = top of its new stack`. The first time it's switched to, `ret` jumps to the trampoline, which turns interrupts on and calls the process's function.
+
+### Preemption: the timer takes the CPU back
+
+```text
+every 10 ms: timer → M-mode → SSIP → supervisor_trap (on the current process's stack)
+  → timer_tick() → scheduler_tick()
+       charge 1 tick to the current process
+       wake any SLEEPING process whose wake_tick has come
+       time slice used up?  → schedule() → context_switch to the next process
+```
+
+A process in `while (1) {}` never gives up the CPU, but the timer interrupts it anyway. That's **preemptive multitasking**, and the self-test proves it with three workers that never yield.
+
+**Two things that had to be fixed for this to be safe:**
+1. **M-mode got its own stack** (`mscratch`). Process stacks live in the heap at `0x9000xxxx`, a *virtual* address. M-mode doesn't use page tables, so pushing onto a process stack from M-mode would hit a physical address with no RAM there. Now M-mode always swaps to its own stack.
+2. **The trap handler saves `sepc` and `sstatus`.** These are CPU registers, not memory. If process A is switched out inside a trap, process B's traps overwrite them. When A comes back, the handler restores its own copies before `sret`, so A returns to the right place.
+
+### The AI-aware scheduler
+
+| Class | Rule | Slice | For |
+|---|---|---|---|
+| INTERACTIVE | Always first | 1 tick | Keyboard, console |
+| AI_AGENT | Weight 60 | 3 ticks | Agentic AI tasks |
+| NORMAL | Weight 30 | 2 ticks | Regular programs |
+| BACKGROUND | Weight 10 | 1 tick | Small NNs, maintenance |
+| IDLE | Only when nothing else is ready | | pid 0 (`kernel_main`), `wfi` |
+
+**Weighted sharing with virtual runtime:** each tick a process runs, `vruntime += 600 / weight`:
+
+```text
+AI_AGENT    +10 per tick     → runs 6 ticks for every 1 of BACKGROUND
+NORMAL      +20 per tick
+BACKGROUND  +60 per tick
+The scheduler always picks the READY process with the LOWEST vruntime.
+```
+
+Worked example, all three busy, starting at 0 (ties go to the higher class):
+
+```text
+agent runs 3 → 30   normal runs 2 → 40   bg runs 1 → 60   agent 3 → 60
+normal 2 → 80       agent 3 → 90         bg 1 → 120       normal 2 → 120   agent 3 → 120
+over this cycle: agent 12 ticks, normal 6, background 2  =  60% / 30% / 10%
+```
+
+**Why not "AI always first"?** Absolute priority would **starve** everything else: a 10-minute agent task would freeze the keyboard. With `vruntime`, everyone's number keeps growing, so every process eventually has the lowest one and gets a turn. **No starvation, built in.** INTERACTIVE jumps the queue, but it only runs in tiny bursts, so the agent barely notices. And a process that wakes up (or is new) starts at the current lowest `vruntime`, so it can't claim a huge burst for the time it was asleep.
+
+**Real-world comparison:** Linux's scheduler (CFS/EEVDF) uses the same virtual-runtime idea with weights from `nice` values. macOS has QoS classes much like this table. Windows has priority classes plus a boost for the foreground window. KnocOS adds a dedicated **AI_AGENT** class.
+
+### Sleeping and the idle process
+
+- `process_sleep(ticks)` marks the process SLEEPING with a `wake_tick`. `scheduler_tick()` wakes it when that tick arrives. If it's INTERACTIVE, it preempts whatever is running right away, which is why the test measures a **0-tick** wake latency.
+- **pid 0 is `kernel_main` itself.** After boot it becomes the **idle process** and runs `wfi`. The scheduler picks it only when nothing else is ready.
+
+### Interrupts during scheduling
+
+`schedule()` must never be interrupted halfway (by a timer tick that also calls `schedule()`). So every path into it runs with interrupts **off**: trap handlers turn them off automatically, and `process_yield`/`sleep`/`create` turn them off with `csrrc sstatus` and restore them afterwards.
+
+### Known limits (next steps)
+
+- **No locks yet:** the heap isn't safe if two processes use `kmalloc` at the same time, so `process_create` turns interrupts off around it
+- **The console polls** every 10 ms instead of sleeping until a key arrives (event-based **wait queues** will fix this)
+- **Disk requests** wait with `wfi` instead of letting another process run
+
+---
+
 # Part 6: Engineering
 
 ## 6.1 The Makefile
@@ -643,7 +737,7 @@ That's your kernel writing to a real file on your PC.
 - **Pattern rules** (`%.o: %.c`) compile any C file the same way.
 - **`-MMD -MP`**: the compiler writes a `.d` file listing every header each `.c` file includes, and `make` reads them. Changing a header rebuilds exactly the files that use it.
 - **`-Wall -Wextra -Werror`**: turns on many warnings and makes **any warning a build error**. Warnings often hide real bugs.
-- **`-DKNOCOS_VERSION='"v0.6.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
+- **`-DKNOCOS_VERSION='"v0.7.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
 
 ## 6.2 Automated testing (`make test`)
 
@@ -671,8 +765,9 @@ That's your kernel writing to a real file on your PC.
 | 0.4.0 | Interrupts, traps, PLIC, keyboard, tests, CI |
 | 0.5.0 | Device abstraction, Phase 4 complete |
 | 0.6.0 | virtio-blk disk driver, permanent storage |
+| 0.7.0 | Processes and the AI-aware scheduler |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.6.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.7.0 && git push --tags`.
 
 ---
 
@@ -717,16 +812,17 @@ How to investigate:
 | Changes to headers or the linker script were ignored | The Makefile didn't know about them | Use automatic dependencies (`-MMD`) |
 | Linker warning: RWX segment | Code and data were in one segment | Separate `R-X` and `RW-` with `PHDRS` |
 | Timer constants in two places | `boot.S` hard-coded numbers | Share one header between C and assembly (`#ifndef __ASSEMBLER__`) |
+| `undefined reference to memcpy` | Copying a struct makes GCC call `memcpy`, and bare metal has no C library | A kernel must provide `memcpy`/`memset` itself (`kernel/string.c`) |
+| (avoided) M-mode writing to a process stack | Process stacks are virtual heap addresses, but M-mode uses physical addresses | Give M-mode its own stack with `mscratch` |
+| (avoided) Returning to the wrong place after a switch | `sepc`/`sstatus` are CPU registers shared by every trap | Save them in the handler and restore before `sret` |
 
 ---
 
 # Part 8: What Comes Next
 
-## 8.1 Processes and the scheduler (Phase 5)
+## 8.1 The Guardian: AI that survives crashes
 
-- **Process:** a running program with its own registers, stack and (later) page table.
-- **Context switch:** save process A's registers and load process B's. It's the same idea as the trap frame.
-- **Scheduler:** on every timer tick (`timer_tick()`), decide who runs next. Start with **round-robin** (take turns).
+From goal.md: a crash **black box** (`panic()` writes a report to the disk and the next boot reads it), then an M-mode **watchdog** (M-mode still gets the timer when the kernel is frozen, so it can notice "the kernel hasn't counted a tick in 2 seconds" and save its state), then an AI runtime space isolated from the kernel. M-mode's private stack, added for the scheduler, is the first building block.
 
 ## 8.2 User mode and system calls
 
@@ -811,6 +907,12 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | **CLINT** | Core-local interruptor: the timer (and software interrupts) hardware |
 | **Coalescing** | Merging neighbouring free heap blocks |
 | **Context switch** | Saving one program's registers and loading another's |
+| **Idle process** | What runs when nothing else can: pid 0, sleeps with `wfi` |
+| **Preemption** | The timer forcibly takes the CPU from a process |
+| **Process** | One running task with its own stack and saved registers |
+| **Starvation** | A process never getting CPU time because others always win |
+| **Time slice** | How long a process may run before the scheduler reconsiders |
+| **vruntime** | Virtual runtime: CPU time scaled by weight. Lowest runs next |
 | **CSR** | Control and status register: CPU configuration |
 | **ELF** | Executable file format used on Linux and bare-metal RISC-V |
 | **Hart** | Hardware thread: a RISC-V CPU core |

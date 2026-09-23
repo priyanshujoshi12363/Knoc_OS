@@ -2,6 +2,25 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.7.0] - 2026-09-23
+
+Processes and the AI-aware scheduler.
+
+### Added
+- Processes (kernel threads) with their own 16 KiB stacks, saved context, class, state and CPU accounting (`kernel/process.c/h`)
+- `context_switch` in assembly (`kernel/switch.S`)
+- Timer-driven preemption: `scheduler_tick()` on every tick
+- AI-aware scheduler: INTERACTIVE first, then weighted virtual-runtime sharing between AI_AGENT (60), NORMAL (30) and BACKGROUND (10), with per-class time slices and no starvation
+- `process_create`, `process_yield`, `process_sleep`, `process_exit`, `process_kill`, `process_list`
+- Scheduler self-test: three CPU-bound workers must get 60/30/10 (±10) of the CPU, all must progress, and an interactive process must wake on its target tick
+- The keyboard echo runs as an INTERACTIVE `console` process
+- `memcpy` / `memset` (`kernel/string.c`), required by the compiler for struct copies
+
+### Changed
+- M-mode uses its own private stack through `mscratch`, so the timer handler never touches process stacks
+- The S-mode trap handler saves and restores `sepc` and `sstatus`, so switching processes inside a trap is safe
+- `kernel_main` becomes the idle process (pid 0) after boot
+
 ## [0.6.0] - 2026-09-23
 
 Disk driver: KnocOS has permanent storage.

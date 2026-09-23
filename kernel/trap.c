@@ -3,6 +3,7 @@
 #include "timer.h"
 #include "plic.h"
 #include "device.h"
+#include "process.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -61,6 +62,18 @@ static uint64_t read_stval(void)
     uint64_t value;
     asm volatile("csrr %0, stval" : "=r"(value));
     return value;
+}
+
+static uint64_t read_sstatus(void)
+{
+    uint64_t value;
+    asm volatile("csrr %0, sstatus" : "=r"(value));
+    return value;
+}
+
+static void write_sstatus(uint64_t value)
+{
+    asm volatile("csrw sstatus, %0" :: "r"(value));
 }
 
 static void write_sepc(uint64_t value)
@@ -123,12 +136,17 @@ void supervisor_trap_handler(trap_frame_t *frame)
     uint64_t scause = read_scause();
     uint64_t sepc = read_sepc();
     uint64_t stval = read_stval();
+    uint64_t sstatus = read_sstatus();
 
     if ((scause & SCAUSE_INTERRUPT) &&
         (scause & SCAUSE_CODE_MASK) == INTERRUPT_SUPERVISOR_SOFTWARE)
     {
         clear_sip(SIP_SSIP);
         timer_tick();
+        scheduler_tick();
+
+        write_sepc(sepc);
+        write_sstatus(sstatus);
         return;
     }
 
@@ -136,6 +154,9 @@ void supervisor_trap_handler(trap_frame_t *frame)
         (scause & SCAUSE_CODE_MASK) == INTERRUPT_SUPERVISOR_EXTERNAL)
     {
         handle_external_interrupt();
+
+        write_sepc(sepc);
+        write_sstatus(sstatus);
         return;
     }
 
@@ -148,6 +169,7 @@ void supervisor_trap_handler(trap_frame_t *frame)
         log_trap_hex("sepc   = ", sepc);
 
         write_sepc(sepc + INSTRUCTION_SIZE);
+        write_sstatus(sstatus);
         return;
     }
 

@@ -73,6 +73,10 @@ check \
     "Disk write/read test passed" \
     "Disk says: Hello from the host!" \
     "Disk boot count: 1" \
+    "Scheduler started" \
+    "AI-aware scheduling verified" \
+    "Preemption verified" \
+    "Interactive response verified" \
     "All self-tests passed" \
     "knocos-echo-test" \
     "Powering off"

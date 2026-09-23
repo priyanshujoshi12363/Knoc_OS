@@ -16,6 +16,9 @@ _start:
     li t0, 0x1F
     csrw pmpcfg0, t0
 
+    la t0, machine_stack_top
+    csrw mscratch, t0
+
     la t0, machine_trap
     csrw mtvec, t0
 
@@ -64,6 +67,7 @@ loop:
     j loop
 
 machine_trap:
+    csrrw sp, mscratch, sp
     addi sp, sp, -256
 
     sd ra, 0(sp)
@@ -96,7 +100,6 @@ machine_trap:
     sd t4, 216(sp)
     sd t5, 224(sp)
     sd t6, 232(sp)
-    sd sp, 240(sp)
 
     csrr t0, mcause
 
@@ -135,9 +138,9 @@ machine_trap:
     ld t4, 216(sp)
     ld t5, 224(sp)
     ld t6, 232(sp)
-    ld sp, 240(sp)
 
     addi sp, sp, 256
+    csrrw sp, mscratch, sp
     mret
 
 machine_trap_exception:
@@ -257,3 +260,9 @@ supervisor_trap:
 
 trap_message:
     .asciz "[TRAP] mcause=0x"
+
+.section .bss
+.align 4
+machine_stack:
+    .space 4096
+machine_stack_top:

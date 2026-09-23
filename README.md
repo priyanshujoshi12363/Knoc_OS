@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.6.0-blue)
+![Version](https://img.shields.io/badge/version-v0.7.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -36,13 +36,14 @@ KnocOS currently has:
 - Standalone `timer/` test program for reading `mtime`
 - **Power-off / reboot** driver (QEMU test device): press **Ctrl-D** to shut KnocOS down
 - **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
+- **Processes and an AI-aware scheduler**: kernel processes with their own stacks, context switching, timer preemption, and 4 scheduling classes where **AI agent work gets the largest CPU share** (60%) while the keyboard stays instant and nothing starves
 - **Automated tests** (`make test`) and **GitHub Actions CI** on every push
 - Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
 
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.6.0 starting
+[INFO] KnocOS v0.7.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
@@ -70,6 +71,21 @@ KnocOS currently has:
 [INFO] Disk write/read test passed
 [INFO] Disk says: Hello from the host!     ← text written into disk.img from Linux
 [INFO] Disk boot count: 1                  ← stored on the disk, +1 on every boot
+[INFO] Scheduler started (AI-aware: INTERACTIVE first, then AI_AGENT 60 / NORMAL 30 / BACKGROUND 10)
+[INFO] Workers created: agent-coder (AI_AGENT), normal-task (NORMAL), nn-sorter (BACKGROUND)
+       PID  NAME            CLASS        STATE     CPU TICKS
+       0    idle            IDLE         READY     1
+       1    sched-test      INTERACTIVE  RUNNING   0
+       2    agent-coder     AI_AGENT     READY     60
+       3    normal-task     NORMAL       READY     30
+       4    nn-sorter       BACKGROUND   READY     10
+[INFO] CPU share: agent-coder 60% (expected 60%)
+[INFO] CPU share: normal-task 30% (expected 30%)
+[INFO] CPU share: nn-sorter 10% (expected 10%)
+[INFO] AI-aware scheduling verified
+[INFO] Preemption verified: CPU-bound workers never yield, all made progress
+[INFO] Interactive wake latency (ticks): 0
+[INFO] Interactive response verified
 [INFO] All self-tests passed
 [INFO] Keyboard echo ready, start typing (Ctrl-D to power off)
 hello knocos          ← what you type is echoed back
@@ -89,9 +105,9 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: virtio-blk Disk Driver
+## ✅ Just Completed: Processes and the AI-Aware Scheduler
 
-Phase 4 (interrupts, traps and devices) is complete, and KnocOS now has **permanent storage**: a virtio-blk disk driver built on the device abstraction. **Next up: processes and the scheduler (Phase 5)** or the **filesystem (Phase 6)**.
+KnocOS can now run **many processes at once** on one CPU, and its scheduler is designed for an AI OS: **AI agent processes get the largest share of the CPU**, the keyboard and other interactive work always responds immediately, and background work (like small NNs) still gets its share. **Next up: an AI runtime space that survives kernel crashes** (black box + watchdog), then **more memory for AI models**.
 
 Recent progress:
 
@@ -104,7 +120,8 @@ Recent progress:
 | `9bffe5d` | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
 | `cb619ec` | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
 | `1ad97f8` | Device abstraction: device table, `uart0` and `power0` drivers, version `v0.5.0` |
-| *(uncommitted)* | virtio-blk disk driver (`disk0`), block devices in the device model, version `v0.6.0` |
+| `42e7855` | virtio-blk disk driver (`disk0`), block devices in the device model, version `v0.6.0` |
+| *(uncommitted)* | Processes, context switching, AI-aware scheduler, M-mode private stack, version `v0.7.0` |
 
 What works right now:
 
@@ -120,13 +137,21 @@ What works right now:
 - Drivers register in a **device table**, and `device_init_all()` starts each one and enables its IRQ in the PLIC
 - `kernel_main` ends in an echo loop: `device_read(uart0)` reads from the buffer, and when it's empty the CPU sleeps with `wfi` until the next interrupt. Ctrl-D sends a power-off command to `power0` with `device_write()`
 - `disk0` (virtio-blk) sends each sector request through a shared **virtqueue**, sleeps with `wfi`, and is woken by its interrupt (IRQ 1) through the same PLIC → `device_handle_irq()` path as the keyboard. `trap.c` and `plic.c` didn't change to support it
+- **Processes:** each has its own 16 KiB stack, saved registers, a class and CPU accounting. `context_switch` (assembly) saves one process's registers and loads another's
+- **Preemption:** every timer tick calls `scheduler_tick()`. When a process's time slice ends, the scheduler switches, even if the process never gives up the CPU
+- **AI-aware scheduling:** INTERACTIVE processes run first. The rest share the CPU by weight (AI_AGENT 60, NORMAL 30, BACKGROUND 10) using virtual runtime, so nothing starves
+- **Console as a process:** the keyboard echo runs as an INTERACTIVE process that sleeps 1 tick when there's no input
+- M-mode has its **own stack** (`mscratch`), so the timer handler never touches process stacks. The S-mode trap handler saves `sepc`/`sstatus` so a process switch inside a trap returns to the right place
 - Self-tests: the disk test writes and reads back a sector, reads text placed in `disk.img` by the host, and increments a boot counter stored on the disk
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
 Next steps:
 
-- [ ] Processes, context switching and a timer-driven scheduler (Phase 5)
-- [ ] A simple filesystem on `disk0` (Phase 6)
+- [ ] Crash black box: `panic()` saves a crash report to the disk, and the next boot reports it
+- [ ] Watchdog: M-mode detects a frozen kernel and saves its state
+- [ ] AI runtime space isolated from the kernel (after user mode)
+- [ ] More RAM and large-memory support for AI models
+- [ ] User mode + system calls, filesystem, shell
 
 ---
 
@@ -179,7 +204,12 @@ kernel_main (Supervisor mode)  kernel/main.c
    ├─ device_init_all()                   init each driver, enable its IRQ
    ├─ device_list()                       print the table
    ├─ disk self-test (write/read, host text, boot counter)
-   └─ keyboard echo loop (wfi when idle)
+   ├─ process_init()                      kernel_main becomes the idle process (pid 0)
+   ├─ create "sched-test" (INTERACTIVE)
+   ├─ scheduler_start()
+   └─ idle loop (wfi)
+        sched-test: start 3 workers, sleep 1 s, check CPU shares, kill workers,
+                    start "console" (INTERACTIVE) → keyboard echo
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
                          └──► supervisor_trap (S-mode) ──► clear sip.SSIP, timer_tick() ──► sret
@@ -245,7 +275,10 @@ KnocOS/
 │   ├── power.c/h     # Power off / reboot (QEMU test device), device power0
 │   ├── device.c/h    # Device abstraction: driver struct, device table, IRQ dispatch
 │   ├── virtio.h      # virtio-mmio registers and virtqueue structures
-│   └── virtio_blk.c/h# virtio-blk disk driver (disk0)
+│   ├── virtio_blk.c/h# virtio-blk disk driver (disk0)
+│   ├── process.c/h   # Processes and the AI-aware scheduler
+│   ├── switch.S      # context_switch: save/restore registers between processes
+│   └── string.c/h    # memcpy / memset (needed by the compiler on bare metal)
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -274,7 +307,8 @@ KnocOS/
 - Sets `mepc = supervisor_start`, `MPP = Supervisor`, `MPIE = 1`
 - Enables `rdtime` for S-mode (`mcounteren.TM`), arms the first `mtimecmp`, enables `MTIE` and executes `mret`
 - Includes `kernel/timer.h` for `CLINT_MTIME`, `CLINT_MTIMECMP` and `TIMER_INTERVAL`
-- `machine_trap` saves 31 registers on a 256-byte stack frame, dispatches timer interrupts to C and prints the `mcause` hex value for anything else
+- `mscratch` holds the top of a private 4 KiB **machine stack**. `machine_trap` swaps to it on entry (`csrrw sp, mscratch, sp`) and back on exit, so M-mode never uses (or depends on) the interrupted process's stack
+- `machine_trap` saves 30 registers on a 256-byte frame, dispatches timer interrupts to C and prints the `mcause` hex value for anything else
 - `supervisor_trap` saves 31 registers as a `trap_frame_t`, calls `supervisor_trap_handler(frame)` and returns with `sret`
 
 ### Linker script: `boot/linker.ld`
@@ -401,6 +435,44 @@ There are two kinds of devices, like on Linux and Windows:
 
 Adding a new device means writing its driver file and calling its register function. The trap handler and the PLIC setup don't change, and the disk driver proved it.
 
+### Processes and the AI-aware scheduler: `kernel/process.c`
+
+**Processes** (kernel threads for now: they share the kernel's memory; user mode comes later):
+
+| Field | Meaning |
+|---|---|
+| `pid`, `name` | Identity, like Task Manager |
+| `process_class` | INTERACTIVE, AI_AGENT, NORMAL, BACKGROUND (or IDLE for pid 0) |
+| `state` | READY, RUNNING, SLEEPING, EXITED |
+| `context` | Saved `ra`, `sp`, `s0`–`s11` (used by `context_switch`) |
+| `stack` | 16 KiB from `kmalloc` |
+| `cpu_ticks`, `vruntime` | CPU time used, and weighted virtual runtime |
+
+**Scheduling classes:**
+
+| Class | Rule | Time slice | Meant for |
+|---|---|---|---|
+| **INTERACTIVE** | Always runs first (round-robin among themselves) | 1 tick | Keyboard, console, anything waiting for you |
+| **AI_AGENT** | Weight **60** | 3 ticks | Agentic AI work: coding agents, LLM planning |
+| **NORMAL** | Weight **30** | 2 ticks | Regular programs |
+| **BACKGROUND** | Weight **10** | 1 tick | Small NNs, maintenance |
+| IDLE | Only when nothing else is ready | | pid 0 (`kernel_main`), runs `wfi` |
+
+**How the weighted share works (virtual runtime):** each tick a process runs, its `vruntime` grows by `600 / weight` (AI_AGENT +10, NORMAL +20, BACKGROUND +60). The scheduler always picks the READY weighted process with the **lowest** `vruntime`. So an AI agent can run 6 ticks for every 1 tick of background work, but everyone keeps moving forward, which means **no starvation**. A process that wakes up or is created starts at the current lowest `vruntime`, so it can't grab a huge burst. When only one process is busy, it gets 100% of the CPU. The weights and slices are in `process.h`.
+
+**API:**
+
+| Function | What it does | Windows equivalent |
+|---|---|---|
+| `process_create(name, class, entry, arg)` | Start a new process | `CreateThread` |
+| `process_yield()` | Give up the CPU voluntarily | `SwitchToThread` |
+| `process_sleep(ticks)` | Sleep for N ticks (10 ms each) | `Sleep` |
+| `process_exit()` / `process_kill(pid)` | End a process | `ExitThread` / `TerminateThread` |
+| `process_list()` | Print the process table | Task Manager |
+| `scheduler_tick()` | Called on every timer tick: charge CPU time, wake sleepers, preempt | The clock interrupt handler |
+
+**Current limits (fine for now, to fix later):** the kernel isn't fully preemption-safe yet (the heap has no locks, so `process_create` disables interrupts around it), the console polls every tick instead of waiting on an event, and a disk request waits with `wfi` instead of letting other processes run.
+
 ### Disk: `kernel/virtio_blk.c`
 
 A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio block device, like the `.vdi` file behind a VirtualBox disk.
@@ -444,7 +516,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.6.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.7.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -559,12 +631,14 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 
 ### Phase 5: Processes & Scheduling
 
-- [ ] Process structure
-- [ ] Context switching
-- [ ] Scheduler (timer-driven preemption)
+- [x] Process structure
+- [x] Context switching
+- [x] Scheduler (timer-driven preemption)
+- [x] AI-aware scheduling classes (INTERACTIVE, AI_AGENT, NORMAL, BACKGROUND)
+- [x] Multiple processes
+- [ ] Event-based waiting (no polling)
 - [ ] User mode
 - [ ] System calls
-- [ ] Multiple processes
 
 ### Phase 6: Storage & Filesystems
 
@@ -617,7 +691,8 @@ KnocOS aims to become a production-grade operating system. This is what that req
 | Memory management (pages, paging, heap) | ✅ |
 | Interrupts and exception handling | ✅ |
 | Device driver model (device abstraction) | ✅ |
-| Processes, scheduler, context switching | ⬜ |
+| Processes, scheduler, context switching | ✅ (kernel threads) |
+| AI-aware scheduling | ✅ |
 | User mode and memory isolation between programs | ⬜ |
 | System calls | ⬜ |
 | Multi-core (SMP) support and locking | ⬜ |
@@ -662,6 +737,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.6.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.7.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share.
