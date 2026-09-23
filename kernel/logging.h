@@ -5,6 +5,8 @@
 
 void log_info(const char *message);
 void log_warn(const char *message);
+void log_info_uint(const char *label, uint64_t value);
+void log_info_text(const char *label, const char *text);
 void log_trap(const char *message);
 void log_trap_hex(const char *label, uint64_t value);
 void panic(const char *message);

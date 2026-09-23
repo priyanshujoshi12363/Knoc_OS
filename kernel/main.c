@@ -9,10 +9,101 @@
 #include "plic.h"
 #include "power.h"
 #include "device.h"
+#include "virtio_blk.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
 #define KEY_BACKSPACE 0x7F
+
+#define DISK_HOST_SECTOR 0
+#define DISK_BOOT_COUNT_SECTOR 1
+#define DISK_TEST_SECTOR 2
+#define DISK_BOOT_COUNT_MAGIC 0x544F4F42434F4E4BULL
+#define DISK_TEXT_MAX 64
+
+typedef struct disk_boot_record
+{
+    uint64_t magic;
+    uint64_t count;
+} disk_boot_record_t;
+
+static uint8_t disk_buffer[VIRTIO_BLK_SECTOR_SIZE];
+
+static void disk_self_test(device_t *disk)
+{
+    log_info_uint("Disk sectors: ", disk->block_count);
+
+    for (uint64_t i = 0; i < VIRTIO_BLK_SECTOR_SIZE; i++)
+    {
+        disk_buffer[i] = (uint8_t)(i * 7 + 3);
+    }
+
+    if (device_write_block(disk, DISK_TEST_SECTOR, disk_buffer) != 0)
+    {
+        panic("Disk write failed");
+    }
+
+    for (uint64_t i = 0; i < VIRTIO_BLK_SECTOR_SIZE; i++)
+    {
+        disk_buffer[i] = 0;
+    }
+
+    if (device_read_block(disk, DISK_TEST_SECTOR, disk_buffer) != 0)
+    {
+        panic("Disk read failed");
+    }
+
+    for (uint64_t i = 0; i < VIRTIO_BLK_SECTOR_SIZE; i++)
+    {
+        if (disk_buffer[i] != (uint8_t)(i * 7 + 3))
+        {
+            panic("Disk data mismatch");
+        }
+    }
+
+    log_info("Disk write/read test passed");
+
+    if (device_read_block(disk, DISK_HOST_SECTOR, disk_buffer) != 0)
+    {
+        panic("Disk read failed");
+    }
+
+    char text[DISK_TEXT_MAX];
+    uint64_t length = 0;
+
+    while (length < DISK_TEXT_MAX - 1 &&
+           disk_buffer[length] >= ' ' &&
+           disk_buffer[length] <= '~')
+    {
+        text[length] = (char)disk_buffer[length];
+        length++;
+    }
+
+    text[length] = 0;
+    log_info_text("Disk says: ", text);
+
+    if (device_read_block(disk, DISK_BOOT_COUNT_SECTOR, disk_buffer) != 0)
+    {
+        panic("Disk read failed");
+    }
+
+    disk_boot_record_t *record = (disk_boot_record_t *)disk_buffer;
+
+    if (record->magic != DISK_BOOT_COUNT_MAGIC)
+    {
+        record->magic = DISK_BOOT_COUNT_MAGIC;
+        record->count = 0;
+    }
+
+    record->count++;
+
+    if (device_write_block(disk, DISK_BOOT_COUNT_SECTOR, disk_buffer) != 0)
+    {
+        panic("Disk write failed");
+    }
+
+    log_info_uint("Disk boot count: ", record->count);
+}
 
 void kernel_main(void)
 {
@@ -215,6 +306,7 @@ void kernel_main(void)
 
     uart_register();
     power_register();
+    virtio_blk_register();
 
     device_init_all();
     device_list();
@@ -227,12 +319,24 @@ void kernel_main(void)
         panic("Required device missing");
     }
 
-    if (device_count() != 2 || device_find("missing0") != 0)
+    if (device_count() != 3 || device_find("missing0") != 0)
     {
         panic("Device table test failed");
     }
 
     log_info("Device table verified");
+
+    device_t *disk = device_find("disk0");
+
+    if (disk != 0 && disk->ready)
+    {
+        disk_self_test(disk);
+    }
+    else
+    {
+        log_warn("No disk attached");
+    }
+
     log_info("All self-tests passed");
     log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
 

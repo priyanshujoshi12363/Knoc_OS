@@ -121,6 +121,36 @@ int64_t device_write(device_t *dev, const void *buffer, uint64_t length)
     return dev->write(dev, buffer, length);
 }
 
+int device_read_block(device_t *dev, uint64_t block, void *buffer)
+{
+    if (dev == 0 || !dev->ready || dev->read_block == 0 || buffer == 0)
+    {
+        return -1;
+    }
+
+    if (block >= dev->block_count)
+    {
+        return -1;
+    }
+
+    return dev->read_block(dev, block, buffer);
+}
+
+int device_write_block(device_t *dev, uint64_t block, const void *buffer)
+{
+    if (dev == 0 || !dev->ready || dev->write_block == 0 || buffer == 0)
+    {
+        return -1;
+    }
+
+    if (block >= dev->block_count)
+    {
+        return -1;
+    }
+
+    return dev->write_block(dev, block, buffer);
+}
+
 int device_handle_irq(uint32_t irq)
 {
     for (uint32_t i = 0; i < registered_count; i++)
@@ -154,6 +184,13 @@ void device_list(void)
         {
             uart_puts("  IRQ ");
             uart_put_uint(dev->irq);
+        }
+
+        if (dev->block_count != 0)
+        {
+            uart_puts("  ");
+            uart_put_uint(dev->block_count);
+            uart_puts(" blocks");
         }
 
         uart_puts(dev->ready ? "  ready" : "  failed");

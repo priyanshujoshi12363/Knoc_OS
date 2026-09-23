@@ -2,6 +2,24 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.6.0] - 2026-09-23
+
+Disk driver: KnocOS has permanent storage.
+
+### Added
+- virtio-blk disk driver (`kernel/virtio_blk.c`), registered as block device `disk0` (IRQ 1): feature negotiation, an 8-entry virtqueue, interrupt-driven 512-byte sector reads and writes
+- virtio-mmio definitions (`kernel/virtio.h`)
+- Block devices in the device model: `block_size`, `block_count`, `read_block`, `write_block`, and `device_read_block` / `device_write_block` with range checks
+- `disk.img` (1 MiB) created by the Makefile and attached by `make run`, plus `make reset-disk`
+- Disk self-test: write/read-back of a sector, reading text placed by the host, and a boot counter stored on the disk
+- `make test` boots twice on a fresh test disk and checks the boot counter goes from 1 to 2 (data survives reboots)
+- `log_info_uint` and `log_info_text` logging helpers
+
+### Changed
+- The virtio slot (`0x10001000`) is mapped in the kernel page tables
+- `device_list` shows the block count of block devices
+- No changes were needed in `trap.c` or `plic.c` to add the disk
+
 ## [0.5.0] - 2026-09-23
 
 Device abstraction. Phase 4 (hardware and interrupts) is complete.

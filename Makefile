@@ -14,6 +14,13 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
 QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
 QEMU_FLAGS = -machine virt -bios none -nographic
 
+DISK = disk.img
+DISK_SECTORS = 2048
+DISK_MESSAGE = Hello from the host!
+QEMU_DISK_FLAGS = -global virtio-mmio.force-legacy=false \
+                  -drive file=$(DISK),if=none,format=raw,id=disk0 \
+                  -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0
+
 KERNEL_OBJS = boot/boot.o \
               kernel/main.o \
               kernel/memory.o \
@@ -26,13 +33,14 @@ KERNEL_OBJS = boot/boot.o \
               kernel/uart.o \
               kernel/plic.o \
               kernel/power.o \
-              kernel/device.o
+              kernel/device.o \
+              kernel/virtio_blk.o
 
 TIMER_OBJS = timer/timer.o
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d)
 
-.PHONY: all clean run test timer-test size pages
+.PHONY: all clean run test timer-test size pages reset-disk
 
 all: knocos.elf
 
@@ -55,8 +63,16 @@ kernel/main.o: VERSION
 clean:
 	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(DEPS)
 
-run: knocos.elf
-	$(QEMU) $(QEMU_FLAGS) -kernel knocos.elf
+$(DISK):
+	dd if=/dev/zero of=$(DISK) bs=512 count=$(DISK_SECTORS) status=none
+	printf '$(DISK_MESSAGE)' | dd of=$(DISK) conv=notrunc status=none
+
+reset-disk:
+	rm -f $(DISK)
+	$(MAKE) $(DISK)
+
+run: knocos.elf $(DISK)
+	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISK_FLAGS) -kernel knocos.elf
 
 test: knocos.elf
 	./scripts/test.sh

@@ -15,6 +15,22 @@ void log_warn(const char *message)
     uart_putc('\n');
 }
 
+void log_info_uint(const char *label, uint64_t value)
+{
+    uart_puts("[INFO] ");
+    uart_puts(label);
+    uart_put_uint(value);
+    uart_putc('\n');
+}
+
+void log_info_text(const char *label, const char *text)
+{
+    uart_puts("[INFO] ");
+    uart_puts(label);
+    uart_puts(text);
+    uart_putc('\n');
+}
+
 void log_trap(const char *message)
 {
     uart_puts("[TRAP] ");

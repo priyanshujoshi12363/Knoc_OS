@@ -6,3 +6,4 @@ timer.elf
 virt.dtb
 virt.dts
 /.claude
+disk.img

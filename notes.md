@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
-- **Part 5: Traps, interrupts and devices:** exceptions, timer, PLIC, keyboard input, the device driver model
+- **Part 5: Traps, interrupts and devices:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** disk, processes, user mode, AI-OS
+- **Part 8: What comes next:** processes, user mode, filesystem, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -34,7 +34,7 @@ An OS is the program that **manages the hardware** and **gives other programs a 
 | Manage memory | Gives Chrome its own RAM | Page allocator, Sv39 paging, heap |
 | React to hardware | Key press → Notepad | UART interrupt → echo |
 | Share the CPU | Chrome + Spotify at once | Timer heartbeat ready, scheduler not yet |
-| Store files | C: drive, NTFS | Not yet (needs a disk driver) |
+| Store files | C: drive, NTFS | Disk driver ✅, filesystem not yet |
 | Protect programs from each other | One app can't read another's memory | Not yet (needs user mode) |
 
 The **kernel** is the core of the OS that runs with full hardware power. On Windows it's `ntoskrnl.exe`, on Linux it's `vmlinuz`, and in KnocOS it's `knocos.elf`.
@@ -547,6 +547,95 @@ driver file (uart.c)                   device table (device.c)          the rest
 
 ---
 
+## 5.10 The disk: virtio-blk (`kernel/virtio_blk.c`)
+
+### What it is
+
+A **virtual hard disk**. QEMU turns the file `disk.img` on your PC into a disk that KnocOS can read and write. **Windows comparison:** the `.vdi` / `.vmdk` file behind a VirtualBox VM's C: drive.
+
+- **virtio** = a standard, simple interface for virtual devices (disk, network, GPU, input all use it)
+- **blk** = block device: storage made of numbered, fixed-size **sectors** (512 bytes)
+- `disk.img` is 1 MiB = 2048 sectors. `make run` creates it with `Hello from the host!` in sector 0
+
+### Character devices vs block devices
+
+`device_read(uart0, buffer, 5)` means "give me the next 5 bytes" (a **stream**). A disk needs "give me **sector 7**", which a stream API can't express. So the device model has two kinds, like Linux and Windows:
+
+| Kind | Example | API | Unit |
+|---|---|---|---|
+| Character | `uart0` | `device_read` / `device_write` | a stream of bytes |
+| Block | `disk0` | `device_read_block` / `device_write_block` | numbered 512-byte blocks |
+
+### Finding and starting the device
+
+virtio-mmio slot 0 is at `0x10001000` (IRQ 1). The driver checks:
+
+| Register | Expected | Meaning |
+|---|---|---|
+| Magic value | `0x74726976` | The ASCII letters `"virt"`: this is a virtio device |
+| Version | 2 | Modern virtio (QEMU needs `-global virtio-mmio.force-legacy=false`) |
+| Device ID | 2 | A block device (1 = network, 16 = GPU, ...) |
+
+Then comes the **status handshake**, where the driver and device agree step by step:
+
+```text
+ACKNOWLEDGE  "I see you"
+DRIVER       "I have a driver for you"
+features     "I only need VIRTIO_F_VERSION_1"
+FEATURES_OK  "agreed"             (the driver checks the device accepted it)
+queue setup  (below)
+DRIVER_OK    "ready to work"
+```
+
+### The virtqueue: a shared to-do list
+
+The driver and the device share memory. Three rings, each in its own page:
+
+```text
+descriptor table   [0] header  → [1] 512-byte data → [2] status byte
+  (what and where)     addr, len, flags (NEXT = chained, WRITE = device writes here)
+
+available ring     driver → device: "request starting at descriptor 0 is ready"   (idx++)
+
+used ring          device → driver: "request finished"                             (idx++)
+```
+
+### One sector read, step by step
+
+```text
+1. Fill the header: type = IN (read), sector = 7
+2. Chain 3 descriptors: header → data buffer (device WRITEs it) → status byte
+3. Put descriptor 0 in the available ring, then idx++          (fence before and after)
+4. Write QUEUE_NOTIFY: "you have work"
+5. Sleep with wfi
+       QEMU reads sector 7 of disk.img into our buffer, writes status = 0,
+       moves the used ring, raises IRQ 1
+6. IRQ 1 → PLIC → trap → device_handle_irq(1) → disk0's interrupt handler
+       acknowledges the interrupt, sees the used ring moved → request_done = 1
+7. Wake up, check status == 0 (OK), copy the 512 bytes to the caller
+```
+
+It's the same interrupt path as the keyboard. **`trap.c` and `plic.c` didn't change at all** to add the disk, which proves the device abstraction works.
+
+### Details worth understanding
+
+- **Memory fences** (`__sync_synchronize()`): the CPU and compiler may reorder memory writes. The device must see the descriptors *before* it sees `idx` change, so a fence forces that order. Shared memory with a device almost always needs fences.
+- **Physical addresses:** the device knows nothing about our page tables. It needs **physical** addresses. The queue pages and the driver's own buffers are identity-mapped (virtual = physical), but a heap buffer at `0x90000000` isn't. So the driver copies through its own sector buffer, and callers can pass any kernel buffer.
+- **One request at a time:** simple and correct for now. A faster driver would keep several requests in flight (the queue has 8 slots).
+
+### Proof that data survives
+
+Sector 1 holds a **boot counter** (`"KNOCBOOT"` + a number). Every boot reads it, adds 1 and writes it back. `make test` boots twice on the same test disk and checks it goes from 1 to 2. You can also see it from Linux:
+
+```bash
+xxd -s 512 -l 16 disk.img
+00000200: 4b4e 4f43 424f 4f54 0200 0000 0000 0000  KNOCBOOT........
+```
+
+That's your kernel writing to a real file on your PC.
+
+---
+
 # Part 6: Engineering
 
 ## 6.1 The Makefile
@@ -554,7 +643,7 @@ driver file (uart.c)                   device table (device.c)          the rest
 - **Pattern rules** (`%.o: %.c`) compile any C file the same way.
 - **`-MMD -MP`**: the compiler writes a `.d` file listing every header each `.c` file includes, and `make` reads them. Changing a header rebuilds exactly the files that use it.
 - **`-Wall -Wextra -Werror`**: turns on many warnings and makes **any warning a build error**. Warnings often hide real bugs.
-- **`-DKNOCOS_VERSION='"v0.5.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
+- **`-DKNOCOS_VERSION='"v0.6.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
 
 ## 6.2 Automated testing (`make test`)
 
@@ -581,8 +670,9 @@ driver file (uart.c)                   device table (device.c)          the rest
 | 0.3.0 | Kernel heap |
 | 0.4.0 | Interrupts, traps, PLIC, keyboard, tests, CI |
 | 0.5.0 | Device abstraction, Phase 4 complete |
+| 0.6.0 | virtio-blk disk driver, permanent storage |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.5.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.6.0 && git push --tags`.
 
 ---
 
@@ -632,29 +722,21 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 virtio-blk: a disk
-
-A virtual disk backed by a file (`disk.img`) on your PC, like a VirtualBox `.vdi`. The driver shares a **virtqueue** (a ring buffer of requests) with the device:
-
-```text
-request = [header: READ sector N] → [data buffer] → [status byte]
-kernel writes it to the virtqueue → notifies the device → device does the work
-→ interrupt (through the PLIC) → kernel checks the status → data is ready
-```
-
-The driver registers as device `disk0` (IRQ 1) through the device abstraction, so the trap handler doesn't change. This is needed for the filesystem, and later for storing AI models.
-
-## 8.2 Processes and the scheduler (Phase 5)
+## 8.1 Processes and the scheduler (Phase 5)
 
 - **Process:** a running program with its own registers, stack and (later) page table.
 - **Context switch:** save process A's registers and load process B's. It's the same idea as the trap frame.
 - **Scheduler:** on every timer tick (`timer_tick()`), decide who runs next. Start with **round-robin** (take turns).
 
-## 8.3 User mode and system calls
+## 8.2 User mode and system calls
 
 - Programs run in **U-mode** with `U` bit page mappings, so they can't touch the kernel or devices.
 - To ask the kernel for something, a program runs **`ecall`**, which traps to S-mode (exception 8). The kernel reads the request number in `a7` and the arguments in `a0`–`a5`.
 - **Windows comparison:** `syscall` into `ntoskrnl`, like `NtReadFile` and `NtCreateFile`.
+
+## 8.3 A filesystem (Phase 6)
+
+Right now the disk is just 2048 numbered sectors. A **filesystem** organizes them into **files and folders**: a small table on the disk says "file `hello.txt` is in sectors 10–12, 1234 bytes long". It will use `device_read_block` / `device_write_block` on `disk0`, without knowing it's virtio. **Windows comparison:** NTFS on your C: drive.
 
 ## 8.4 Toward the AI-OS
 
@@ -673,7 +755,7 @@ After the kernel foundation: filesystem, shell, the small neural network runtime
 | `0x0200BFF8` | CLINT `mtime` | ❌ (read with `rdtime`) |
 | `0x0C000000` | PLIC | ✅ 4 MiB |
 | `0x10000000` | UART0 (IRQ 10) | ✅ 1 page |
-| `0x10001000` | virtio devices (IRQ 1–8) | Not yet |
+| `0x10001000` | virtio slot 0: `disk0` (IRQ 1) | ✅ 1 page |
 | `0x80000000` | RAM start, kernel | ✅ identity, 128 MiB |
 | `0x88000000` | RAM end | |
 | `0x90000000` | Kernel heap (virtual) | ✅ grows on demand |
@@ -715,6 +797,8 @@ make test       # automated test → RESULT: PASS
 make clean      # delete build files
 make size       # kernel size
 make pages      # page layout
+make reset-disk # recreate disk.img
+xxd disk.img | head                                 # look at the disk from Linux
 riscv64-unknown-elf-objdump -d knocos.elf | less    # disassembly
 riscv64-unknown-elf-nm -n knocos.elf                # symbols
 ```
@@ -743,6 +827,11 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | **TLB** | CPU cache of address translations |
 | **Trap** | Exception or interrupt: the CPU jumps to a handler |
 | **UART** | Serial port chip: text in and out |
+| **Block device** | Storage made of numbered fixed-size blocks (a disk) |
+| **Character device** | A stream of bytes (a serial port, a keyboard) |
+| **Memory fence** | An instruction that stops the CPU from reordering memory accesses across it |
+| **Sector** | One 512-byte block of a disk |
 | **virtio** | Standard simple interface for virtual devices |
+| **Virtqueue** | Ring buffers in shared memory used to send requests to a virtio device |
 | **volatile** | C keyword: "this memory can change behind the compiler's back" |
 | **wfi** | Wait for interrupt: sleep until something happens |

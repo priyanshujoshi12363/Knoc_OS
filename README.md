@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.5.0-blue)
+![Version](https://img.shields.io/badge/version-v0.6.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -35,13 +35,14 @@ KnocOS currently has:
 - **Supervisor-mode trap handler in C**: exceptions are delegated to S-mode, decoded by name and reported with `scause` / `sepc` / `stval`
 - Standalone `timer/` test program for reading `mtime`
 - **Power-off / reboot** driver (QEMU test device): press **Ctrl-D** to shut KnocOS down
+- **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
 - **Automated tests** (`make test`) and **GitHub Actions CI** on every push
 - Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
 
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.5.0 starting
+[INFO] KnocOS v0.6.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
@@ -59,10 +60,16 @@ KnocOS currently has:
 [INFO] Supervisor trap handler verified
 [INFO] Device ready: uart0 (IRQ 10)
 [INFO] Device ready: power0
-[INFO] Devices: 2
+[INFO] Device ready: disk0 (IRQ 1)
+[INFO] Devices: 3
        uart0  IRQ 10  ready
        power0  ready
+       disk0  IRQ 1  2048 blocks  ready
 [INFO] Device table verified
+[INFO] Disk sectors: 2048
+[INFO] Disk write/read test passed
+[INFO] Disk says: Hello from the host!     ← text written into disk.img from Linux
+[INFO] Disk boot count: 1                  ← stored on the disk, +1 on every boot
 [INFO] All self-tests passed
 [INFO] Keyboard echo ready, start typing (Ctrl-D to power off)
 hello knocos          ← what you type is echoed back
@@ -82,9 +89,9 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Interrupts, Traps & Devices (Phase 4)
+## ✅ Just Completed: virtio-blk Disk Driver
 
-Phase 4 is complete. **Next up: the virtio-blk disk driver**, the first new device built on the device abstraction, and the base for the filesystem.
+Phase 4 (interrupts, traps and devices) is complete, and KnocOS now has **permanent storage**: a virtio-blk disk driver built on the device abstraction. **Next up: processes and the scheduler (Phase 5)** or the **filesystem (Phase 6)**.
 
 Recent progress:
 
@@ -96,7 +103,8 @@ Recent progress:
 | `6fe8a98` | Supervisor trap handler, timer interrupts forwarded to S-mode |
 | `9bffe5d` | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
 | `cb619ec` | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
-| *(uncommitted)* | Device abstraction: device table, `uart0` and `power0` drivers, version `v0.5.0` |
+| `1ad97f8` | Device abstraction: device table, `uart0` and `power0` drivers, version `v0.5.0` |
+| *(uncommitted)* | virtio-blk disk driver (`disk0`), block devices in the device model, version `v0.6.0` |
 
 What works right now:
 
@@ -111,12 +119,14 @@ What works right now:
 - On an external interrupt the handler **claims** the IRQ from the PLIC, calls `device_handle_irq()` to run the owning driver's interrupt handler (IRQ 10 → `uart0`, which moves received bytes into a 128-byte ring buffer), then **completes** the IRQ
 - Drivers register in a **device table**, and `device_init_all()` starts each one and enables its IRQ in the PLIC
 - `kernel_main` ends in an echo loop: `device_read(uart0)` reads from the buffer, and when it's empty the CPU sleeps with `wfi` until the next interrupt. Ctrl-D sends a power-off command to `power0` with `device_write()`
+- `disk0` (virtio-blk) sends each sector request through a shared **virtqueue**, sleeps with `wfi`, and is woken by its interrupt (IRQ 1) through the same PLIC → `device_handle_irq()` path as the keyboard. `trap.c` and `plic.c` didn't change to support it
+- Self-tests: the disk test writes and reads back a sector, reads text placed in `disk.img` by the host, and increments a boot counter stored on the disk
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
 Next steps:
 
-- [ ] virtio-blk disk driver (registers as `disk0`)
 - [ ] Processes, context switching and a timer-driven scheduler (Phase 5)
+- [ ] A simple filesystem on `disk0` (Phase 6)
 
 ---
 
@@ -164,9 +174,11 @@ kernel_main (Supervisor mode)  kernel/main.c
    ├─ timer interrupt test
    ├─ supervisor trap test (ebreak)
    ├─ plic_init()
-   ├─ uart_register(), power_register()   fill the device table
+   ├─ uart_register(), power_register(),
+   │  virtio_blk_register()               fill the device table
    ├─ device_init_all()                   init each driver, enable its IRQ
    ├─ device_list()                       print the table
+   ├─ disk self-test (write/read, host text, boot counter)
    └─ keyboard echo loop (wfi when idle)
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
@@ -184,6 +196,7 @@ Key press ────────► UART ──► PLIC (IRQ 10) ──► sup
 0x0200BFF8 ─────────────── CLINT mtime
 0x0C000000 ─────────────── PLIC
 0x10000000 ─────────────── UART0 (IRQ 10)
+0x10001000 ─────────────── virtio slot 0: disk0 (IRQ 1)
    ...
 0x80000000 ─────────────── RAM START / kernel_start
      │  .text + .rodata          (R-X)
@@ -206,6 +219,7 @@ Key press ────────► UART ──► PLIC (IRQ 10) ──► sup
 | `0x80000000 – 0x88000000` | same (identity) | `R W X` | Kernel + all RAM |
 | `0x0C000000 – 0x0C400000` | same (identity) | `R W` | PLIC |
 | `0x10000000` (1 page) | same (identity) | `R W` | UART |
+| `0x10001000` (1 page) | same (identity) | `R W` | virtio-blk (slot 0) |
 | `0x90000000 – 0xA0000000` | pages from `page_alloc()` | `R W` | Kernel heap (grows on demand) |
 
 ---
@@ -229,7 +243,9 @@ KnocOS/
 │   ├── uart.c/h      # 16550 UART driver: output, RX interrupt, ring buffer
 │   ├── plic.c/h      # PLIC: enable IRQs, claim / complete
 │   ├── power.c/h     # Power off / reboot (QEMU test device), device power0
-│   └── device.c/h    # Device abstraction: driver struct, device table, IRQ dispatch
+│   ├── device.c/h    # Device abstraction: driver struct, device table, IRQ dispatch
+│   ├── virtio.h      # virtio-mmio registers and virtqueue structures
+│   └── virtio_blk.c/h# virtio-blk disk driver (disk0)
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -361,20 +377,44 @@ typedef struct device {
     void    (*interrupt)(struct device *dev);
     int64_t (*read)(struct device *dev, void *buffer, uint64_t length);
     int64_t (*write)(struct device *dev, const void *buffer, uint64_t length);
+    uint64_t block_size;                       // block devices only
+    uint64_t block_count;
+    int     (*read_block)(struct device *dev, uint64_t block, void *buffer);
+    int     (*write_block)(struct device *dev, uint64_t block, const void *buffer);
     int ready;
 } device_t;
 ```
+
+There are two kinds of devices, like on Linux and Windows:
+- **Character devices** (`uart0`): a stream of bytes, used with `read` / `write`
+- **Block devices** (`disk0`): numbered fixed-size blocks, used with `read_block` / `write_block`
 
 | Function | What it does | Windows equivalent |
 |---|---|---|
 | `device_register(dev)` | Add a driver to the table (max 16, names must be unique) | Installing a driver |
 | `device_init_all()` | Run every `init()`, enable its IRQ in the PLIC, log `Device ready` | Drivers starting at boot |
 | `device_find(name)` | Look a device up by name | Opening `COM1` |
-| `device_read()` / `device_write()` | The same call for every device (`-1` if not ready or not supported) | `ReadFile()` / `WriteFile()` |
+| `device_read()` / `device_write()` | The same call for every character device (`-1` if not ready or not supported) | `ReadFile()` / `WriteFile()` |
+| `device_read_block()` / `device_write_block()` | Read or write one block of a block device (checks the block number is in range) | Sector reads by a storage driver |
 | `device_handle_irq(irq)` | Run the interrupt handler of the device that owns `irq` | Interrupt dispatch to a driver's ISR |
 | `device_list()` / `device_count()` | Print / count the table | Device Manager |
 
-Adding a new device means writing its driver file and calling its register function. The trap handler and the PLIC setup don't change.
+Adding a new device means writing its driver file and calling its register function. The trap handler and the PLIC setup don't change, and the disk driver proved it.
+
+### Disk: `kernel/virtio_blk.c`
+
+A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio block device, like the `.vdi` file behind a VirtualBox disk.
+
+- virtio-mmio slot 0 at `0x10001000`, IRQ 1, registered as block device **`disk0`** (512-byte sectors)
+- `init`: checks the magic value (`"virt"`), version 2 and device ID 2 (block). Then the status handshake: `ACKNOWLEDGE` → `DRIVER` → feature negotiation (only `VIRTIO_F_VERSION_1`) → `FEATURES_OK` → queue setup → `DRIVER_OK`. Finally it reads the disk size from the config space
+- **Virtqueue** (8 entries): three pages from `page_alloc()`, cleared to zero
+  - **descriptor table:** where each buffer is and how long it is
+  - **available ring:** the driver says "new request here"
+  - **used ring:** the device says "request finished"
+- Each request is a chain of 3 descriptors: **header** (read/write + sector number) → **data** (512 bytes) → **status** byte (written by the device, 0 = OK)
+- The driver adds the chain to the available ring, **notifies** the device, and sleeps with `wfi` until the interrupt handler sees the used ring move
+- Data goes through a sector buffer inside the driver, so callers can pass any kernel buffer (including heap addresses, which aren't physical addresses)
+- If no disk is attached, `init` fails, the boot log shows `Device failed: disk0`, and KnocOS keeps running
 
 ### Early memory info: `kernel/memory.c`
 
@@ -389,8 +429,9 @@ Requirements: `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-ld`, `qemu-system-
 ```bash
 make            # build knocos.elf
 make run        # boot KnocOS in QEMU (power off: Ctrl-D, force quit: Ctrl-A then X)
-make test       # boot, run every self-test, type test input, power off, print PASS/FAIL
-make clean      # remove build artifacts
+make test       # boot twice with a fresh test disk, run every self-test, print PASS/FAIL
+make clean      # remove build artifacts (keeps disk.img)
+make reset-disk # recreate disk.img (1 MiB, "Hello from the host!" in sector 0)
 make size       # kernel / stack size info
 make pages      # physical page layout summary
 make timer-test # run the standalone mtime printer (timer.elf)
@@ -403,7 +444,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.5.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.6.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -412,10 +453,13 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 
 `make test` runs `scripts/test.sh`, which:
 
-1. Boots KnocOS in QEMU
-2. Checks that every self-test message appears and there is no `[PANIC]`
+1. Creates a fresh temporary disk image with `Hello from the host!` in sector 0
+2. **Boot 1:** checks that every self-test message appears (including the disk tests and `Disk boot count: 1`) and there is no `[PANIC]`
 3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
+5. **Boot 2** with the same disk image: checks `Disk boot count: 2`, which proves data written to the disk survives a reboot
+
+The disk used by `make run` is `disk.img` in the project folder. It isn't deleted by `make clean`, so its data persists between runs.
 
 ```text
   ok   Supervisor timer interrupts verified
@@ -497,7 +541,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] `kmalloc` / `kfree`
 - [x] Block splitting and coalescing
 - [x] Automatic heap growth
-- [x] Separate R-X / RW- ELF segments *(uncommitted)*
+- [x] Separate R-X / RW- ELF segments
 
 ### Phase 4: Hardware & Interrupts ✅
 
@@ -524,8 +568,8 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 
 ### Phase 6: Storage & Filesystems
 
-- [ ] Block device (virtio)
-- [ ] Disk driver
+- [x] Block device (virtio-blk)
+- [x] Disk driver (`disk0`, interrupt-driven sector read/write)
 - [ ] Filesystem
 - [ ] File descriptors
 - [ ] VFS layer
@@ -577,7 +621,8 @@ KnocOS aims to become a production-grade operating system. This is what that req
 | User mode and memory isolation between programs | ⬜ |
 | System calls | ⬜ |
 | Multi-core (SMP) support and locking | ⬜ |
-| Disk driver (virtio-blk) and filesystem | ⬜ |
+| Disk driver (virtio-blk) | ✅ |
+| Filesystem | ⬜ |
 | Networking stack | ⬜ |
 | Graphics and input devices | ⬜ |
 
@@ -617,6 +662,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.5.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.6.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**. Next is the virtio-blk disk driver.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage.

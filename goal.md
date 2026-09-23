@@ -127,12 +127,12 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
 | **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, scheduler, context switch, user mode, syscalls |
-| **2. Real OS** | Storage, drivers, userland | virtio disk/net, filesystem, ELF loader, shell, libc |
+| **2. Real OS** | Storage, drivers, userland | ~~virtio disk~~ ✅, virtio net, filesystem, ELF loader, shell, libc |
 | **3. NN runtime** | Small AI inside the OS | Tensor math library (integer/quantized), NN model format, background inference service |
 | **4. First small NNs** | Train & deploy task models | File classifier → auto-organization; embeddings → semantic search; anomaly detector → diagnostics |
 | **5. LLM runtime** | Big local model | Quantized LLM inference (llama.cpp-style), memory-mapped model loading, AI-aware scheduling |
@@ -150,8 +150,8 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | PLIC + interrupt-driven UART input | ✅ Done | The OS reacts to devices, the base for every driver (disk, network, GPU/NPU) |
 | Power-off driver, automated tests (`make test`), CI | ✅ Done | Every change is checked automatically, the first step toward production quality |
 | Device abstraction | ✅ Done | One common driver interface: the disk, network and GPU/NPU drivers the AI features need all plug in the same way |
-| virtio-blk disk driver | 🚧 Next | Storage for files, and later for NN and LLM model files |
-| Processes, context switch, scheduler | ⬜ | Run many programs at once, and later give AI workloads their own scheduling class |
+| virtio-blk disk driver | ✅ Done | Permanent storage for files, and later for NN and LLM model files |
+| Processes, context switch, scheduler | 🚧 Next | Run many programs at once, and later give AI workloads their own scheduling class |
 | User mode + system calls | ⬜ | Isolate apps from the kernel, the base for intent-based security |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
