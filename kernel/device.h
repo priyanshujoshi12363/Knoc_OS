@@ -19,6 +19,7 @@ typedef struct device
     int (*read_block)(struct device *dev, uint64_t block, void *buffer);
     int (*write_block)(struct device *dev, uint64_t block, const void *buffer);
     int ready;
+    int disabled;
 } device_t;
 
 int device_register(device_t *dev);
@@ -31,6 +32,7 @@ int64_t device_write(device_t *dev, const void *buffer, uint64_t length);
 int device_read_block(device_t *dev, uint64_t block, void *buffer);
 int device_write_block(device_t *dev, uint64_t block, const void *buffer);
 int device_handle_irq(uint32_t irq);
+int device_disable(device_t *dev);
 
 void device_list(void);
 

@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
-- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** fault containment, user mode, filesystem, AI-OS
+- **Part 8: What comes next:** big memory, user mode, filesystem, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -815,11 +815,11 @@ On the next boot, `guardian_boot_report()` (kernel side) prints every report new
 
 ### Recovery and boot-loop protection
 
-| Crashes in a row | Action | Windows equivalent |
-|---|---|---|
-| 1–2 | Reboot | Automatic restart after a BSOD |
-| 3 | Reboot into safe mode | Safe Mode |
-| 4+ | Halt | Automatic Repair instead of looping forever |
+| Crashes in a row | Action (v0.8.0) | Action (v0.9.0, see 5.13) | Windows equivalent |
+|---|---|---|---|
+| 1–2 | Reboot | Warm kernel restart | Automatic restart after a BSOD |
+| 3 | Reboot into safe mode | Warm restart into safe mode | Safe Mode |
+| 4+ | Halt | Halt the kernel, AI stays online | Automatic Repair instead of looping forever |
 
 The `guardian` background process resets the streak after 60 s without a crash.
 
@@ -834,6 +834,108 @@ A kernel must **never assume the hardware state is clean at boot**.
 ### Where the real AI plugs in
 
 The diagnosis is **rules** today. The same function (`ai_diagnose`) is where the **small NN crash classifier** goes in v0.15. It will be trained on reports produced by breaking KnocOS on purpose, like the Ctrl-F/P/W test keys. Later, a small LLM will explain crashes in plain language and choose among the same safe actions.
+
+## 5.13 Fault containment and warm kernel restart (v0.9.0)
+
+In v0.8.0 **every** crash was fatal: a bad pointer in the console process took the whole kernel down, and the AI's only fix was rebooting the machine, which restarted the AI too. v0.9.0 fixes both.
+
+### Fault containment: kill the process, not the kernel
+
+**Linux comparison:** an "oops". When a driver or kernel thread faults, Linux kills the task that was running and keeps going. **Windows comparison:** an app crash ("X has stopped working") versus a blue screen.
+
+The hard question is: **when is it safe to keep running?** If the crash happened while the kernel was in the middle of changing a shared structure (the process table, the heap), continuing would run on broken data. KnocOS uses a simple rule:
+
+| Where the fault happened | `sstatus.SPIE` | Decision |
+|---|---|---|
+| A process running normally | 1 (interrupts were on) | **Contain**: stop only this process |
+| Code that turned interrupts off (a critical section) | 0 | Kernel crash |
+| An interrupt handler | 0 (handlers run with interrupts off) | Kernel crash |
+| Boot code or the idle process | (any) | Kernel crash |
+
+**Why `SPIE`?** On a trap, the CPU copies `SIE` (interrupts on?) into `SPIE` and turns `SIE` off. So `SPIE` tells the handler whether interrupts were on **when the fault happened**. KnocOS only turns interrupts off around code that edits shared structures, so "interrupts were on" means "no shared structure was half-edited".
+
+Containing the fault is short: `process_crash()` marks the process `CRASHED`, saves `scause`/`sepc`/`stval` and the driver it was in, and calls `schedule()`. The process never runs again, and its trap frame is simply abandoned. This is the same "switch inside a trap" trick the timer preemption already uses.
+
+### The AI decides the fix
+
+```text
+trap handler      [OOPS] ... stopping only this process          (fast, no decisions)
+guardian process  every 100 ms: a new CRASHED process? → mailbox: fault_seq++
+AI space          sees fault_seq != verdict_seq → diagnose → verdict_action, verdict_seq = fault_seq
+guardian process  applies the verdict: process_restart() and/or device_disable()
+```
+
+The **sequence numbers** make it a safe conversation between two cores without locks: the kernel writes all the fields **first** and bumps `fault_seq` **last** (with a memory barrier in between), so when the AI sees the new number, the fields are complete. The AI answers the same way.
+
+The AI's rules (Tier 0): restart the process, unless it already crashed 3 times ("leave it stopped", like systemd's `StartLimitBurst`). If the crash happened **inside a driver**, disable that driver too.
+
+### Which driver was running?
+
+Every call into a driver goes through `device.c`, so it's the perfect place to track it: `process_driver_enter(name)` before the call and `process_driver_leave(previous)` after. The name is stored **per process**, because a process can be switched out while inside a driver (the disk driver waits for its interrupt), and interrupt handlers save and restore it like a stack. When a crash happens, `process_current_driver()` answers "which driver?". The `faulty0` test driver (Ctrl-X) proves it: the AI disables it, and a second Ctrl-X only prints `faulty0 is disabled`.
+
+The AI keeps its list of disabled drivers **in its own memory** and publishes it in the mailbox. That list survives a warm kernel restart (the kernel forgets everything, the AI doesn't), so `device_init_all()` skips the driver: `Device disabled by the AI space: faulty0`.
+
+### Warm kernel restart: the AI never stops
+
+A reboot resets **both** cores. To keep the AI running, only core 0 may restart. That needs three things:
+
+**1. A clean copy of the kernel.** When core 0 restarts at `_start`, the kernel's `.data` still has the values from the crashed run (`next_pid`, device pointers...), and its code might be damaged (the kernel maps its code `RWX`, so a bad pointer can overwrite it). A QEMU reboot reloads the ELF file, but a warm restart doesn't. So at boot the AI space copies `kernel_start..kernel_image_end` (code + read-only data + data, 38 KiB) into its protected memory (`aispace_snapshot` in the linker script). `.bss` isn't copied: `boot.S` clears it anyway.
+
+**2. Taking the copy before the kernel changes anything.** Both cores start at the same moment. If core 0 ran first, it would change `.data` before the copy. So core 0 waits at the very top of `boot.S`:
+
+```text
+core 0: boot_ack = 0; boot_request = nonce (mtime | 1); wait until boot_ack == nonce (1 s timeout)
+core 1: copy the kernel; then, in its main loop: if boot_request != boot_ack: boot_ack = boot_request
+```
+
+The nonce matters because RAM keeps old values across a QEMU reset: an old `boot_ack` from the previous boot must never look like "go ahead". Core 0 clears `boot_ack` first, and only the AI space's main loop writes it, which only starts **after** the copy. These two words are the first fields of the mailbox, because `boot.S` needs fixed offsets (`MAILBOX_BOOT_REQUEST`, `MAILBOX_BOOT_ACK`, checked with `_Static_assert`).
+
+**3. Stopping core 0 from outside.** A frozen kernel with interrupts off won't stop politely. But **machine-mode interrupts can't be blocked by S-mode**, the same reason `last_kernel_pc` works during a freeze. The AI space writes `1` to core 0's **MSIP** register in the CLINT (`0x02000000`), which is an inter-processor interrupt:
+
+```text
+core 1: core0_release = 0, MSIP[0] = 1
+core 0: machine_trap (mcause = 0x8000000000000003) → aispace_park_core0()
+        MSIP[0] = 0, core0_parked = 1, spin until core0_release
+core 1: check the code, save the black box, copy the clean kernel back,
+        reset the mailbox (keeps the restart count and disabled drivers), core0_release = 1
+core 0: fence.i → jump to _start → a fresh kernel boots
+```
+
+`aispace_park_core0()` is **AI space code running on core 0**. PMP isn't locked, so it doesn't restrict M-mode, and core 0 can run it. This matters: the parking loop must not live in kernel memory that the AI is about to overwrite, or that might be corrupted.
+
+**`fence.i`:** core 1 wrote new instructions into memory. A CPU may still hold the old ones in its instruction cache, and `fence.i` tells core 0 to fetch them again.
+
+**Fallback:** if core 0 doesn't park within 0.5 s (for example, stuck in an M-mode loop), the AI reboots the whole machine as in v0.8.0.
+
+### The kernel code check
+
+The clean copy gives the AI something new to diagnose with: it compares the running kernel code (`kernel_start..kernel_code_end`) with the clean copy **before** restoring it. Ctrl-O zeros the first 16 bytes of `log_info()` and calls it:
+
+```text
+[AI] Kernel code check: 14 bytes differ from the clean copy (code corrupted)
+[AI] Diagnosis: Kernel code was overwritten in memory: a bad pointer wrote over it. The clean copy fixes it.
+```
+
+(14, not 16, because 2 of those bytes were already zero.) A plain restart would crash again right away, since `log_info()` is the first function `kernel_main` calls. After the restore the kernel boots normally. That's the proof that the restore works.
+
+### Hardware that survives a kernel restart
+
+A reboot resets devices, but a warm restart doesn't, so the new kernel finds hardware in whatever state the old one left:
+
+| Leftover | Fix |
+|---|---|
+| An interrupt the crashed kernel **claimed** but never **completed** in the PLIC: that IRQ would never fire again | `plic_enable()` completes the IRQ right after enabling it |
+| PLIC enable bits for a driver that's now disabled | `plic_init()` clears all enable bits |
+| The disk's virtqueue points at the old kernel's (or the AI space's) memory | `virtio_blk_init()` already resets the device (`status = 0`) |
+| `sstatus.SIE` still on from the old kernel | `boot.S` clears it |
+
+Same lesson as v0.8.0's warm-reboot bugs: **never assume the hardware is clean at boot**.
+
+### Known limits
+
+- The disabled-driver list lives in AI memory: a full power cycle forgets it (a filesystem will store it, v0.12)
+- Both cores print to the same UART with no lock, so lines can mix if both print at once (spinlocks in v0.10)
+- Processes are still kernel threads: a "contained" bug may already have damaged kernel memory. Real isolation needs user mode (v0.11)
 
 ---
 
@@ -874,8 +976,9 @@ The diagnosis is **rules** today. The same function (`ai_diagnose`) is where the
 | 0.6.0 | virtio-blk disk driver, permanent storage |
 | 0.7.0 | Processes and the AI-aware scheduler |
 | 0.8.0 | AI space: survives kernel crashes, black box, recovery |
+| 0.9.0 | Fault containment, AI verdicts, warm kernel restart: the AI never stops |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.8.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.9.0 && git push --tags`.
 
 ---
 
@@ -930,11 +1033,14 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 Fault containment and warm kernel restart (v0.9.0)
+## 8.1 Big memory (v0.10.0)
 
-- **Fault containment:** when a *process* crashes (like the Ctrl-F bad pointer in the console), kill only that process and keep the kernel running, like a Linux "oops". The AI space still gets a report
-- **Auto-restart** of crashed processes, and **disabling a driver** that keeps crashing on the next boot
-- **Warm kernel restart:** the AI space keeps a clean copy of the kernel and restarts **only core 0**, so the AI never stops, not even during a reboot
+Fault containment and the warm restart are done (see 5.13). Next, room for real AI models:
+
+- **RAM size from the device tree** instead of a hard-coded 128 MiB, and 2–4 GiB+ in QEMU
+- **2 MiB megapages** (fewer page table entries for big model files) and a **buddy allocator** for large contiguous blocks
+- **Spinlocks** so both cores can share structures safely (for example the UART, which both print to today)
+- A bigger AI region for the small NN runtime
 
 ## 8.2 User mode and system calls
 

@@ -32,6 +32,7 @@ typedef enum process_state
     PROCESS_RUNNING,
     PROCESS_SLEEPING,
     PROCESS_EXITED,
+    PROCESS_CRASHED,
 } process_state_t;
 
 typedef struct process_context
@@ -42,6 +43,17 @@ typedef struct process_context
 } process_context_t;
 
 typedef void (*process_entry_t)(void *arg);
+
+typedef struct process_fault
+{
+    int pid;
+    char name[PROCESS_NAME_MAX];
+    char driver[PROCESS_NAME_MAX];
+    uint64_t scause;
+    uint64_t sepc;
+    uint64_t stval;
+    uint32_t restarts;
+} process_fault_t;
 
 void process_init(void);
 int process_create(const char *name,
@@ -57,7 +69,19 @@ void process_sleep(uint64_t ticks);
 void process_exit(void);
 int process_kill(int pid);
 
+int process_can_contain_fault(void);
+void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
+    __attribute__((noreturn));
+int process_next_crash(process_fault_t *fault);
+int process_restart(int pid);
+void process_discard(int pid);
+
+const char *process_driver_enter(const char *name);
+void process_driver_leave(const char *previous);
+const char *process_current_driver(void);
+
 int process_current_pid(void);
+const char *process_current_name(void);
 uint64_t process_cpu_ticks(int pid);
 void process_list(void);
 

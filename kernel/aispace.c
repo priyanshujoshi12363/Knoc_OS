@@ -13,6 +13,8 @@
 #define AI_FREEZE_TIMEOUT (AI_TIMER_HZ * 2)
 #define AI_DISK_TIMEOUT AI_TIMER_HZ
 #define AI_REBOOT_DELAY (AI_TIMER_HZ / 2)
+#define AI_PARK_TIMEOUT (AI_TIMER_HZ / 2)
+#define AI_PROCESS_RESTART_LIMIT 3
 
 #define AI_POWER 0x00100000UL
 #define AI_POWER_REBOOT 0x7777
@@ -62,6 +64,29 @@ static uint16_t ai_used_seen;
 static uint64_t ai_disk_capacity;
 
 static blackbox_record_t ai_record;
+static blackbox_record_t ai_fault_record;
+
+extern char _start[];
+extern char kernel_start[];
+extern char kernel_code_end[];
+extern char kernel_image_end[];
+extern char aispace_snapshot[];
+extern char aispace_snapshot_end[];
+
+static uint64_t ai_image_size;
+static int ai_have_snapshot;
+static uint64_t ai_start_time;
+static uint32_t ai_restarts;
+static uint64_t ai_consecutive;
+static int ai_kernel_halted;
+static char ai_disabled[MAILBOX_DISABLED_MAX][MAILBOX_NAME_MAX];
+
+_Static_assert(__builtin_offsetof(guardian_mailbox_t, boot_request) == MAILBOX_BOOT_REQUEST,
+               "boot.S expects boot_request at offset 0");
+_Static_assert(__builtin_offsetof(guardian_mailbox_t, boot_ack) == MAILBOX_BOOT_ACK,
+               "boot.S expects boot_ack at offset 8");
+_Static_assert(sizeof(blackbox_record_t) <= BLACKBOX_SECTOR_SIZE,
+               "a black box record must fit in one sector");
 
 static void ai_putc(char c)
 {
@@ -171,6 +196,18 @@ static void ai_copy_text(char *destination, const volatile char *source, int max
     }
 
     destination[i] = 0;
+}
+
+static int ai_text_equal(const volatile char *a, const volatile char *b)
+{
+    int i = 0;
+
+    while (a[i] && a[i] == b[i])
+    {
+        i++;
+    }
+
+    return a[i] == b[i];
 }
 
 static void ai_append(char *destination, const char *text, int max)
@@ -397,7 +434,17 @@ static const char *ai_action_name(uint32_t action)
         return "reboot into safe mode";
     }
 
-    return "halt (boot loop detected)";
+    if (action == BLACKBOX_ACTION_RESTART)
+    {
+        return "warm kernel restart (only core 0, the AI keeps running)";
+    }
+
+    if (action == BLACKBOX_ACTION_RESTART_SAFE)
+    {
+        return "warm kernel restart into safe mode";
+    }
+
+    return "halt the kernel (crash loop detected)";
 }
 
 static void ai_diagnose(blackbox_record_t *record)
@@ -424,11 +471,11 @@ static void ai_diagnose(blackbox_record_t *record)
     {
         if (address < AI_NULL_LIMIT)
         {
-            ai_append(d, "Null pointer: the kernel used an address near 0.", BLACKBOX_DIAGNOSIS_MAX);
+            ai_append(d, "Null pointer: the code used an address near 0.", BLACKBOX_DIAGNOSIS_MAX);
         }
         else if (address < AI_RAM_START || address >= AI_RAM_END)
         {
-            ai_append(d, "Bad pointer: the kernel accessed an address that is not mapped (stval).", BLACKBOX_DIAGNOSIS_MAX);
+            ai_append(d, "Bad pointer: the code accessed an address that is not mapped (stval).", BLACKBOX_DIAGNOSIS_MAX);
         }
         else
         {
@@ -473,6 +520,7 @@ static void ai_collect(uint32_t crash_type)
     record->uptime_ticks = mailbox->uptime_ticks;
     record->pid = mailbox->current_pid;
     ai_copy_text(record->process_name, mailbox->current_name, BLACKBOX_NAME_MAX);
+    ai_copy_text(record->driver, mailbox->driver, BLACKBOX_NAME_MAX);
 
     if (crash_type == CRASH_TYPE_FREEZE)
     {
@@ -522,6 +570,192 @@ static void ai_print_report(blackbox_record_t *record)
         ai_put_hex(record->stval);
         ai_putc('\n');
     }
+
+    if (record->driver[0])
+    {
+        ai_puts("[AI]   inside driver: ");
+        ai_puts(record->driver);
+        ai_putc('\n');
+    }
+}
+
+static void ai_snapshot_kernel(void)
+{
+    ai_image_size = (uint64_t)(kernel_image_end - kernel_start);
+
+    if (ai_image_size > (uint64_t)(aispace_snapshot_end - aispace_snapshot))
+    {
+        ai_have_snapshot = 0;
+        return;
+    }
+
+    ai_copy(aispace_snapshot, kernel_start, ai_image_size);
+    ai_have_snapshot = 1;
+}
+
+static uint64_t ai_code_damage(void)
+{
+    uint64_t code_size = (uint64_t)(kernel_code_end - kernel_start);
+    const volatile uint8_t *running = (const volatile uint8_t *)kernel_start;
+    const volatile uint8_t *clean = (const volatile uint8_t *)aispace_snapshot;
+    uint64_t damage = 0;
+
+    for (uint64_t i = 0; i < code_size; i++)
+    {
+        if (running[i] != clean[i])
+        {
+            damage++;
+        }
+    }
+
+    return damage;
+}
+
+static void ai_publish_disabled(void)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+
+    for (int i = 0; i < MAILBOX_DISABLED_MAX; i++)
+    {
+        for (int j = 0; j < MAILBOX_NAME_MAX; j++)
+        {
+            mailbox->disabled_drivers[i][j] = ai_disabled[i][j];
+        }
+    }
+}
+
+static void ai_disable_driver(const char *name)
+{
+    for (int i = 0; i < MAILBOX_DISABLED_MAX; i++)
+    {
+        if (ai_disabled[i][0] && ai_text_equal(ai_disabled[i], name))
+        {
+            return;
+        }
+    }
+
+    for (int i = 0; i < MAILBOX_DISABLED_MAX; i++)
+    {
+        if (!ai_disabled[i][0])
+        {
+            ai_copy_text(ai_disabled[i], name, MAILBOX_NAME_MAX);
+            ai_publish_disabled();
+            return;
+        }
+    }
+}
+
+static void ai_mailbox_reset(uint32_t safe_mode)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+    uint64_t skip = MAILBOX_BOOT_ACK + sizeof(mailbox->boot_ack);
+
+    /* Never clear boot_request/boot_ack: core 0 may be writing them */
+    ai_zero((uint8_t *)mailbox + skip, sizeof(*mailbox) - skip);
+
+    mailbox->ai_start_time = ai_start_time;
+    mailbox->kernel_restarts = ai_restarts;
+    mailbox->restart_safe_mode = safe_mode;
+    ai_publish_disabled();
+
+    __sync_synchronize();
+
+    mailbox->aispace_magic = MAILBOX_MAGIC;
+
+    __sync_synchronize();
+
+    mailbox->aispace_state = AISPACE_STATE_ONLINE;
+}
+
+static void ai_serve_boot(void)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+    uint64_t request = mailbox->boot_request;
+
+    if (request != mailbox->boot_ack)
+    {
+        __sync_synchronize();
+        mailbox->boot_ack = request;
+    }
+}
+
+static int ai_stop_kernel(void)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+
+    mailbox->core0_release = 0;
+    mailbox->core0_parked = 0;
+
+    __sync_synchronize();
+
+    *(volatile uint32_t *)CLINT_MSIP_HART0 = 1;
+
+    uint64_t start = ai_time();
+
+    while (!mailbox->core0_parked)
+    {
+        if (ai_time() - start > AI_PARK_TIMEOUT)
+        {
+            *(volatile uint32_t *)CLINT_MSIP_HART0 = 0;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void ai_restart_kernel(uint32_t safe_mode)
+{
+    ai_copy(kernel_start, aispace_snapshot, ai_image_size);
+    ai_restarts++;
+
+    ai_mailbox_reset(safe_mode);
+
+    __sync_synchronize();
+
+    guardian_mailbox.core0_release = 1;
+}
+
+/* Runs on core 0 in M-mode, entered from machine_trap when the AI space
+   raises a machine software interrupt. It lives in the AI space so the
+   kernel's own (maybe corrupted) code is not needed to stop core 0. */
+void aispace_park_core0(void)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+
+    *(volatile uint32_t *)CLINT_MSIP_HART0 = 0;
+
+    __sync_synchronize();
+
+    mailbox->core0_parked = 1;
+
+    while (!mailbox->core0_release)
+    {
+    }
+
+    __sync_synchronize();
+
+    asm volatile("fence.i");
+    asm volatile("jr %0" :: "r"(_start));
+
+    while (1)
+    {
+    }
+}
+
+static uint32_t ai_choose_action(uint64_t consecutive, int can_restart)
+{
+    if (consecutive > BLACKBOX_SAFE_MODE_THRESHOLD)
+    {
+        return BLACKBOX_ACTION_HALT;
+    }
+
+    if (consecutive == BLACKBOX_SAFE_MODE_THRESHOLD)
+    {
+        return can_restart ? BLACKBOX_ACTION_RESTART_SAFE : BLACKBOX_ACTION_SAFE_MODE;
+    }
+
+    return can_restart ? BLACKBOX_ACTION_RESTART : BLACKBOX_ACTION_REBOOT;
 }
 
 static void ai_handle(uint32_t crash_type)
@@ -529,14 +763,62 @@ static void ai_handle(uint32_t crash_type)
     guardian_mailbox.aispace_state = AISPACE_STATE_HANDLING;
 
     ai_collect(crash_type);
-    ai_diagnose(&ai_record);
     ai_print_report(&ai_record);
+
+    int stopped = ai_stop_kernel() == 0;
+
+    if (stopped)
+    {
+        ai_log("Core 0 stopped: the kernel is paused while the AI works");
+    }
+    else
+    {
+        ai_log("Core 0 did not stop: a warm restart is not possible");
+    }
+
+    uint64_t damage = 0;
+
+    if (ai_have_snapshot)
+    {
+        damage = ai_code_damage();
+
+        if (damage == 0)
+        {
+            ai_log("Kernel code check: intact (matches the clean copy)");
+        }
+        else
+        {
+            ai_puts("[AI] Kernel code check: ");
+            ai_put_uint(damage);
+            ai_puts(" bytes differ from the clean copy (code corrupted)\n");
+        }
+    }
+
+    ai_diagnose(&ai_record);
+
+    if (damage != 0)
+    {
+        ai_record.diagnosis[0] = 0;
+        ai_append(ai_record.diagnosis,
+                  "Kernel code was overwritten in memory: a bad pointer wrote over it. The clean copy fixes it.",
+                  BLACKBOX_DIAGNOSIS_MAX);
+    }
 
     ai_puts("[AI] Diagnosis: ");
     ai_puts(ai_record.diagnosis);
     ai_putc('\n');
 
-    uint64_t consecutive = 1;
+    if (ai_record.driver[0])
+    {
+        ai_disable_driver(ai_record.driver);
+        ai_puts("[AI] The crash happened inside driver ");
+        ai_puts(ai_record.driver);
+        ai_puts(": it will stay disabled\n");
+    }
+
+    ai_consecutive++;
+
+    uint64_t consecutive = ai_consecutive;
     int saved = 0;
 
     blackbox_header_t header;
@@ -555,6 +837,7 @@ static void ai_handle(uint32_t crash_type)
         header.total_crashes++;
         header.consecutive_crashes++;
         consecutive = header.consecutive_crashes;
+        ai_consecutive = consecutive;
 
         ai_record.sequence = header.total_crashes;
     }
@@ -563,18 +846,7 @@ static void ai_handle(uint32_t crash_type)
         ai_zero(&header, sizeof(header));
     }
 
-    if (consecutive > BLACKBOX_SAFE_MODE_THRESHOLD)
-    {
-        ai_record.action = BLACKBOX_ACTION_HALT;
-    }
-    else if (consecutive == BLACKBOX_SAFE_MODE_THRESHOLD)
-    {
-        ai_record.action = BLACKBOX_ACTION_SAFE_MODE;
-    }
-    else
-    {
-        ai_record.action = BLACKBOX_ACTION_REBOOT;
-    }
+    ai_record.action = ai_choose_action(consecutive, stopped && ai_have_snapshot);
 
     if (header.magic == BLACKBOX_MAGIC)
     {
@@ -614,13 +886,25 @@ static void ai_handle(uint32_t crash_type)
 
     if (ai_record.action == BLACKBOX_ACTION_HALT)
     {
-        ai_log("Too many crashes in a row. Halting so the problem can be investigated.");
-        ai_log("Reset the crash streak with: make reset-disk");
+        ai_log("Too many crashes in a row. The kernel stays stopped so the problem can be investigated.");
+        ai_log("The AI space stays online. Reset the crash streak with: make reset-disk");
 
-        while (1)
-        {
-            asm volatile("wfi");
-        }
+        ai_kernel_halted = 1;
+        guardian_mailbox.aispace_state = AISPACE_STATE_ONLINE;
+        return;
+    }
+
+    if (ai_record.action == BLACKBOX_ACTION_RESTART ||
+        ai_record.action == BLACKBOX_ACTION_RESTART_SAFE)
+    {
+        ai_puts("[AI] Restoring the kernel from its clean copy (");
+        ai_put_uint(ai_image_size / 1024);
+        ai_puts(" KiB) and restarting core 0, restart #");
+        ai_put_uint(ai_restarts + 1);
+        ai_putc('\n');
+
+        ai_restart_kernel(ai_record.action == BLACKBOX_ACTION_RESTART_SAFE);
+        return;
     }
 
     ai_wait(AI_REBOOT_DELAY);
@@ -630,6 +914,84 @@ static void ai_handle(uint32_t crash_type)
     while (1)
     {
     }
+}
+
+static void ai_handle_process_fault(void)
+{
+    volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+    blackbox_record_t *record = &ai_fault_record;
+    uint64_t sequence = mailbox->fault_seq;
+
+    __sync_synchronize();
+
+    ai_zero(record, sizeof(*record));
+
+    record->crash_type = CRASH_TYPE_TRAP;
+    record->pid = mailbox->fault_pid;
+    record->scause = mailbox->fault_scause;
+    record->sepc = mailbox->fault_sepc;
+    record->stval = mailbox->fault_stval;
+    ai_copy_text(record->process_name, mailbox->fault_name, BLACKBOX_NAME_MAX);
+    ai_copy_text(record->driver, mailbox->fault_driver, BLACKBOX_NAME_MAX);
+
+    uint32_t restarts = mailbox->fault_restarts;
+
+    ai_diagnose(record);
+
+    ai_puts("[AI] Process crash contained: ");
+    ai_puts(record->process_name);
+    ai_puts(" (pid ");
+    ai_put_uint((uint64_t)record->pid);
+    ai_puts("), the kernel keeps running\n");
+
+    ai_puts("[AI]   scause = ");
+    ai_put_hex(record->scause);
+    ai_puts("  sepc = ");
+    ai_put_hex(record->sepc);
+    ai_puts("  stval = ");
+    ai_put_hex(record->stval);
+    ai_putc('\n');
+
+    ai_puts("[AI] Diagnosis: ");
+    ai_puts(record->diagnosis);
+    ai_putc('\n');
+
+    uint32_t action = 0;
+
+    ai_puts("[AI] Action:");
+
+    if (record->driver[0])
+    {
+        action |= VERDICT_DISABLE_DRIVER;
+        ai_disable_driver(record->driver);
+
+        ai_puts(" disable driver ");
+        ai_puts(record->driver);
+        ai_puts(" (the crash happened inside it),");
+    }
+
+    if (restarts < AI_PROCESS_RESTART_LIMIT)
+    {
+        action |= VERDICT_RESTART_PROCESS;
+
+        ai_puts(" restart ");
+        ai_puts(record->process_name);
+        ai_putc('\n');
+    }
+    else
+    {
+        ai_puts(" leave ");
+        ai_puts(record->process_name);
+        ai_puts(" stopped (it crashed ");
+        ai_put_uint(restarts + 1);
+        ai_puts(" times)\n");
+    }
+
+    mailbox->verdict_action = action;
+
+    __sync_synchronize();
+
+    mailbox->verdict_seq = sequence;
 }
 
 static void ai_trap(void) __attribute__((aligned(4)));
@@ -660,25 +1022,42 @@ void aispace_main(void)
 
     asm volatile("csrw mtvec, %0" :: "r"((uint64_t)(uintptr_t)ai_trap));
 
-    ai_zero((void *)mailbox, sizeof(*mailbox));
+    ai_start_time = ai_time();
 
-    __sync_synchronize();
-
-    mailbox->aispace_magic = MAILBOX_MAGIC;
-
-    __sync_synchronize();
-
-    mailbox->aispace_state = AISPACE_STATE_ONLINE;
+    /* Core 0 waits in boot.S until we acknowledge it, so the kernel
+       has not changed its own memory yet: this copy is clean */
+    ai_snapshot_kernel();
+    ai_mailbox_reset(0);
 
     uint64_t last_beat = mailbox->heartbeat;
     uint64_t last_change = ai_time();
 
     while (1)
     {
+        ai_serve_boot();
+
+        if (ai_kernel_halted)
+        {
+            ai_wait(AI_POLL_INTERVAL);
+            continue;
+        }
+
+        if (mailbox->streak_reset)
+        {
+            mailbox->streak_reset = 0;
+            ai_consecutive = 0;
+        }
+
+        uint32_t crash_type = 0;
+
         if (mailbox->kernel_state == KERNEL_STATE_PANICKED)
         {
             __sync_synchronize();
-            ai_handle(mailbox->crash_type);
+            crash_type = mailbox->crash_type;
+        }
+        else if (mailbox->fault_seq != mailbox->verdict_seq)
+        {
+            ai_handle_process_fault();
         }
 
         uint64_t beat = mailbox->heartbeat;
@@ -689,9 +1068,20 @@ void aispace_main(void)
             last_beat = beat;
             last_change = now;
         }
-        else if (mailbox->watch_enabled && now - last_change > AI_FREEZE_TIMEOUT)
+        else if (crash_type == 0 &&
+                 mailbox->watch_enabled &&
+                 now - last_change > AI_FREEZE_TIMEOUT)
         {
-            ai_handle(CRASH_TYPE_FREEZE);
+            crash_type = CRASH_TYPE_FREEZE;
+        }
+
+        if (crash_type != 0)
+        {
+            ai_handle(crash_type);
+
+            last_beat = mailbox->heartbeat;
+            last_change = ai_time();
+            continue;
         }
 
         ai_wait(AI_POLL_INTERVAL);

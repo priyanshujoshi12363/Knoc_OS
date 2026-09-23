@@ -5,6 +5,7 @@
 #include "device.h"
 #include "process.h"
 #include "guardian.h"
+#include "uart.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -189,6 +190,33 @@ void supervisor_trap_handler(trap_frame_t *frame)
         write_sepc(sepc + INSTRUCTION_SIZE);
         write_sstatus(sstatus);
         return;
+    }
+
+    if (!(scause & SCAUSE_INTERRUPT) &&
+        (sstatus & SSTATUS_SPIE) &&
+        process_can_contain_fault())
+    {
+        const char *driver = process_current_driver();
+
+        uart_puts("[OOPS] ");
+        uart_puts(trap_name(scause));
+        uart_puts(" in process ");
+        uart_puts(process_current_name());
+        uart_puts(" (pid ");
+        uart_put_uint((uint64_t)process_current_pid());
+        uart_puts(")");
+
+        if (driver != 0)
+        {
+            uart_puts(" inside driver ");
+            uart_puts(driver);
+        }
+
+        uart_puts(": stopping only this process\n");
+        log_trap_hex("sepc   = ", sepc);
+        log_trap_hex("stval  = ", stval);
+
+        process_crash(scause, sepc, stval);
     }
 
     guardian_record_trap(scause, sepc, stval, frame->ra, frame->sp);

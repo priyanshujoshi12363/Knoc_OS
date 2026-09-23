@@ -1,6 +1,7 @@
 #include "logging.h"
 #include "uart.h"
 #include "guardian.h"
+#include "trap.h"
 
 void log_info(const char *message)
 {
@@ -49,6 +50,8 @@ void log_trap_hex(const char *label, uint64_t value)
 
 void panic(const char *message)
 {
+    asm volatile("csrc sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
+
     uart_puts("[PANIC] ");
     uart_puts(message);
     uart_putc('\n');

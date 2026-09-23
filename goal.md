@@ -127,11 +127,11 @@ People can move to KnocOS without losing their software.
 
 ## 4. Roadmap: From Kernel to AI-OS
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, automated tests and CI (see `README.md`).
+Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, automated tests and CI (see `README.md`).
 
 | Stage | Focus | Key deliverables |
 |---|---|---|
-| **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, ~~crash black box~~ ✅, ~~watchdog~~ ✅, user mode, syscalls |
+| **1. Kernel foundation** 🚧 | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, ~~crash black box~~ ✅, ~~watchdog~~ ✅, ~~fault containment~~ ✅, ~~warm kernel restart~~ ✅, user mode, syscalls |
 | **1b. Resilient AI + memory for models** | Guardian, large RAM | Crash black box, watchdog, isolated AI runtime space, more RAM + large-memory support (2 MiB pages, memory map from the device tree) |
 | **2. Real OS** | Storage, drivers, userland | ~~virtio disk~~ ✅, virtio net, filesystem, ELF loader, shell, libc |
 | **3. NN runtime** | Small AI inside the OS | Tensor math library (integer/quantized), NN model format, background inference service |
@@ -154,7 +154,8 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | virtio-blk disk driver | ✅ Done | Permanent storage for files, and later for NN and LLM model files |
 | Processes, context switch, AI-aware scheduler | ✅ Done | AI agent work gets the largest CPU share (60%), interactive work always responds first, background NNs never starve |
 | AI space: black box + watchdog + recovery (v0.8.0) | ✅ Done | Core 1 survives kernel crashes and freezes, diagnoses them, saves a report and recovers |
-| Fault containment + warm kernel restart (v0.9.0) | 🚧 Next | A crashing process only kills itself, and the AI never stops while the kernel restarts |
+| Fault containment + warm kernel restart (v0.9.0) | ✅ Done | A crashing process only kills itself, the AI decides the fix (restart it / disable its driver), and the AI never stops while the kernel restarts from a clean copy |
+| Big memory (v0.10.0) | 🚧 Next | Room for real AI models: RAM size from the device tree, megapages, spinlocks for 2 cores |
 | User mode + system calls | ⬜ | Isolate apps from the kernel, the base for intent-based security |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
@@ -170,7 +171,7 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | # | Version | Milestone | What we build | Result |
 |---|---|---|---|---|
 | 1 | **v0.8.0** ✅ | **AI space (Guardian core)** | Core 1 runs a protected AI space (PMP-protected memory the kernel can't touch), heartbeat mailbox, crash + freeze detection, black box saved by the AI space, rule brain, reboot / safe mode / boot-loop protection | The kernel crashes and **core 1 keeps running**: it saves the report, diagnoses and recovers |
-| 2 | v0.9.0 | Fault containment + warm restart | A crashing process kills only itself, auto-restart of processes, disabling a bad driver on the next boot, the AI space restarting **only the kernel** from a clean copy | **The AI never stops**, even while the kernel restarts |
+| 2 | **v0.9.0** ✅ | Fault containment + warm restart | A crashing process kills only itself, auto-restart of processes, disabling a bad driver on the next boot, the AI space restarting **only the kernel** from a clean copy | **The AI never stops**, even while the kernel restarts |
 
 ### Phase B: A real OS foundation
 
@@ -202,6 +203,17 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | # | Version | Milestone | What we build | Result |
 |---|---|---|---|---|
 | 13 | v0.20.0 | Networking + KnocNet | virtio-net, TCP/IP (lwIP port), model download, a first KnocNet link between two KnocOS machines | Machines talk directly, models download |
+
+### Phase F: Smooth GUI (last)
+
+The GUI comes **after** the kernel, the AI, processes and the agent are complete. Its foundations (memory, user mode, filesystem, drivers) are built by then, so it isn't rewritten later.
+
+| # | Milestone | What we build | Result |
+|---|---|---|---|
+| 14 | Framebuffer | virtio-gpu driver, pixels, fonts, the console on screen | A real screen |
+| 15 | Input | virtio keyboard + mouse drivers | Pointer and clicks |
+| 16 | Window system | A user-mode compositor, windows, basic widgets | Several apps on screen |
+| 17 | KnocOS desktop | Taskbar, file manager, AI panel (AI space status, crash reports, LLM chat) | A smooth, complete OS experience |
 
 ### Road to v1.0
 Real RISC-V hardware (with OpenSBI), x86-64 / ARM64 ports, RISC-V vector math, GPU/NPU drivers, Linux ABI → Windows `.exe` → partial macOS compatibility, and the full feature list above (semantic file system, auto-organization, OS-wide context, self-healing with rollback).
@@ -240,7 +252,8 @@ The scheduler treats AI work as a first-class citizen, without letting it freeze
 
 - **Small NNs** are small enough to run in recovery mode and the guardian: they recognize crash patterns immediately
 - **The big LLM** needs a healthy system: after recovery it reads the black box and explains the problem in plain language
-- **Built in v0.8.0:** Layers 2 and 3 exist as the **AI space** on CPU core 1: PMP-protected memory the kernel can't touch, a heartbeat mailbox, crash and freeze detection, a rule brain (Tier 0), a black box on disk, and reboot / safe mode / boot-loop halt. The small NN (v0.15) and later an LLM replace the rule brain in the same place
+- **Built in v0.8.0:** Layers 2 and 3 exist as the **AI space** on CPU core 1: PMP-protected memory the kernel can't touch, a heartbeat mailbox, crash and freeze detection, a rule brain (Tier 0), a black box on disk, and reboot / safe mode / boot-loop halt
+- **Built in v0.9.0:** Layer 1 in its first form (**fault containment**: a crashing process stops alone, and the AI space decides whether to restart it or disable the driver it crashed in), and a **warm kernel restart**: the AI space keeps a clean copy of the kernel, stops core 0, restores it and restarts only the kernel, so the AI never goes down. The small NN (v0.15) and later an LLM replace the rule brain in the same place
 
 ---
 

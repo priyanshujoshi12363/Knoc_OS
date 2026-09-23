@@ -1,11 +1,18 @@
 #ifndef MAILBOX_H
 #define MAILBOX_H
 
+/* boot.S uses these offsets: boot_request and boot_ack must stay first */
+#define MAILBOX_BOOT_REQUEST 0
+#define MAILBOX_BOOT_ACK 8
+
+#ifndef __ASSEMBLER__
+
 #include <stdint.h>
 
 #define MAILBOX_MAGIC 0x584F424C49414D4BULL
 #define MAILBOX_NAME_MAX 16
 #define MAILBOX_MESSAGE_MAX 64
+#define MAILBOX_DISABLED_MAX 4
 
 #define KERNEL_STATE_BOOTING 0
 #define KERNEL_STATE_RUNNING 1
@@ -20,8 +27,15 @@
 #define CRASH_TYPE_TRAP 2
 #define CRASH_TYPE_FREEZE 3
 
+#define VERDICT_RESTART_PROCESS 0x1
+#define VERDICT_DISABLE_DRIVER 0x2
+
 typedef struct guardian_mailbox
 {
+    /* Boot handshake: the kernel waits for the AI space to copy it first */
+    volatile uint64_t boot_request;
+    volatile uint64_t boot_ack;
+
     volatile uint64_t aispace_magic;
     volatile uint32_t aispace_state;
     volatile uint32_t kernel_state;
@@ -32,6 +46,8 @@ typedef struct guardian_mailbox
     volatile uint64_t last_kernel_pc;
     volatile int32_t current_pid;
     volatile char current_name[MAILBOX_NAME_MAX];
+
+    /* Kernel crash details */
     volatile uint32_t crash_type;
     volatile uint64_t scause;
     volatile uint64_t sepc;
@@ -39,8 +55,36 @@ typedef struct guardian_mailbox
     volatile uint64_t ra;
     volatile uint64_t sp;
     volatile char message[MAILBOX_MESSAGE_MAX];
+    volatile char driver[MAILBOX_NAME_MAX];
+
+    /* Warm restart: written by the AI space before it releases core 0 */
+    volatile uint64_t ai_start_time;
+    volatile uint32_t kernel_restarts;
+    volatile uint32_t restart_safe_mode;
+    volatile uint32_t streak_reset;
+    volatile char disabled_drivers[MAILBOX_DISABLED_MAX][MAILBOX_NAME_MAX];
+
+    /* Core 0 parking, used to stop the kernel before a warm restart */
+    volatile uint32_t core0_parked;
+    volatile uint32_t core0_release;
+
+    /* Process fault: kernel -> AI space */
+    volatile uint64_t fault_seq;
+    volatile int32_t fault_pid;
+    volatile uint32_t fault_restarts;
+    volatile char fault_name[MAILBOX_NAME_MAX];
+    volatile char fault_driver[MAILBOX_NAME_MAX];
+    volatile uint64_t fault_scause;
+    volatile uint64_t fault_sepc;
+    volatile uint64_t fault_stval;
+
+    /* Verdict: AI space -> kernel */
+    volatile uint64_t verdict_seq;
+    volatile uint32_t verdict_action;
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;
+
+#endif
 
 #endif

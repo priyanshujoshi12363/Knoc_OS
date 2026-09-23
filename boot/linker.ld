@@ -26,12 +26,19 @@ SECTIONS
         *(EXCLUDE_FILE(*aispace.o) .srodata.*)
     } :text
 
+    kernel_code_end = .;
+
     .data : {
         *(EXCLUDE_FILE(*aispace.o) .data)
         *(EXCLUDE_FILE(*aispace.o) .data.*)
         *(EXCLUDE_FILE(*aispace.o) .sdata)
         *(EXCLUDE_FILE(*aispace.o) .sdata.*)
     } :data
+
+    . = ALIGN(16);
+
+    /* The AI space keeps a clean copy of kernel_start..kernel_image_end */
+    kernel_image_end = .;
 
     .bss : ALIGN(16) {
         bss_start = .;
@@ -77,4 +84,9 @@ SECTIONS
     aispace_stack_top = .;
 
     aispace_end = .;
+
+    . = ALIGN(4096);
+
+    aispace_snapshot = .;
+    aispace_snapshot_end = 0x87000000 + 0x01000000;
 }

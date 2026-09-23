@@ -1,6 +1,8 @@
 #include "device.h"
 #include "plic.h"
 #include "uart.h"
+#include "process.h"
+#include "guardian.h"
 
 static device_t *devices[DEVICE_MAX];
 static uint32_t registered_count = 0;
@@ -50,6 +52,7 @@ int device_register(device_t *dev)
     }
 
     dev->ready = 0;
+    dev->disabled = 0;
     devices[registered_count] = dev;
     registered_count++;
 
@@ -62,7 +65,20 @@ void device_init_all(void)
     {
         device_t *dev = devices[i];
 
-        if (dev->init != 0 && dev->init(dev) != 0)
+        if (guardian_driver_disabled(dev->name))
+        {
+            dev->disabled = 1;
+            uart_puts("[WARN] Device disabled by the AI space: ");
+            uart_puts(dev->name);
+            uart_puts(" (it crashed before)\n");
+            continue;
+        }
+
+        const char *previous = process_driver_enter(dev->name);
+        int failed = dev->init != 0 && dev->init(dev) != 0;
+        process_driver_leave(previous);
+
+        if (failed)
         {
             print_device("Device failed: ", dev);
             continue;
@@ -108,7 +124,11 @@ int64_t device_read(device_t *dev, void *buffer, uint64_t length)
         return -1;
     }
 
-    return dev->read(dev, buffer, length);
+    const char *previous = process_driver_enter(dev->name);
+    int64_t result = dev->read(dev, buffer, length);
+    process_driver_leave(previous);
+
+    return result;
 }
 
 int64_t device_write(device_t *dev, const void *buffer, uint64_t length)
@@ -118,7 +138,11 @@ int64_t device_write(device_t *dev, const void *buffer, uint64_t length)
         return -1;
     }
 
-    return dev->write(dev, buffer, length);
+    const char *previous = process_driver_enter(dev->name);
+    int64_t result = dev->write(dev, buffer, length);
+    process_driver_leave(previous);
+
+    return result;
 }
 
 int device_read_block(device_t *dev, uint64_t block, void *buffer)
@@ -133,7 +157,11 @@ int device_read_block(device_t *dev, uint64_t block, void *buffer)
         return -1;
     }
 
-    return dev->read_block(dev, block, buffer);
+    const char *previous = process_driver_enter(dev->name);
+    int result = dev->read_block(dev, block, buffer);
+    process_driver_leave(previous);
+
+    return result;
 }
 
 int device_write_block(device_t *dev, uint64_t block, const void *buffer)
@@ -148,7 +176,11 @@ int device_write_block(device_t *dev, uint64_t block, const void *buffer)
         return -1;
     }
 
-    return dev->write_block(dev, block, buffer);
+    const char *previous = process_driver_enter(dev->name);
+    int result = dev->write_block(dev, block, buffer);
+    process_driver_leave(previous);
+
+    return result;
 }
 
 int device_handle_irq(uint32_t irq)
@@ -159,12 +191,32 @@ int device_handle_irq(uint32_t irq)
 
         if (dev->irq == irq && dev->ready && dev->interrupt != 0)
         {
+            const char *previous = process_driver_enter(dev->name);
             dev->interrupt(dev);
+            process_driver_leave(previous);
             return 0;
         }
     }
 
     return -1;
+}
+
+int device_disable(device_t *dev)
+{
+    if (dev == 0)
+    {
+        return -1;
+    }
+
+    dev->ready = 0;
+    dev->disabled = 1;
+
+    if (dev->irq != DEVICE_NO_IRQ)
+    {
+        plic_disable(dev->irq);
+    }
+
+    return 0;
 }
 
 void device_list(void)
@@ -193,7 +245,7 @@ void device_list(void)
             uart_puts(" blocks");
         }
 
-        uart_puts(dev->ready ? "  ready" : "  failed");
+        uart_puts(dev->ready ? "  ready" : dev->disabled ? "  disabled" : "  failed");
         uart_putc('\n');
     }
 }

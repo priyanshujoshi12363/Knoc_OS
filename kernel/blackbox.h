@@ -15,6 +15,8 @@
 #define BLACKBOX_ACTION_REBOOT 1
 #define BLACKBOX_ACTION_SAFE_MODE 2
 #define BLACKBOX_ACTION_HALT 3
+#define BLACKBOX_ACTION_RESTART 4
+#define BLACKBOX_ACTION_RESTART_SAFE 5
 
 typedef struct blackbox_header
 {
@@ -41,6 +43,7 @@ typedef struct blackbox_record
     char process_name[BLACKBOX_NAME_MAX];
     char message[BLACKBOX_MESSAGE_MAX];
     char diagnosis[BLACKBOX_DIAGNOSIS_MAX];
+    char driver[BLACKBOX_NAME_MAX];
 } blackbox_record_t;
 
 static inline uint64_t blackbox_header_sector(uint64_t capacity)

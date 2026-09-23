@@ -13,6 +13,7 @@ guardian_mailbox_t guardian_mailbox __attribute__((section(".mailbox")));
 
 static uint8_t guardian_sector[BLACKBOX_SECTOR_SIZE];
 static device_t *guardian_disk;
+static int guardian_online;
 
 static void copy_text(volatile char *destination, const char *source, int max)
 {
@@ -25,6 +26,18 @@ static void copy_text(volatile char *destination, const char *source, int max)
     }
 
     destination[i] = 0;
+}
+
+static int names_equal(const volatile char *a, const char *b)
+{
+    int i = 0;
+
+    while (a[i] && a[i] == b[i])
+    {
+        i++;
+    }
+
+    return a[i] == b[i];
 }
 
 static void copy_bytes(void *destination, const void *source, uint64_t length)
@@ -72,6 +85,17 @@ int guardian_init(void)
     uart_put_hex(AISPACE_BASE);
     uart_puts(")\n");
 
+    guardian_online = 1;
+
+    if (guardian_mailbox.kernel_restarts > 0)
+    {
+        uart_puts("[INFO] Warm restart #");
+        uart_put_uint(guardian_mailbox.kernel_restarts);
+        uart_puts(" by the AI space: kernel restored from a clean copy, the AI kept running (AI uptime ");
+        uart_put_uint((timer_read() - guardian_mailbox.ai_start_time) / (TIMER_FREQ_HZ / 1000));
+        uart_puts(" ms)\n");
+    }
+
     return 0;
 }
 
@@ -98,6 +122,30 @@ void guardian_set_safe_mode(int enabled)
     guardian_mailbox.safe_mode = (uint32_t)enabled;
 }
 
+int guardian_restart_safe_mode(void)
+{
+    return guardian_online && guardian_mailbox.restart_safe_mode;
+}
+
+int guardian_driver_disabled(const char *name)
+{
+    if (!guardian_online)
+    {
+        return 0;
+    }
+
+    for (int i = 0; i < MAILBOX_DISABLED_MAX; i++)
+    {
+        if (guardian_mailbox.disabled_drivers[i][0] &&
+            names_equal(guardian_mailbox.disabled_drivers[i], name))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 void guardian_record_trap(uint64_t scause,
                           uint64_t sepc,
                           uint64_t stval,
@@ -109,6 +157,7 @@ void guardian_record_trap(uint64_t scause,
     guardian_mailbox.stval = stval;
     guardian_mailbox.ra = ra;
     guardian_mailbox.sp = sp;
+    copy_text(guardian_mailbox.driver, process_current_driver() ? process_current_driver() : "", MAILBOX_NAME_MAX);
     guardian_mailbox.crash_type = CRASH_TYPE_TRAP;
 }
 
@@ -117,6 +166,7 @@ void guardian_report_panic(const char *message)
     if (guardian_mailbox.crash_type != CRASH_TYPE_TRAP)
     {
         guardian_mailbox.crash_type = CRASH_TYPE_PANIC;
+        copy_text(guardian_mailbox.driver, process_current_driver() ? process_current_driver() : "", MAILBOX_NAME_MAX);
     }
 
     copy_text(guardian_mailbox.message, message, MAILBOX_MESSAGE_MAX);
@@ -158,6 +208,16 @@ static const char *action_name(uint32_t action)
         return "reboot into safe mode";
     }
 
+    if (action == BLACKBOX_ACTION_RESTART)
+    {
+        return "warm kernel restart";
+    }
+
+    if (action == BLACKBOX_ACTION_RESTART_SAFE)
+    {
+        return "warm kernel restart into safe mode";
+    }
+
     return "halt";
 }
 
@@ -193,6 +253,13 @@ static void print_record(blackbox_record_t *record)
     {
         uart_puts("[WARN]   kernel_pc = ");
         uart_put_hex(record->kernel_pc);
+        uart_putc('\n');
+    }
+
+    if (record->driver[0])
+    {
+        uart_puts("[WARN]   inside driver: ");
+        uart_puts(record->driver);
         uart_putc('\n');
     }
 
@@ -289,13 +356,11 @@ uint64_t guardian_boot_report(device_t *disk)
     return header.consecutive_crashes;
 }
 
-void guardian_healthy_process(void *arg)
+static void reset_streak(void)
 {
-    (void)arg;
-
-    process_sleep(GUARDIAN_HEALTHY_TICKS);
-
     blackbox_header_t header;
+
+    guardian_mailbox.streak_reset = 1;
 
     if (guardian_disk == 0 || read_header(&header) != 0)
     {
@@ -307,5 +372,126 @@ void guardian_healthy_process(void *arg)
         header.consecutive_crashes = 0;
         write_header(&header);
         log_info("Guardian: 60 s without a crash, crash streak reset");
+    }
+}
+
+static void post_fault(process_fault_t *fault)
+{
+    guardian_mailbox.fault_pid = fault->pid;
+    guardian_mailbox.fault_restarts = fault->restarts;
+    copy_text(guardian_mailbox.fault_name, fault->name, MAILBOX_NAME_MAX);
+    copy_text(guardian_mailbox.fault_driver, fault->driver, MAILBOX_NAME_MAX);
+    guardian_mailbox.fault_scause = fault->scause;
+    guardian_mailbox.fault_sepc = fault->sepc;
+    guardian_mailbox.fault_stval = fault->stval;
+
+    __sync_synchronize();
+
+    guardian_mailbox.fault_seq = guardian_mailbox.fault_seq + 1;
+}
+
+static uint32_t default_verdict(process_fault_t *fault)
+{
+    uint32_t action = 0;
+
+    if (fault->driver[0])
+    {
+        action |= VERDICT_DISABLE_DRIVER;
+    }
+
+    if (fault->restarts < GUARDIAN_RESTART_LIMIT)
+    {
+        action |= VERDICT_RESTART_PROCESS;
+    }
+
+    return action;
+}
+
+static void apply_verdict(process_fault_t *fault, uint32_t action, const char *source)
+{
+    if ((action & VERDICT_DISABLE_DRIVER) && fault->driver[0])
+    {
+        device_disable(device_find(fault->driver));
+
+        uart_puts("[INFO] Driver ");
+        uart_puts(fault->driver);
+        uart_puts(" disabled (");
+        uart_puts(source);
+        uart_puts(")\n");
+    }
+
+    if (action & VERDICT_RESTART_PROCESS)
+    {
+        int pid = process_restart(fault->pid);
+
+        uart_puts("[INFO] Process ");
+        uart_puts(fault->name);
+        uart_puts(" restarted as pid ");
+        uart_put_uint((uint64_t)pid);
+        uart_puts(", restart #");
+        uart_put_uint(fault->restarts + 1);
+        uart_puts(" (");
+        uart_puts(source);
+        uart_puts(")\n");
+    }
+    else
+    {
+        process_discard(fault->pid);
+
+        uart_puts("[WARN] Process ");
+        uart_puts(fault->name);
+        uart_puts(" left stopped: it keeps crashing (");
+        uart_puts(source);
+        uart_puts(")\n");
+    }
+}
+
+void guardian_process(void *arg)
+{
+    (void)arg;
+
+    uint64_t start = timer_ticks();
+    uint64_t posted_at = 0;
+    int streak_checked = 0;
+    int pending = 0;
+    process_fault_t fault;
+
+    while (1)
+    {
+        process_sleep(GUARDIAN_POLL_TICKS);
+
+        if (!pending && process_next_crash(&fault) == 0)
+        {
+            pending = 1;
+            posted_at = timer_ticks();
+
+            if (guardian_online)
+            {
+                post_fault(&fault);
+            }
+        }
+
+        if (pending)
+        {
+            if (guardian_online &&
+                guardian_mailbox.verdict_seq == guardian_mailbox.fault_seq)
+            {
+                __sync_synchronize();
+                apply_verdict(&fault, guardian_mailbox.verdict_action, "AI verdict");
+                pending = 0;
+            }
+            else if (!guardian_online ||
+                     timer_ticks() - posted_at > GUARDIAN_VERDICT_TIMEOUT)
+            {
+                apply_verdict(&fault, default_verdict(&fault), "kernel default, no AI verdict");
+                pending = 0;
+            }
+        }
+
+        if (!streak_checked && timer_ticks() - start >= GUARDIAN_HEALTHY_TICKS)
+        {
+            streak_checked = 1;
+            reset_streak();
+        }
     }
 }

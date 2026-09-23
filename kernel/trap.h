@@ -6,6 +6,10 @@
 #define SIP_SEIP 0x200
 #define SIE_SEIE 0x200
 #define SSTATUS_SIE 0x2
+#define SSTATUS_SPIE 0x20
+#define MIE_MSIE 0x8
+#define MIE_MTIE 0x80
+#define MCAUSE_MACHINE_SOFTWARE 0x8000000000000003
 
 #ifndef __ASSEMBLER__
 

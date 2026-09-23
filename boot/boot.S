@@ -1,6 +1,7 @@
 #include "../kernel/timer.h"
 #include "../kernel/trap.h"
 #include "../kernel/aispace.h"
+#include "../kernel/mailbox.h"
 
 .section .text
 .global _start
@@ -8,12 +9,35 @@
 .extern timer_interrupt
 .extern supervisor_trap_handler
 .extern aispace_main
+.extern aispace_park_core0
+.extern guardian_mailbox
 
 _start:
     csrr t0, mhartid
     li t1, AISPACE_HART
     beq t0, t1, aispace_boot
     bnez t0, park
+
+    la t0, guardian_mailbox
+    sd zero, MAILBOX_BOOT_ACK(t0)
+    fence
+
+    li t1, CLINT_MTIME
+    ld t2, 0(t1)
+    ori t2, t2, 1
+    sd t2, MAILBOX_BOOT_REQUEST(t0)
+
+    li t3, AISPACE_BOOT_TIMEOUT
+    add t3, t3, t2
+
+boot_wait:
+    ld t4, MAILBOX_BOOT_ACK(t0)
+    beq t4, t2, boot_wait_done
+    ld t5, 0(t1)
+    bltu t5, t3, boot_wait
+
+boot_wait_done:
+    fence
 
     la t0, bss_start
     la t1, bss_end
@@ -33,6 +57,9 @@ clear_bss_done:
     csrw sie, zero
     csrw mie, zero
     csrw mip, zero
+
+    li t0, SSTATUS_SIE
+    csrc mstatus, t0
 
     li t0, AISPACE_PMP_NAPOT_ADDR
     csrw pmpaddr0, t0
@@ -82,7 +109,7 @@ clear_bss_done:
     li t0, CLINT_MTIMECMP
     sd t1, 0(t0)
 
-    li t0, 0x0080
+    li t0, MIE_MTIE | MIE_MSIE
     csrs mie, t0
 
     mret
@@ -138,6 +165,9 @@ machine_trap:
 
     csrr t0, mcause
 
+    li t1, MCAUSE_MACHINE_SOFTWARE
+    beq t0, t1, machine_trap_park
+
     li t1, 0x8000000000000007
     bne t0, t1, machine_trap_exception
 
@@ -177,6 +207,9 @@ machine_trap:
     addi sp, sp, 256
     csrrw sp, mscratch, sp
     mret
+
+machine_trap_park:
+    call aispace_park_core0
 
 machine_trap_exception:
     la t1, trap_message

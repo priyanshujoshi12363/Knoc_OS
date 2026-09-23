@@ -19,6 +19,7 @@ static void plic_write(uintptr_t address, uint32_t value)
 
 void plic_init(void)
 {
+    plic_write(PLIC_SUPERVISOR_ENABLE, 0);
     plic_write(PLIC_SUPERVISOR_THRESHOLD, 0);
 }
 
@@ -28,6 +29,16 @@ void plic_enable(uint32_t irq)
 
     uint32_t enabled = plic_read(PLIC_SUPERVISOR_ENABLE);
     plic_write(PLIC_SUPERVISOR_ENABLE, enabled | (1U << irq));
+
+    /* After a warm restart, an interrupt claimed by the crashed kernel
+       is still in progress and would block this IRQ forever */
+    plic_complete(irq);
+}
+
+void plic_disable(uint32_t irq)
+{
+    uint32_t enabled = plic_read(PLIC_SUPERVISOR_ENABLE);
+    plic_write(PLIC_SUPERVISOR_ENABLE, enabled & ~(1U << irq));
 }
 
 uint32_t plic_claim(void)

@@ -14,13 +14,17 @@
 #include "guardian.h"
 #include "aispace.h"
 #include "blackbox.h"
+#include "faulty.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
 #define KEY_BACKSPACE 0x7F
 #define KEY_CTRL_F 0x06
+#define KEY_CTRL_K 0x0B
+#define KEY_CTRL_O 0x0F
 #define KEY_CTRL_P 0x10
 #define KEY_CTRL_W 0x17
+#define KEY_CTRL_X 0x18
 
 #define TEST_FAULT_ADDRESS 0x40000000UL
 
@@ -53,6 +57,7 @@ static uint8_t disk_buffer[VIRTIO_BLK_SECTOR_SIZE];
 
 static device_t *console;
 static device_t *power;
+static device_t *faulty;
 
 static sched_worker_t sched_workers[SCHED_TEST_WORKERS] = {
     {"agent-coder", PROCESS_CLASS_AI_AGENT, SCHED_WEIGHT_AI_AGENT, 0, 0},
@@ -140,7 +145,8 @@ static void console_process(void *arg)
 {
     (void)arg;
 
-    log_info("Keyboard echo ready, start typing (Ctrl-D power off, test keys: Ctrl-P panic, Ctrl-F fault, Ctrl-W freeze)");
+    log_info("Keyboard echo ready, start typing (Ctrl-D power off)");
+    log_info("Test keys: Ctrl-F process fault, Ctrl-X driver fault, Ctrl-K kernel fault, Ctrl-O overwrite kernel code, Ctrl-P panic, Ctrl-W freeze");
 
     while (1)
     {
@@ -157,10 +163,43 @@ static void console_process(void *arg)
             device_write(console, "\n", 1);
             panic("Test panic (Ctrl-P)");
         }
+        else if (c == KEY_CTRL_O)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test code corruption (Ctrl-O): overwriting log_info() with zeros, then calling it");
+            asm volatile("csrc sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
+
+            volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)log_info;
+
+            for (int i = 0; i < 4; i++)
+            {
+                code[i] = 0;
+            }
+
+            asm volatile("fence.i");
+            log_info("unreachable");
+        }
         else if (c == KEY_CTRL_F)
         {
             device_write(console, "\n", 1);
-            log_info("Test fault (Ctrl-F): writing to an unmapped address");
+            log_info("Test process fault (Ctrl-F): the console writes to an unmapped address");
+            *(volatile uint64_t *)TEST_FAULT_ADDRESS = 1;
+        }
+        else if (c == KEY_CTRL_X)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test driver fault (Ctrl-X): the faulty0 driver writes to an unmapped address");
+
+            if (device_write(faulty, "x", 1) < 0)
+            {
+                log_info("faulty0 is disabled, nothing happened");
+            }
+        }
+        else if (c == KEY_CTRL_K)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test kernel fault (Ctrl-K): bad pointer with interrupts off");
+            asm volatile("csrc sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
             *(volatile uint64_t *)TEST_FAULT_ADDRESS = 1;
         }
         else if (c == KEY_CTRL_W)
@@ -514,19 +553,21 @@ void kernel_main(void)
     uart_register();
     power_register();
     virtio_blk_register();
+    faulty_register();
 
     device_init_all();
     device_list();
 
     console = device_find("uart0");
     power = device_find("power0");
+    faulty = device_find("faulty0");
 
     if (console == 0 || power == 0)
     {
         panic("Required device missing");
     }
 
-    if (device_count() != 3 || device_find("missing0") != 0)
+    if (device_count() != 4 || device_find("missing0") != 0)
     {
         panic("Device table test failed");
     }
@@ -545,7 +586,8 @@ void kernel_main(void)
     }
 
     uint64_t consecutive_crashes = guardian_boot_report(disk);
-    int safe_mode = consecutive_crashes >= BLACKBOX_SAFE_MODE_THRESHOLD;
+    int safe_mode = consecutive_crashes >= BLACKBOX_SAFE_MODE_THRESHOLD ||
+                    guardian_restart_safe_mode();
 
     guardian_set_safe_mode(safe_mode);
 
@@ -554,6 +596,7 @@ void kernel_main(void)
     if (safe_mode)
     {
         log_warn("SAFE MODE: several crashes in a row, starting minimal services only");
+        log_info("All self-tests skipped in safe mode");
 
         if (process_create("console", PROCESS_CLASS_INTERACTIVE, console_process, 0) < 0)
         {
@@ -565,7 +608,7 @@ void kernel_main(void)
         panic("Could not create scheduler test process");
     }
 
-    if (process_create("guardian", PROCESS_CLASS_BACKGROUND, guardian_healthy_process, 0) < 0)
+    if (process_create("guardian", PROCESS_CLASS_BACKGROUND, guardian_process, 0) < 0)
     {
         panic("Could not create guardian process");
     }

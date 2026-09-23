@@ -2,6 +2,34 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.9.0] - 2026-09-23
+
+Fault containment and warm kernel restart: the AI never stops.
+
+### Added
+- Fault containment: an exception in a process that ran with interrupts on stops only that process (`[OOPS]`, state `CRASHED`), like a Linux oops. Kernel code, interrupt handlers and code with interrupts off still count as a kernel crash
+- AI verdicts for process crashes: the kernel's `guardian` process posts each crashed process to the mailbox (`fault_seq`), the AI space diagnoses it and replies (`verdict_seq`) with `RESTART_PROCESS` and/or `DISABLE_DRIVER`. After 3 restarts a process is left stopped. Without the AI space the kernel applies the same rules after a 1 s timeout
+- `process_crash`, `process_next_crash`, `process_restart` (in place, same stack, new pid) and `process_discard`
+- Driver tracking: every call into a driver (init, interrupt, read, write, block I/O) records the active driver per process, so crash reports say which driver crashed
+- `device_disable()` and `plic_disable()`. Drivers on the AI space's disabled list are skipped at boot (`Device disabled by the AI space`)
+- `faulty0`: a test driver with a bug on purpose (`kernel/faulty.c`)
+- Warm kernel restart: the AI space copies the clean kernel image (`kernel_start`..`kernel_image_end`, 38 KiB) into its protected memory at boot. On a crash or freeze it stops core 0 with a machine software interrupt, parks it in AI space code (`aispace_park_core0`), saves the black box, restores the clean kernel and restarts only core 0 at `_start`
+- Boot handshake (`boot_request` / `boot_ack`): core 0 waits in `boot.S` until the AI space has taken its clean copy (1 s timeout when there is no AI space)
+- Kernel code check: before restoring, the AI space compares the running kernel code with the clean copy and reports corrupted bytes in its diagnosis
+- New black box actions: warm restart, warm restart into safe mode. Records now include the driver name
+- Halting after 4 crashes in a row keeps core 0 stopped while the AI space stays online
+- Test keys: Ctrl-X (driver fault), Ctrl-K (kernel fault with interrupts off), Ctrl-O (overwrite kernel code)
+- `make test` run 3: containment, driver disabling, freeze / code corruption / kernel fault → warm restarts #1–#3 → safe mode, with no machine reboot. Run 4: the 4th crash halts the kernel and the AI stays online
+
+### Changed
+- Ctrl-F now crashes only the console process (contained) instead of the kernel
+- Crash recovery uses a warm kernel restart; a full machine reboot is only the fallback when core 0 can't be stopped
+- `panic()` turns interrupts off first, so no other process runs after a panic
+- The `guardian` process runs for the whole uptime (fault handling + the 60 s crash-streak reset)
+- `plic_init()` clears all IRQ enables, and `plic_enable()` completes any interrupt a crashed kernel left claimed
+- `boot.S` clears `sstatus.SIE` at boot and enables `mie.MSIE` on core 0
+- Diagnosis texts are neutral ("the code accessed ...") since they now describe processes too
+
 ## [0.8.0] - 2026-09-23
 
 The AI space: AI that survives kernel crashes.

@@ -4,6 +4,7 @@ set -u
 KERNEL=${KERNEL:-knocos.elf}
 TIMEOUT=${TIMEOUT:-15}
 GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
+HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 LOG=$(mktemp)
 DISK=$(mktemp)
 trap 'rm -f "$LOG" "$DISK"' EXIT
@@ -33,7 +34,12 @@ boot() {
 }
 
 check_status() {
-    if [ "$STATUS" -eq 124 ]; then
+    if [ "$1" = "halt-expected" ]; then
+        if [ "$STATUS" -ne 124 ]; then
+            echo "  FAIL QEMU exited (status $STATUS), but the kernel should stay halted"
+            FAILED=1
+        fi
+    elif [ "$STATUS" -eq 124 ]; then
         echo "  FAIL QEMU did not power off within ${1}s"
         FAILED=1
     elif [ "$STATUS" -ne 0 ]; then
@@ -83,6 +89,7 @@ check \
     "Device ready: uart0 (IRQ 10)" \
     "Device ready: power0" \
     "Device ready: disk0 (IRQ 1)" \
+    "Device ready: faulty0" \
     "Device table verified" \
     "Disk write/read test passed" \
     "Disk says: Hello from the host!" \
@@ -103,34 +110,80 @@ check \
     "Powering off"
 show_log_on_failure
 
-echo "Boots 3-6: the AI space detects crashes and freezes, recovers, and enters safe mode"
+echo "Run 3: fault containment, driver disabling and warm kernel restarts"
 new_disk
 (
     sleep 4;  printf '\006'
-    sleep 7;  printf '\027'
-    sleep 10; printf '\020'
-    sleep 7;  printf '\004'
+    sleep 2;  printf '\030'
+    sleep 2;  printf '\030'
+    sleep 2;  printf '\027'
+    sleep 8;  printf '\017'
+    sleep 6;  printf '\013'
+    sleep 6;  printf '\004'
     sleep 3
 ) | qemu "$GUARDIAN_TIMEOUT"
 STATUS=$?
 check_status "$GUARDIAN_TIMEOUT" panic-allowed
 check \
-    "Test fault (Ctrl-F)" \
-    "[AI] Kernel crash detected: TRAP" \
+    "Test process fault (Ctrl-F)" \
+    "[OOPS] Store page fault in process console" \
+    "[AI] Process crash contained: console" \
     "[AI] Diagnosis: Bad pointer" \
-    "[AI] Black box saved (crash #1, 1 in a row)" \
-    "Previous crash detected: #1 TRAP" \
-    "AI diagnosis: Bad pointer" \
+    "[AI] Action: restart console" \
+    "Process console restarted as pid 7, restart #1 (AI verdict)" \
+    "Test driver fault (Ctrl-X)" \
+    "inside driver faulty0: stopping only this process" \
+    "[AI] Action: disable driver faulty0" \
+    "Driver faulty0 disabled (AI verdict)" \
+    "Process console restarted as pid 8, restart #2 (AI verdict)" \
+    "faulty0 is disabled, nothing happened" \
     "Test freeze (Ctrl-W)" \
     "[AI] Kernel freeze detected: FREEZE" \
+    "[AI] Core 0 stopped" \
+    "[AI] Kernel code check: intact" \
+    "[AI] Black box saved (crash #1, 1 in a row)" \
+    "[AI] Action: warm kernel restart (only core 0" \
+    "Warm restart #1 by the AI space" \
+    "Device disabled by the AI space: faulty0" \
+    "Previous crash detected: #1 FREEZE" \
+    "Test code corruption (Ctrl-O)" \
+    "[TRAP] Illegal instruction" \
+    "bytes differ from the clean copy (code corrupted)" \
+    "[AI] Diagnosis: Kernel code was overwritten" \
     "[AI] Black box saved (crash #2, 2 in a row)" \
-    "Previous crash detected: #2 FREEZE" \
-    "Test panic (Ctrl-P)" \
-    "[AI] Kernel crash detected: PANIC - Test panic (Ctrl-P)" \
-    "[AI] Action: reboot into safe mode" \
-    "Previous crash detected: #3 PANIC" \
+    "Warm restart #2 by the AI space" \
+    "Previous crash detected: #2 TRAP" \
+    "Test kernel fault (Ctrl-K)" \
+    "[AI] Kernel crash detected: TRAP" \
+    "[AI] Black box saved (crash #3, 3 in a row)" \
+    "[AI] Action: warm kernel restart into safe mode" \
+    "Warm restart #3 by the AI space" \
+    "Previous crash detected: #3 TRAP" \
     "SAFE MODE" \
     "Powering off"
+
+if grep -q "Power reboot\|\[AI\] Action: reboot" "$LOG"; then
+    echo "  FAIL the AI space rebooted the machine instead of a warm restart"
+    FAILED=1
+fi
+
+show_log_on_failure
+
+echo "Run 4: a 4th crash in a row halts the kernel, the AI space stays online"
+(
+    sleep 4; printf '\020'
+    sleep 8
+) | qemu "$HALT_TIMEOUT"
+STATUS=$?
+check_status halt-expected panic-allowed
+check \
+    "Black box: no new crashes, total recorded: 3" \
+    "SAFE MODE" \
+    "Test panic (Ctrl-P)" \
+    "[AI] Kernel crash detected: PANIC - Test panic (Ctrl-P)" \
+    "[AI] Black box saved (crash #4, 4 in a row)" \
+    "[AI] Action: halt the kernel (crash loop detected)" \
+    "[AI] The AI space stays online"
 show_log_on_failure
 
 echo "RESULT: PASS"

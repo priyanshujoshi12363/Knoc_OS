@@ -22,6 +22,13 @@ typedef struct process
     uint64_t vruntime;
     uint64_t slice_left;
     uint64_t wake_tick;
+    const char *driver;
+    uint32_t restarts;
+    int fault_reported;
+    const char *fault_driver;
+    uint64_t fault_scause;
+    uint64_t fault_sepc;
+    uint64_t fault_stval;
 } process_t;
 
 typedef struct class_info
@@ -45,12 +52,14 @@ static const char *state_names[] = {
     [PROCESS_RUNNING] = "RUNNING",
     [PROCESS_SLEEPING] = "SLEEPING",
     [PROCESS_EXITED] = "EXITED",
+    [PROCESS_CRASHED] = "CRASHED",
 };
 
 static process_t processes[PROCESS_MAX];
 static process_t *current = 0;
 static int next_pid = 1;
 static int scheduler_running = 0;
+static const char *boot_driver = 0;
 
 extern void context_switch(process_context_t *old_context,
                            process_context_t *new_context);
@@ -88,6 +97,17 @@ static void copy_name(char *destination, const char *source)
     }
 
     destination[i] = 0;
+}
+
+static void process_trampoline(void);
+
+static void reset_context(process_t *p)
+{
+    process_context_t empty = {0};
+
+    p->context = empty;
+    p->context.ra = (uint64_t)(uintptr_t)process_trampoline;
+    p->context.sp = ((uintptr_t)p->stack + PROCESS_STACK_SIZE) & ~0xFUL;
 }
 
 static int lowest_vruntime(process_t *except, uint64_t *result)
@@ -265,8 +285,6 @@ int process_create(const char *name,
         return -1;
     }
 
-    process_context_t empty = {0};
-
     p->pid = next_pid++;
     copy_name(p->name, name);
     p->process_class = process_class;
@@ -277,9 +295,11 @@ int process_create(const char *name,
     p->vruntime = 0;
     p->slice_left = 0;
     p->wake_tick = 0;
-    p->context = empty;
-    p->context.ra = (uint64_t)(uintptr_t)process_trampoline;
-    p->context.sp = ((uintptr_t)stack + PROCESS_STACK_SIZE) & ~0xFUL;
+    p->driver = 0;
+    p->restarts = 0;
+    p->fault_reported = 0;
+    p->fault_driver = 0;
+    reset_context(p);
     p->state = PROCESS_READY;
 
     place_vruntime(p);
@@ -408,9 +428,146 @@ int process_kill(int pid)
     return -1;
 }
 
+int process_can_contain_fault(void)
+{
+    return scheduler_running && current != 0 && current != &processes[0];
+}
+
+void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
+{
+    interrupts_disable();
+
+    current->state = PROCESS_CRASHED;
+    current->fault_reported = 0;
+    current->fault_driver = current->driver;
+    current->fault_scause = scause;
+    current->fault_sepc = sepc;
+    current->fault_stval = stval;
+    current->driver = 0;
+
+    schedule();
+
+    while (1)
+    {
+    }
+}
+
+int process_next_crash(process_fault_t *fault)
+{
+    uint64_t enabled = interrupts_disable();
+
+    for (int i = 1; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->state != PROCESS_CRASHED || p->fault_reported)
+        {
+            continue;
+        }
+
+        p->fault_reported = 1;
+
+        fault->pid = p->pid;
+        copy_name(fault->name, p->name);
+        copy_name(fault->driver, p->fault_driver ? p->fault_driver : "");
+        fault->scause = p->fault_scause;
+        fault->sepc = p->fault_sepc;
+        fault->stval = p->fault_stval;
+        fault->restarts = p->restarts;
+
+        interrupts_restore(enabled);
+        return 0;
+    }
+
+    interrupts_restore(enabled);
+    return -1;
+}
+
+static process_t *find_crashed(int pid)
+{
+    for (int i = 1; i < PROCESS_MAX; i++)
+    {
+        if (processes[i].state == PROCESS_CRASHED && processes[i].pid == pid)
+        {
+            return &processes[i];
+        }
+    }
+
+    return 0;
+}
+
+int process_restart(int pid)
+{
+    uint64_t enabled = interrupts_disable();
+    process_t *p = find_crashed(pid);
+
+    if (p == 0)
+    {
+        interrupts_restore(enabled);
+        return -1;
+    }
+
+    p->pid = next_pid++;
+    p->restarts++;
+    p->cpu_ticks = 0;
+    p->slice_left = 0;
+    p->wake_tick = 0;
+    p->driver = 0;
+    p->fault_reported = 0;
+    p->fault_driver = 0;
+    reset_context(p);
+    p->state = PROCESS_READY;
+
+    place_vruntime(p);
+
+    int new_pid = p->pid;
+
+    interrupts_restore(enabled);
+    return new_pid;
+}
+
+void process_discard(int pid)
+{
+    uint64_t enabled = interrupts_disable();
+    process_t *p = find_crashed(pid);
+
+    if (p != 0)
+    {
+        p->state = PROCESS_EXITED;
+    }
+
+    interrupts_restore(enabled);
+}
+
+const char *process_driver_enter(const char *name)
+{
+    const char **slot = current != 0 ? &current->driver : &boot_driver;
+    const char *previous = *slot;
+
+    *slot = name;
+    return previous;
+}
+
+void process_driver_leave(const char *previous)
+{
+    const char **slot = current != 0 ? &current->driver : &boot_driver;
+
+    *slot = previous;
+}
+
+const char *process_current_driver(void)
+{
+    return current != 0 ? current->driver : boot_driver;
+}
+
 int process_current_pid(void)
 {
     return current->pid;
+}
+
+const char *process_current_name(void)
+{
+    return current != 0 ? current->name : "kernel-boot";
 }
 
 uint64_t process_cpu_ticks(int pid)

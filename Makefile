@@ -39,6 +39,7 @@ KERNEL_OBJS = boot/boot.o \
               kernel/switch.o \
               kernel/string.o \
               kernel/guardian.o \
+              kernel/faulty.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
