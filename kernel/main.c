@@ -8,6 +8,7 @@
 #include "uart.h"
 #include "plic.h"
 #include "power.h"
+#include "device.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
@@ -210,19 +211,36 @@ void kernel_main(void)
 
     log_info("Supervisor trap handler verified");
 
-    uart_init();
     plic_init();
-    plic_enable(UART_IRQ);
 
-    log_info("UART input interrupts enabled");
+    uart_register();
+    power_register();
+
+    device_init_all();
+    device_list();
+
+    device_t *console = device_find("uart0");
+    device_t *power = device_find("power0");
+
+    if (console == 0 || power == 0)
+    {
+        panic("Required device missing");
+    }
+
+    if (device_count() != 2 || device_find("missing0") != 0)
+    {
+        panic("Device table test failed");
+    }
+
+    log_info("Device table verified");
     log_info("All self-tests passed");
     log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
 
     while (1)
     {
-        int c = uart_getc();
+        char c;
 
-        if (c < 0)
+        if (device_read(console, &c, 1) <= 0)
         {
             asm volatile("wfi");
             continue;
@@ -230,21 +248,23 @@ void kernel_main(void)
 
         if (c == KEY_CTRL_D)
         {
-            uart_putc('\n');
+            uint8_t command = POWER_COMMAND_OFF;
+
+            device_write(console, "\n", 1);
             log_info("Powering off");
-            power_off();
+            device_write(power, &command, 1);
         }
         else if (c == '\r')
         {
-            uart_putc('\n');
+            device_write(console, "\n", 1);
         }
         else if (c == KEY_BACKSPACE)
         {
-            uart_puts("\b \b");
+            device_write(console, "\b \b", 3);
         }
         else
         {
-            uart_putc((char)c);
+            device_write(console, &c, 1);
         }
     }
 }

@@ -25,7 +25,8 @@ KERNEL_OBJS = boot/boot.o \
               kernel/trap.o \
               kernel/uart.o \
               kernel/plic.o \
-              kernel/power.o
+              kernel/power.o \
+              kernel/device.o
 
 TIMER_OBJS = timer/timer.o
 

@@ -2,7 +2,7 @@
 #include "logging.h"
 #include "timer.h"
 #include "plic.h"
-#include "uart.h"
+#include "device.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -82,11 +82,7 @@ static void handle_external_interrupt(void)
         return;
     }
 
-    if (irq == UART_IRQ)
-    {
-        uart_interrupt();
-    }
-    else
+    if (device_handle_irq(irq) != 0)
     {
         log_warn("Unexpected external interrupt");
     }

@@ -2,6 +2,22 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.5.0] - 2026-09-23
+
+Device abstraction. Phase 4 (hardware and interrupts) is complete.
+
+### Added
+- Device abstraction (`kernel/device.c/h`): a common `device_t` driver shape (`init`, `interrupt`, `read`, `write`) and a device table
+- `device_register`, `device_init_all`, `device_find`, `device_read`, `device_write`, `device_handle_irq`, `device_list`
+- UART registered as device `uart0` (IRQ 10), power device as `power0`
+- Boot log lists every device, and a self-test checks the device table
+- `make test` checks that `uart0` and `power0` are ready
+
+### Changed
+- The trap handler dispatches device interrupts through the device table instead of hard-coding the UART IRQ
+- `kernel_main` starts devices with `device_init_all()`, and the echo loop uses `device_read` / `device_write`
+- UART internals (`init`, `interrupt`, `getc`) are private to the driver, and only the early-console output functions stay public
+
 ## [0.4.0] - 2026-09-23
 
 Hardware interrupts and traps.

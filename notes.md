@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
-- **Part 5: Traps and interrupts:** exceptions, timer, PLIC, keyboard input
+- **Part 5: Traps, interrupts and devices:** exceptions, timer, PLIC, keyboard input, the device driver model
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** devices, disk, processes, user mode, AI-OS
+- **Part 8: What comes next:** disk, processes, user mode, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -184,7 +184,9 @@ heap_init()                map the first heap page
 vm_enable()                turn on Sv39 paging
 heap_activate()            create the first heap block
 self-tests                 heap, timer, trap
-uart_init() / plic_*()     keyboard input
+plic_init()                interrupt controller
+uart_register(), ...       fill the device table
+device_init_all()          start every driver, enable its IRQ
 echo loop                  interactive, Ctrl-D powers off
 ```
 
@@ -220,7 +222,7 @@ The UART is an **NS16550** serial chip (the same design as the COM1 port on old 
 | 5 | LSR | Line status: bit 0 = data ready, bit 5 = transmitter empty |
 
 - `uart_putc()` waits until LSR bit 5 says "ready to send", then writes THR.
-- `uart_interrupt()` reads RBR while LSR bit 0 says "data ready".
+- The driver's interrupt handler reads RBR while LSR bit 0 says "data ready".
 
 ## 3.3 Logging (`kernel/logging.c`)
 
@@ -367,7 +369,7 @@ Pages are 4 KiB, but the kernel often needs 24 bytes or 3000 bytes. The **heap**
 
 ---
 
-# Part 5: Traps and Interrupts
+# Part 5: Traps, Interrupts and Devices
 
 ## 5.1 Vocabulary
 
@@ -477,10 +479,11 @@ You press "a" in the terminal
  → PLIC → external interrupt → CPU jumps to stvec (S-mode)
  → supervisor_trap saves registers → supervisor_trap_handler
  → plic_claim() returns 10
- → uart_interrupt(): read every byte into the ring buffer
+ → device_handle_irq(10): the device table says IRQ 10 belongs to uart0
+ → uart0's interrupt handler: read every byte into the ring buffer
  → plic_complete(10)
  → sret: back to the echo loop
- → uart_getc() finds 'a' in the buffer → uart_putc('a')
+ → device_read(uart0) finds 'a' in the buffer → device_write(uart0, "a")
 ```
 
 ### The ring buffer
@@ -504,7 +507,43 @@ When the buffer is empty, the echo loop runs `wfi` ("wait for interrupt"): the C
 
 ## 5.8 Power off (`kernel/power.c`)
 
-QEMU `virt` has a "test device" at `0x00100000`. Writing `0x5555` exits QEMU (power off), and `0x7777` reboots. **Ctrl-D** in the echo loop calls `power_off()`. It powers off only the KnocOS virtual machine, not your real computer.
+QEMU `virt` has a "test device" at `0x00100000`. Writing `0x5555` exits QEMU (power off), and `0x7777` reboots. It's registered as device `power0`: **Ctrl-D** in the echo loop writes the `POWER_COMMAND_OFF` command to it. It powers off only the KnocOS virtual machine, not your real computer.
+
+## 5.9 Device abstraction (`kernel/device.c`)
+
+**The problem it solves:** without it, the kernel hard-codes every device: the trap handler says "IRQ 10 = UART", `main.c` starts the UART by hand, and the echo loop calls UART functions directly. With 10 devices that becomes a mess, and adding one means editing many files.
+
+**The idea:** every driver has **the same shape**, a `device_t` struct:
+
+```c
+typedef struct device {
+    const char *name;                    // "uart0"
+    uint32_t irq;                        // 10, or DEVICE_NO_IRQ
+    int     (*init)(struct device *dev);
+    void    (*interrupt)(struct device *dev);
+    int64_t (*read)(struct device *dev, void *buffer, uint64_t length);
+    int64_t (*write)(struct device *dev, const void *buffer, uint64_t length);
+    int ready;
+} device_t;
+```
+
+The `(*init)` fields are **function pointers**: each driver plugs in its own functions. The kernel calls `dev->read(...)` without knowing which driver it's talking to. This is C's version of an "interface".
+
+```text
+driver file (uart.c)                   device table (device.c)          the rest of the kernel
+  static device_t uart_device = {        [0] uart0   IRQ 10  ready       device_find("uart0")
+    .name = "uart0", .irq = 10,   ──►    [1] power0          ready  ◄──  device_read / device_write
+    .init = ..., .read = ...  }          ...                             device_handle_irq(irq)
+  uart_register()
+```
+
+**Boot:** each driver registers → `device_init_all()` runs every `init`, enables its IRQ in the PLIC, and logs `Device ready`.
+
+**Interrupt:** PLIC claim → `device_handle_irq(irq)` finds the owner → calls its `interrupt` → PLIC complete. The trap handler never needs to change for a new device.
+
+**The early console exception:** `log_info` and `panic` still call `uart_putc` directly. Crash messages must work before the device system starts, or even if it's broken. Linux does the same thing ("early console").
+
+**Windows comparison:** this is the Windows driver model. Every driver has the same entry points, `ReadFile`/`WriteFile` work on any device, and Device Manager lists them all. Adding a device = one new driver file + one register call.
 
 ---
 
@@ -515,7 +554,7 @@ QEMU `virt` has a "test device" at `0x00100000`. Writing `0x5555` exits QEMU (po
 - **Pattern rules** (`%.o: %.c`) compile any C file the same way.
 - **`-MMD -MP`**: the compiler writes a `.d` file listing every header each `.c` file includes, and `make` reads them. Changing a header rebuilds exactly the files that use it.
 - **`-Wall -Wextra -Werror`**: turns on many warnings and makes **any warning a build error**. Warnings often hide real bugs.
-- **`-DKNOCOS_VERSION='"v0.4.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
+- **`-DKNOCOS_VERSION='"v0.5.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
 
 ## 6.2 Automated testing (`make test`)
 
@@ -541,8 +580,9 @@ QEMU `virt` has a "test device" at `0x00100000`. Writing `0x5555` exits QEMU (po
 | 0.2.0 | Physical + virtual memory |
 | 0.3.0 | Kernel heap |
 | 0.4.0 | Interrupts, traps, PLIC, keyboard, tests, CI |
+| 0.5.0 | Device abstraction, Phase 4 complete |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.4.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.5.0 && git push --tags`.
 
 ---
 
@@ -592,23 +632,7 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 Device abstraction (finishes Phase 4)
-
-One common shape for every driver:
-
-```c
-struct device {
-    const char *name;
-    uint32_t irq;
-    void (*init)(void);
-    void (*interrupt)(void);
-    ...
-};
-```
-
-Drivers register themselves, and the trap handler finds the owner of an IRQ instead of hard-coding "IRQ 10 = UART". **Windows comparison:** the Windows driver model, where every driver has the same entry points.
-
-## 8.2 virtio-blk: a disk
+## 8.1 virtio-blk: a disk
 
 A virtual disk backed by a file (`disk.img`) on your PC, like a VirtualBox `.vdi`. The driver shares a **virtqueue** (a ring buffer of requests) with the device:
 
@@ -618,21 +642,21 @@ kernel writes it to the virtqueue → notifies the device → device does the wo
 → interrupt (through the PLIC) → kernel checks the status → data is ready
 ```
 
-This is needed for the filesystem, and later for storing AI models.
+The driver registers as device `disk0` (IRQ 1) through the device abstraction, so the trap handler doesn't change. This is needed for the filesystem, and later for storing AI models.
 
-## 8.3 Processes and the scheduler (Phase 5)
+## 8.2 Processes and the scheduler (Phase 5)
 
 - **Process:** a running program with its own registers, stack and (later) page table.
 - **Context switch:** save process A's registers and load process B's. It's the same idea as the trap frame.
 - **Scheduler:** on every timer tick (`timer_tick()`), decide who runs next. Start with **round-robin** (take turns).
 
-## 8.4 User mode and system calls
+## 8.3 User mode and system calls
 
 - Programs run in **U-mode** with `U` bit page mappings, so they can't touch the kernel or devices.
 - To ask the kernel for something, a program runs **`ecall`**, which traps to S-mode (exception 8). The kernel reads the request number in `a7` and the arguments in `a0`–`a5`.
 - **Windows comparison:** `syscall` into `ntoskrnl`, like `NtReadFile` and `NtCreateFile`.
 
-## 8.5 Toward the AI-OS
+## 8.4 Toward the AI-OS
 
 After the kernel foundation: filesystem, shell, the small neural network runtime, the LLM runtime, the agent, KnocNet and app compatibility. See `goal.md`. Every one of those depends on what's in these notes: memory for models, the scheduler for AI workloads, drivers for disk/network/GPU, and traps for security and self-diagnosis.
 

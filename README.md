@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.4.0-blue)
+![Version](https://img.shields.io/badge/version-v0.5.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -24,6 +24,7 @@ KnocOS currently has:
 - C kernel entry point with a 16 KiB kernel stack
 - **UART driver** (16550): output plus **interrupt-driven keyboard input** into a ring buffer
 - **PLIC interrupt controller**: device interrupts (UART, IRQ 10) delivered to the kernel
+- **Device abstraction**: every driver has the same shape (`init`, `interrupt`, `read`, `write`) and is registered in a device table, like the Windows driver model and Device Manager
 - Interactive **keyboard echo** (Enter = new line, Backspace erases)
 - Kernel logging (`log_info`, `log_warn`, `log_trap`) and a `panic` handler
 - **Physical page allocator** (bitmap, 4 KiB pages)
@@ -40,7 +41,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.4.0 starting
+[INFO] KnocOS v0.5.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
@@ -56,8 +57,14 @@ KnocOS currently has:
 [TRAP] Breakpoint
 [TRAP] sepc   = 0x0000000080000790
 [INFO] Supervisor trap handler verified
-[INFO] UART input interrupts enabled
-[INFO] Keyboard echo ready, start typing
+[INFO] Device ready: uart0 (IRQ 10)
+[INFO] Device ready: power0
+[INFO] Devices: 2
+       uart0  IRQ 10  ready
+       power0  ready
+[INFO] Device table verified
+[INFO] All self-tests passed
+[INFO] Keyboard echo ready, start typing (Ctrl-D to power off)
 hello knocos          ← what you type is echoed back
 ```
 
@@ -75,9 +82,9 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## 🚧 Currently Building: Interrupts & Traps (Phase 4)
+## ✅ Just Completed: Interrupts, Traps & Devices (Phase 4)
 
-Memory management (Phase 3) is complete. Work is now on **hardware interrupts and trap handling**.
+Phase 4 is complete. **Next up: the virtio-blk disk driver**, the first new device built on the device abstraction, and the base for the filesystem.
 
 Recent progress:
 
@@ -88,7 +95,8 @@ Recent progress:
 | `2a69e89` | Fix timer interrupt and reliable timer test, R-X / RW- linker segments |
 | `6fe8a98` | Supervisor trap handler, timer interrupts forwarded to S-mode |
 | `9bffe5d` | PLIC + interrupt-driven UART input, keyboard echo, one shared UART driver |
-| *(uncommitted)* | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
+| `cb619ec` | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
+| *(uncommitted)* | Device abstraction: device table, `uart0` and `power0` drivers, version `v0.5.0` |
 
 What works right now:
 
@@ -100,13 +108,15 @@ What works right now:
 - `supervisor_trap` (in `boot.S`) saves 31 registers into a `trap_frame_t`, calls `supervisor_trap_handler()` in C, restores the registers and `sret`s
 - `supervisor_trap_handler()` reads `scause`, `sepc` and `stval`. A breakpoint (`ebreak`) is logged and skipped (`sepc += 4`), and anything else is decoded by name, printed, and ends in `panic`
 - `mideleg` also delegates **external interrupts** (`SEIP`), and `trap_enable_interrupts()` turns on `sie.SEIE`
-- On an external interrupt the handler **claims** the IRQ from the PLIC, calls `uart_interrupt()` for IRQ 10 (which moves received bytes into a 128-byte ring buffer), then **completes** the IRQ
-- `kernel_main` ends in an echo loop: `uart_getc()` reads from the buffer, and when it's empty the CPU sleeps with `wfi` until the next interrupt
+- On an external interrupt the handler **claims** the IRQ from the PLIC, calls `device_handle_irq()` to run the owning driver's interrupt handler (IRQ 10 → `uart0`, which moves received bytes into a 128-byte ring buffer), then **completes** the IRQ
+- Drivers register in a **device table**, and `device_init_all()` starts each one and enables its IRQ in the PLIC
+- `kernel_main` ends in an echo loop: `device_read(uart0)` reads from the buffer, and when it's empty the CPU sleeps with `wfi` until the next interrupt. Ctrl-D sends a power-off command to `power0` with `device_write()`
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
-Next steps in this phase:
+Next steps:
 
-- [ ] Device abstraction (a common driver interface so new devices plug in the same way)
+- [ ] virtio-blk disk driver (registers as `disk0`)
+- [ ] Processes, context switching and a timer-driven scheduler (Phase 5)
 
 ---
 
@@ -153,14 +163,18 @@ kernel_main (Supervisor mode)  kernel/main.c
    ├─ heap stress test
    ├─ timer interrupt test
    ├─ supervisor trap test (ebreak)
-   ├─ uart_init(), plic_init(), plic_enable(UART_IRQ)
+   ├─ plic_init()
+   ├─ uart_register(), power_register()   fill the device table
+   ├─ device_init_all()                   init each driver, enable its IRQ
+   ├─ device_list()                       print the table
    └─ keyboard echo loop (wfi when idle)
 
 Timer interrupt ──► machine_trap (M-mode) ──► timer_interrupt(): re-arm + set mip.SSIP ──► mret
                          └──► supervisor_trap (S-mode) ──► clear sip.SSIP, timer_tick() ──► sret
 Exception ────────► supervisor_trap (S-mode) ──► supervisor_trap_handler() ──► sret / panic
 Key press ────────► UART ──► PLIC (IRQ 10) ──► supervisor_trap (S-mode)
-                         ──► plic_claim() ──► uart_interrupt() → ring buffer ──► plic_complete() ──► sret
+                         ──► plic_claim() ──► device_handle_irq(10) ──► uart0 interrupt → ring buffer
+                         ──► plic_complete() ──► sret
 ```
 
 ### Physical memory layout
@@ -214,7 +228,8 @@ KnocOS/
 │   ├── trap.c/h      # Supervisor trap frame and C trap handler
 │   ├── uart.c/h      # 16550 UART driver: output, RX interrupt, ring buffer
 │   ├── plic.c/h      # PLIC: enable IRQs, claim / complete
-│   └── power.c/h     # Power off / reboot (QEMU test device)
+│   ├── power.c/h     # Power off / reboot (QEMU test device), device power0
+│   └── device.c/h    # Device abstraction: driver struct, device table, IRQ dispatch
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -304,7 +319,7 @@ KnocOS/
 - `trap_frame_t` matches the register layout saved by `supervisor_trap`
 - `supervisor_trap_handler()` reads `scause`, `sepc` and `stval` and decodes the cause into a name (page faults, illegal instruction, access faults, ...)
 - Forwarded timer ticks (supervisor software interrupt) clear `sip.SSIP` and call `timer_tick()`
-- External interrupts: `plic_claim()`, dispatch (IRQ 10 → `uart_interrupt()`, anything else → warning), `plic_complete()`
+- External interrupts: `plic_claim()`, `device_handle_irq(irq)` (warning if no device owns it), `plic_complete()`
 - Breakpoints are logged, counted and skipped (`sepc += 4`)
 - Every other trap prints `scause`, `sepc`, `stval`, `ra` and `sp`, then panics
 - `trap_breakpoint_count()` is used by the self-test
@@ -313,12 +328,11 @@ KnocOS/
 
 ### UART driver: `kernel/uart.c`
 
-- NS16550 UART at `0x10000000`, IRQ 10
-- `uart_init()`: 8N1, FIFOs on, "receive data available" interrupt on
-- `uart_putc()` waits for the transmit register to be empty, then writes
-- `uart_puts()`, `uart_put_hex()`, `uart_put_uint()`: the single output path, also used by `logging.c`, `page.c` and `vm.c`
-- `uart_interrupt()` drains every received byte into a 128-byte ring buffer (bytes are dropped if it's full)
-- `uart_getc()` returns the next byte, or `-1` if the buffer is empty
+- NS16550 UART at `0x10000000`, IRQ 10, registered as device **`uart0`**
+- `init`: 8N1, FIFOs on, "receive data available" interrupt on
+- `interrupt`: drains every received byte into a 128-byte ring buffer (bytes are dropped if it's full)
+- `read`: returns the bytes waiting in the buffer (0 if empty), and `write`: sends bytes
+- `uart_putc()`, `uart_puts()`, `uart_put_hex()`, `uart_put_uint()` stay public as the **early console**: `logging.c`, `panic()`, `page.c` and `vm.c` use them directly, so crash messages work even before (or without) the device system
 
 ### Interrupt controller: `kernel/plic.c`
 
@@ -332,7 +346,35 @@ KnocOS/
 - Uses QEMU's test device at `0x00100000` (mapped in `vm.c`)
 - `power_off()` writes `0x5555` and QEMU exits
 - `power_reboot()` writes `0x7777` and QEMU restarts the machine
-- Ctrl-D in the echo loop calls `power_off()`
+- Registered as device **`power0`** (no IRQ): writing `POWER_COMMAND_OFF` or `POWER_COMMAND_REBOOT` runs that command
+- Ctrl-D in the echo loop sends `POWER_COMMAND_OFF` to `power0`
+
+### Devices: `kernel/device.c`
+
+Every driver fills in the same `device_t` struct:
+
+```c
+typedef struct device {
+    const char *name;                          // "uart0", "power0"
+    uint32_t irq;                              // DEVICE_NO_IRQ (0) if none
+    int     (*init)(struct device *dev);
+    void    (*interrupt)(struct device *dev);
+    int64_t (*read)(struct device *dev, void *buffer, uint64_t length);
+    int64_t (*write)(struct device *dev, const void *buffer, uint64_t length);
+    int ready;
+} device_t;
+```
+
+| Function | What it does | Windows equivalent |
+|---|---|---|
+| `device_register(dev)` | Add a driver to the table (max 16, names must be unique) | Installing a driver |
+| `device_init_all()` | Run every `init()`, enable its IRQ in the PLIC, log `Device ready` | Drivers starting at boot |
+| `device_find(name)` | Look a device up by name | Opening `COM1` |
+| `device_read()` / `device_write()` | The same call for every device (`-1` if not ready or not supported) | `ReadFile()` / `WriteFile()` |
+| `device_handle_irq(irq)` | Run the interrupt handler of the device that owns `irq` | Interrupt dispatch to a driver's ISR |
+| `device_list()` / `device_count()` | Print / count the table | Device Manager |
+
+Adding a new device means writing its driver file and calling its register function. The trap handler and the PLIC setup don't change.
 
 ### Early memory info: `kernel/memory.c`
 
@@ -361,7 +403,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.4.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.5.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -457,7 +499,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Automatic heap growth
 - [x] Separate R-X / RW- ELF segments *(uncommitted)*
 
-### Phase 4: Hardware & Interrupts 🚧 *(in progress)*
+### Phase 4: Hardware & Interrupts ✅
 
 - [x] Timer (CLINT `mtime` / `mtimecmp`)
 - [x] Machine-mode trap entry and register save/restore
@@ -469,7 +511,7 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Interrupt controller (PLIC)
 - [x] UART driver with input
 - [x] Power-off / reboot driver
-- [ ] Device abstraction
+- [x] Device abstraction (device table, `uart0`, `power0`)
 
 ### Phase 5: Processes & Scheduling
 
@@ -530,7 +572,7 @@ KnocOS aims to become a production-grade operating system. This is what that req
 |---|---|
 | Memory management (pages, paging, heap) | ✅ |
 | Interrupts and exception handling | ✅ |
-| Device driver model (device abstraction) | ⬜ |
+| Device driver model (device abstraction) | ✅ |
 | Processes, scheduler, context switching | ⬜ |
 | User mode and memory isolation between programs | ⬜ |
 | System calls | ⬜ |
@@ -575,6 +617,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.4.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.5.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is the last Phase 4 item.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**. Next is the virtio-blk disk driver.

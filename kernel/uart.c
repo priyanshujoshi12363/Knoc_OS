@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "device.h"
 
 #define UART_RBR 0
 #define UART_THR 0
@@ -31,7 +32,7 @@ static void uart_write_reg(uint32_t reg, uint8_t value)
     uart[reg] = value;
 }
 
-void uart_init(void)
+static void uart_init(void)
 {
     uart_write_reg(UART_IER, 0);
     uart_write_reg(UART_LCR, UART_LCR_8N1);
@@ -92,7 +93,7 @@ void uart_put_uint(uint64_t value)
     }
 }
 
-void uart_interrupt(void)
+static void uart_interrupt(void)
 {
     while (uart_read_reg(UART_LSR) & UART_LSR_DATA_READY)
     {
@@ -107,7 +108,7 @@ void uart_interrupt(void)
     }
 }
 
-int uart_getc(void)
+static int uart_getc(void)
 {
     if (rx_head == rx_tail)
     {
@@ -118,4 +119,67 @@ int uart_getc(void)
     rx_tail = (rx_tail + 1) % UART_RX_BUFFER_SIZE;
 
     return (unsigned char)c;
+}
+
+static int uart_device_init(device_t *dev)
+{
+    (void)dev;
+    uart_init();
+    return 0;
+}
+
+static void uart_device_interrupt(device_t *dev)
+{
+    (void)dev;
+    uart_interrupt();
+}
+
+static int64_t uart_device_read(device_t *dev, void *buffer, uint64_t length)
+{
+    (void)dev;
+
+    char *bytes = (char *)buffer;
+    uint64_t count = 0;
+
+    while (count < length)
+    {
+        int c = uart_getc();
+
+        if (c < 0)
+        {
+            break;
+        }
+
+        bytes[count++] = (char)c;
+    }
+
+    return (int64_t)count;
+}
+
+static int64_t uart_device_write(device_t *dev, const void *buffer, uint64_t length)
+{
+    (void)dev;
+
+    const char *bytes = (const char *)buffer;
+
+    for (uint64_t i = 0; i < length; i++)
+    {
+        uart_putc(bytes[i]);
+    }
+
+    return (int64_t)length;
+}
+
+static device_t uart_device = {
+    .name = "uart0",
+    .irq = UART_IRQ,
+    .init = uart_device_init,
+    .interrupt = uart_device_interrupt,
+    .read = uart_device_read,
+    .write = uart_device_write,
+};
+
+void uart_register(void)
+{
+    device_register(&uart_device);
 }
