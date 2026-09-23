@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "page.h"
 
 #define BYTES_PER_KB 1024UL
 #define BYTES_PER_MB (1024UL * 1024UL)
@@ -10,8 +11,6 @@ extern char kernel_end;
 extern char stack_bottom;
 extern char stack_top;
 
-#define RAM_START 0x80000000UL
-#define RAM_END   0x88000000UL
 
 void memory_init(void)
 {
@@ -22,7 +21,7 @@ void memory_init(void)
     uintptr_t stack_end_addr    = (uintptr_t)&stack_top;
 
     uintptr_t free_start = stack_end_addr;
-    uintptr_t free_end   = RAM_END;
+    uintptr_t free_end   = page_ram_end();
 
     (void)kernel_start_addr;
     (void)kernel_end_addr;
@@ -34,7 +33,7 @@ void memory_init(void)
 
 uint64_t memory_total_bytes(void)
 {
-    return RAM_END - RAM_START;
+    return page_ram_end() - page_ram_start();
 }
 
 uint64_t memory_total_kb(void)

@@ -4,9 +4,8 @@
 #include <stdint.h>
 
 #define VM_PAGE_SIZE 4096UL
+#define VM_MEGAPAGE_SIZE (2UL * 1024 * 1024)
 
-#define VM_RAM_START 0x80000000UL
-#define VM_RAM_END   0x88000000UL
 #define VM_UART      0x10000000UL
 
 #define PTE_V (1UL << 0)
@@ -30,8 +29,9 @@ typedef pte_t page_table_t[512];
 
 pte_t vm_make_pte(uintptr_t physical_address, uint64_t flags);
 
-void vm_init(void);
+void vm_init(uintptr_t ram_start, uintptr_t ram_end);
 void vm_enable(void);
+uint64_t vm_megapage_count(void);
 
 int vm_map(uintptr_t virtual_address,
            uintptr_t physical_address,

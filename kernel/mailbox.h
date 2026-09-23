@@ -30,6 +30,10 @@
 #define VERDICT_RESTART_PROCESS 0x1
 #define VERDICT_DISABLE_DRIVER 0x2
 
+#define CONSOLE_FREE 0
+#define CONSOLE_KERNEL 1
+#define CONSOLE_AISPACE 2
+
 typedef struct guardian_mailbox
 {
     /* Boot handshake: the kernel waits for the AI space to copy it first */
@@ -81,6 +85,12 @@ typedef struct guardian_mailbox
     /* Verdict: AI space -> kernel */
     volatile uint64_t verdict_seq;
     volatile uint32_t verdict_action;
+
+    /* Which core prints a line on the UART right now (CONSOLE_*) */
+    volatile uint32_t console_owner;
+
+    /* End of RAM, from the device tree (written by the kernel) */
+    volatile uint64_t ram_end;
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;

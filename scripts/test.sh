@@ -18,7 +18,7 @@ new_disk() {
 
 qemu() {
     timeout "$1" env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-        qemu-system-riscv64 -machine virt -smp 2 -bios none -nographic \
+        qemu-system-riscv64 -machine virt -smp 2 -m 2G -bios none -nographic \
         -global virtio-mmio.force-legacy=false \
         -drive file="$DISK",if=none,format=raw,id=disk0 \
         -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
@@ -78,13 +78,19 @@ echo "Boot 1: self-tests"
 boot
 check \
     "Supervisor interrupts enabled" \
+    "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
     "Page memory initialized" \
+    "largest block 1024 MiB (buddy allocator)" \
     "Sv39 enabled" \
+    "RAM mapped with 2 MiB megapages: 1026" \
+    "Spinlock verified" \
+    "Buddy allocator verified" \
+    "Large memory verified: 1024 MiB block" \
     "Kernel heap 4.0 stress test passed" \
     "Supervisor timer interrupts verified" \
     "Supervisor trap handler verified" \
     "PMP verified: the kernel cannot read the AI space" \
-    "AI space online (core 1" \
+    "AI space online (core 1, 256 MiB protected at 0x0000000090000000)" \
     "Black box: no previous crashes" \
     "Device ready: uart0 (IRQ 10)" \
     "Device ready: power0" \
@@ -161,6 +167,13 @@ check \
     "Previous crash detected: #3 TRAP" \
     "SAFE MODE" \
     "Powering off"
+
+if grep -qE ".\[AI\] |\[AI\] .*\[(INFO|WARN|OOPS|TRAP)\]" "$LOG"; then
+    echo "  FAIL AI space and kernel output mixed on one line (UART lock)"
+    FAILED=1
+else
+    echo "  ok   AI space and kernel lines never mixed (UART lock)"
+fi
 
 if grep -q "Power reboot\|\[AI\] Action: reboot" "$LOG"; then
     echo "  FAIL the AI space rebooted the machine instead of a warm restart"

@@ -1,8 +1,8 @@
 #ifndef AISPACE_H
 #define AISPACE_H
 
-#define AISPACE_BASE 0x87000000
-#define AISPACE_SIZE 0x01000000
+#define AISPACE_BASE 0x90000000
+#define AISPACE_SIZE 0x10000000
 #define AISPACE_HART 1
 #define AISPACE_BOOT_TIMEOUT 10000000
 
@@ -14,7 +14,9 @@
 
 #ifndef __ASSEMBLER__
 
-void aispace_main(void);
+#include <stdint.h>
+
+void aispace_main(uintptr_t dtb);
 void aispace_park_core0(void);
 
 #endif

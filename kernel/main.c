@@ -15,6 +15,8 @@
 #include "aispace.h"
 #include "blackbox.h"
 #include "faulty.h"
+#include "fdt.h"
+#include "spinlock.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
@@ -39,6 +41,10 @@ typedef struct disk_boot_record
     uint64_t magic;
     uint64_t count;
 } disk_boot_record_t;
+
+#define MEMTEST_BLOCK_BYTES (64UL * 1024 * 1024)
+#define MEMTEST_PAGES 1024
+#define BYTES_PER_MIB (1024UL * 1024)
 
 #define SCHED_TEST_TICKS 100
 #define SCHED_TEST_WORKERS 3
@@ -139,6 +145,132 @@ static void disk_self_test(device_t *disk)
     }
 
     log_info_uint("Disk boot count: ", record->count);
+}
+
+static void print_mib(const char *label, uint64_t bytes)
+{
+    uart_puts(label);
+    uart_put_uint(bytes / BYTES_PER_MIB);
+    uart_puts(" MiB");
+}
+
+static void spinlock_self_test(void)
+{
+    spinlock_t lock = SPINLOCK_INIT;
+    uint64_t interrupts = spin_lock(&lock);
+    uint64_t sstatus;
+
+    asm volatile("csrr %0, sstatus" : "=r"(sstatus));
+
+    if (sstatus & SSTATUS_SIE)
+    {
+        panic("Spinlock left interrupts on");
+    }
+
+    if (spin_trylock(&lock))
+    {
+        panic("Spinlock taken twice");
+    }
+
+    spin_unlock(&lock, interrupts);
+
+    if (!spin_trylock(&lock))
+    {
+        panic("Spinlock not released");
+    }
+
+    log_info("Spinlock verified: exclusive, interrupts off while held");
+}
+
+static void check_block(uint8_t *block, uint64_t bytes, uint64_t step)
+{
+    for (uint64_t offset = 0; offset < bytes; offset += step)
+    {
+        *(volatile uint64_t *)(block + offset) = (uintptr_t)(block + offset) ^ 0x5A5A5A5A5A5A5A5AULL;
+    }
+
+    *(volatile uint64_t *)(block + bytes - 8) = 0x1234567812345678ULL;
+
+    for (uint64_t offset = 0; offset < bytes; offset += step)
+    {
+        if (*(volatile uint64_t *)(block + offset) != ((uintptr_t)(block + offset) ^ 0x5A5A5A5A5A5A5A5AULL))
+        {
+            panic("Memory block read back wrong data");
+        }
+    }
+
+    if (*(volatile uint64_t *)(block + bytes - 8) != 0x1234567812345678ULL)
+    {
+        panic("Memory block end read back wrong data");
+    }
+}
+
+static void memory_self_test(void)
+{
+    void **pages = kmalloc(MEMTEST_PAGES * sizeof(void *));
+
+    if (pages == 0)
+    {
+        panic("Memory test allocation failed");
+    }
+
+    unsigned long free_before = page_free_count();
+    unsigned long largest_before = page_largest_free();
+
+    uint8_t *block = page_alloc_contiguous(MEMTEST_BLOCK_BYTES);
+
+    if (block == 0 || (uintptr_t)block % MEMTEST_BLOCK_BYTES != 0)
+    {
+        panic("No aligned 64 MiB contiguous block");
+    }
+
+    check_block(block, MEMTEST_BLOCK_BYTES, VM_MEGAPAGE_SIZE);
+    page_free(block);
+
+    for (int i = 0; i < MEMTEST_PAGES; i++)
+    {
+        pages[i] = page_alloc();
+
+        if (pages[i] == 0)
+        {
+            panic("Single page allocation failed");
+        }
+    }
+
+    for (int i = 0; i < MEMTEST_PAGES; i += 2)
+    {
+        page_free(pages[i]);
+    }
+
+    for (int i = 1; i < MEMTEST_PAGES; i += 2)
+    {
+        page_free(pages[i]);
+    }
+
+    if (page_free_count() != free_before || page_largest_free() != largest_before)
+    {
+        panic("Buddy blocks did not merge back");
+    }
+
+    kfree(pages);
+
+    log_info("Buddy allocator verified: 64 MiB contiguous block, 1024 single pages freed and merged back");
+
+    uint64_t largest_bytes = largest_before * PAGE_SIZE;
+    uint8_t *large = page_alloc_contiguous(largest_bytes);
+
+    if (large == 0)
+    {
+        panic("Largest free block allocation failed");
+    }
+
+    check_block(large, largest_bytes, VM_MEGAPAGE_SIZE);
+    page_free(large);
+
+    print_mib("[INFO] Large memory verified: ", largest_bytes);
+    uart_puts(" block at ");
+    uart_put_hex((uintptr_t)large);
+    uart_puts(" read and written through megapages\n");
 }
 
 static void console_process(void *arg)
@@ -335,17 +467,49 @@ static void scheduler_test(void *arg)
     }
 }
 
-void kernel_main(void)
+void kernel_main(uintptr_t dtb)
 {
     log_info("KnocOS " KNOCOS_VERSION " starting");
 
     trap_enable_interrupts();
     log_info("Supervisor interrupts enabled");
 
-    page_init();
-    log_info("Page memory initialized");
+    fdt_info_t fdt;
 
-    vm_init();
+    if (dtb >= AISPACE_BASE && dtb < AISPACE_BASE + AISPACE_SIZE)
+    {
+        panic("Device tree is inside the AI space: KnocOS needs at least 1 GiB of RAM");
+    }
+
+    if (fdt_parse(dtb, &fdt) != 0)
+    {
+        panic("No valid device tree from the firmware");
+    }
+
+    uart_puts("[INFO] Device tree at ");
+    uart_put_hex(fdt.dtb_start);
+    print_mib(": RAM ", fdt.ram_size);
+    uart_puts(" at ");
+    uart_put_hex(fdt.ram_start);
+    uart_puts(", ");
+    uart_put_uint(fdt.cpu_count);
+    uart_puts(" CPUs\n");
+
+    if (fdt.ram_start + fdt.ram_size < AISPACE_BASE + AISPACE_SIZE)
+    {
+        panic("Not enough RAM: KnocOS needs at least 1 GiB (QEMU -m 1G)");
+    }
+
+    if (page_init(fdt.ram_start, fdt.ram_size, fdt.dtb_start, fdt.dtb_size) != 0)
+    {
+        panic("Page allocator setup failed");
+    }
+
+    print_mib("[INFO] Page memory initialized: ", page_free_count() * PAGE_SIZE);
+    print_mib(" free, largest block ", page_largest_free() * PAGE_SIZE);
+    uart_puts(" (buddy allocator)\n");
+
+    vm_init(fdt.ram_start, fdt.ram_start + fdt.ram_size);
     log_info("Virtual memory initialized");
 
     log_info("Kernel page tables ready");
@@ -361,6 +525,7 @@ void kernel_main(void)
     vm_enable();
 
     log_info("Sv39 enabled");
+    log_info_uint("RAM mapped with 2 MiB megapages: ", vm_megapage_count());
 
     heap_activate();
 
@@ -381,6 +546,8 @@ void kernel_main(void)
     log_info("PMP verified: the kernel cannot read the AI space");
 
     guardian_init();
+    guardian_set_ram_end(fdt.ram_start + fdt.ram_size);
+    spinlock_self_test();
 
     void *block_a = kmalloc(3000);
 
@@ -517,6 +684,8 @@ void kernel_main(void)
     kfree(block_f);
 
     log_info("Kernel heap 4.0 stress test passed");
+
+    memory_self_test();
 
     uint64_t timer_start = timer_ticks();
     uint64_t time_start = timer_read();

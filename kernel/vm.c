@@ -6,6 +6,9 @@
 #include "virtio.h"
 
 static page_table_t *root_page_table;
+static uint64_t megapages_mapped;
+
+#define PTE_LEAF (PTE_R | PTE_W | PTE_X)
 
 static void vm_clear_page_table(page_table_t *page_table)
 {
@@ -28,7 +31,12 @@ void vm_enable(void)
     asm volatile("csrw satp, %0" :: "r"(satp_value));
     asm volatile("sfence.vma zero, zero");
 }
-void vm_init(void)
+uint64_t vm_megapage_count(void)
+{
+    return megapages_mapped;
+}
+
+void vm_init(uintptr_t ram_start, uintptr_t ram_end)
 {
     root_page_table = (page_table_t *)page_alloc();
 
@@ -39,9 +47,9 @@ void vm_init(void)
 
     vm_clear_page_table(root_page_table);
 
-    if (vm_map_range(VM_RAM_START,
-                     VM_RAM_START,
-                     VM_RAM_END - VM_RAM_START,
+    if (vm_map_range(ram_start,
+                     ram_start,
+                     ram_end - ram_start,
                      PTE_R | PTE_W | PTE_X) != 0)
     {
         root_page_table = 0;
@@ -85,11 +93,66 @@ void vm_init(void)
     }
 }
 
+static page_table_t *vm_level1(uintptr_t virtual_address)
+{
+    unsigned long vpn2 = VA_VPN2(virtual_address);
+
+    if (!((*root_page_table)[vpn2] & PTE_V))
+    {
+        page_table_t *level1 = (page_table_t *)page_alloc();
+
+        if (level1 == 0)
+        {
+            return 0;
+        }
+
+        vm_clear_page_table(level1);
+
+        (*root_page_table)[vpn2] =
+            vm_make_pte((uintptr_t)level1, PTE_V);
+
+        return level1;
+    }
+
+    return (page_table_t *)PPN_TO_PA((*root_page_table)[vpn2] >> 10);
+}
+
+/* A megapage is a leaf entry in the level-1 table: one entry maps
+   2 MiB directly, with no level-0 table below it */
+static int vm_map_mega(uintptr_t virtual_address,
+                       uintptr_t physical_address,
+                       uint64_t flags)
+{
+    if (root_page_table == 0 ||
+        (virtual_address | physical_address) & (VM_MEGAPAGE_SIZE - 1))
+    {
+        return -1;
+    }
+
+    page_table_t *level1 = vm_level1(virtual_address);
+
+    if (level1 == 0)
+    {
+        return -1;
+    }
+
+    unsigned long vpn1 = VA_VPN1(virtual_address);
+
+    if ((*level1)[vpn1] & PTE_V)
+    {
+        return -1;
+    }
+
+    (*level1)[vpn1] = vm_make_pte(physical_address, flags | PTE_V);
+    megapages_mapped++;
+
+    return 0;
+}
+
 int vm_map(uintptr_t virtual_address,
            uintptr_t physical_address,
            uint64_t flags)
 {
-    unsigned long vpn2 = VA_VPN2(virtual_address);
     unsigned long vpn1 = VA_VPN1(virtual_address);
     unsigned long vpn0 = VA_VPN0(virtual_address);
 
@@ -101,24 +164,16 @@ int vm_map(uintptr_t virtual_address,
         return -1;
     }
 
-    if (!((*root_page_table)[vpn2] & PTE_V))
+    level1 = vm_level1(virtual_address);
+
+    if (level1 == 0)
     {
-        level1 = (page_table_t *)page_alloc();
-
-        if (level1 == 0)
-        {
-            return -1;
-        }
-
-        vm_clear_page_table(level1);
-
-        (*root_page_table)[vpn2] =
-            vm_make_pte((uintptr_t)level1, PTE_V);
+        return -1;
     }
-    else
+
+    if ((*level1)[vpn1] & PTE_LEAF)
     {
-        level1 = (page_table_t *)
-            PPN_TO_PA((*root_page_table)[vpn2] >> 10);
+        return -1;
     }
 
     if (!((*level1)[vpn1] & PTE_V))
@@ -151,14 +206,31 @@ int vm_map_range(uintptr_t virtual_start,
                  uintptr_t size,
                  uint64_t flags)
 {
-    for (uintptr_t offset = 0; offset < size; offset += VM_PAGE_SIZE)
+    uintptr_t offset = 0;
+
+    while (offset < size)
     {
-        if (vm_map(virtual_start + offset,
-                   physical_start + offset,
-                   flags) != 0)
+        uintptr_t virtual_address = virtual_start + offset;
+        uintptr_t physical_address = physical_start + offset;
+
+        if (((virtual_address | physical_address) & (VM_MEGAPAGE_SIZE - 1)) == 0 &&
+            size - offset >= VM_MEGAPAGE_SIZE)
+        {
+            if (vm_map_mega(virtual_address, physical_address, flags) != 0)
+            {
+                return -1;
+            }
+
+            offset += VM_MEGAPAGE_SIZE;
+            continue;
+        }
+
+        if (vm_map(virtual_address, physical_address, flags) != 0)
         {
             return -1;
         }
+
+        offset += VM_PAGE_SIZE;
     }
 
     return 0;
@@ -224,6 +296,16 @@ void vm_debug(uintptr_t virtual_address)
     if (!(level1_pte & PTE_V))
     {
         uart_puts("Mapping Status  : LEVEL-1 ENTRY INVALID\n");
+        return;
+    }
+
+    if (level1_pte & PTE_LEAF)
+    {
+        uart_puts("Physical Address: ");
+        uart_put_hex(PPN_TO_PA(level1_pte >> 10) + (virtual_address & (VM_MEGAPAGE_SIZE - 1)));
+        uart_puts("\n");
+        uart_puts("Mapping Status  : VALID (2 MiB megapage)\n");
+        uart_puts("================================\n");
         return;
     }
 

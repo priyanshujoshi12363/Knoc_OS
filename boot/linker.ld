@@ -63,7 +63,7 @@ SECTIONS
     . += 16K;
     stack_top = .;
 
-    . = 0x87000000;
+    . = 0x90000000;
 
     aispace_start = .;
 
@@ -88,5 +88,5 @@ SECTIONS
     . = ALIGN(4096);
 
     aispace_snapshot = .;
-    aispace_snapshot_end = 0x87000000 + 0x01000000;
+    aispace_snapshot_end = 0x90000000 + 0x10000000;
 }

@@ -18,6 +18,8 @@ _start:
     beq t0, t1, aispace_boot
     bnez t0, park
 
+    mv s0, a1
+
     la t0, guardian_mailbox
     sd zero, MAILBOX_BOOT_ACK(t0)
     fence
@@ -115,10 +117,12 @@ clear_bss_done:
     mret
 
 supervisor_start:
+    mv a0, s0
     call kernel_main
 
 aispace_boot:
     la sp, aispace_stack_top
+    mv a0, a1
     call aispace_main
 
 park:

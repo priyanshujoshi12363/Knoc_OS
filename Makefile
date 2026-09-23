@@ -12,7 +12,8 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
          -DKNOCOS_VERSION='"v$(VERSION)"'
 
 QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
-QEMU_FLAGS = -machine virt -smp 2 -bios none -nographic
+RAM ?= 2G
+QEMU_FLAGS = -machine virt -smp 2 -m $(RAM) -bios none -nographic
 
 DISK = disk.img
 DISK_SECTORS = 2048
@@ -40,6 +41,8 @@ KERNEL_OBJS = boot/boot.o \
               kernel/string.o \
               kernel/guardian.o \
               kernel/faulty.o \
+              kernel/fdt.o \
+              kernel/spinlock.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
@@ -100,27 +103,21 @@ size: knocos.elf
 	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; print(f'  Size: {(d[\"stack_top\"]-d[\"stack_bottom\"])/1024:.2f} KiB')"
 	@echo ""
 	@echo "RAM:"
-	@echo "  Total: 128 MiB"
+	@echo "  make run gives QEMU: $(RAM) (change with RAM=8G)"
+	@echo "  The kernel reads the real size from the device tree at boot"
 
 pages: knocos.elf
 	@echo "================================"
-	@echo "        KnocOS Page Info"
+	@echo "        KnocOS Memory Layout"
 	@echo "================================"
 	@echo ""
 	@echo "Physical Memory:"
+	@echo "  RAM size    : $(RAM) with make run (the kernel reads the real size at boot)"
 	@echo "  RAM Start   : 0x80000000"
-	@echo "  RAM End     : 0x88000000"
-	@echo "  Total       : 128.00 MiB"
+	@echo "  AI space    : 0x90000000 - 0x9FFFFFFF (256 MiB, PMP protected)"
+	@echo "  Page size   : 4 KiB, buddy blocks up to 1 GiB, 2 MiB megapages"
 	@echo ""
-	@echo "Page Configuration:"
-	@echo "  Page Size   : 4096 bytes"
-	@echo "  Total Pages : 32768"
-	@echo "  Bitmap Size : 4096 bytes"
-	@echo ""
-	@echo "Page State:"
-	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; first=((d['stack_top']+4095)&~4095-0x80000000)//4096; total=(0x88000000-0x80000000)//4096; used=first; free=total-used; print(f'  Used Pages  : {used}'); print(f'  Free Pages  : {free}'); print(f'  Used Memory : {used*4096/1024:.2f} KiB'); print(f'  Free Memory : {free*4096/1024/1024:.2f} MiB')"
-	@echo ""
-	@echo "Page Map:"
-	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; first=((d['stack_top']+4095)&~4095-0x80000000)//4096; print(f'  Reserved    : Pages 0 - {first-1}'); print(f'  Available   : Pages {first} - 32767')"
+	@echo "Kernel:"
+	@python3 -c "import subprocess; s=subprocess.check_output(['riscv64-unknown-elf-nm','-n','knocos.elf'],text=True); d={line.split()[-1]:int(line.split()[0],16) for line in s.splitlines() if len(line.split())>=3}; print(f'  Image       : 0x{d[\"kernel_start\"]:08X} - 0x{d[\"kernel_image_end\"]:08X} ({(d[\"kernel_image_end\"]-d[\"kernel_start\"])/1024:.1f} KiB, copied by the AI space)'); print(f'  Boot stack  : 0x{d[\"stack_bottom\"]:08X} - 0x{d[\"stack_top\"]:08X}'); print('  Page info   : 1 byte per page, right after the boot stack')"
 	@echo ""
 	@echo "================================"

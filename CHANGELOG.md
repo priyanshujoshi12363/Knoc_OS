@@ -2,6 +2,27 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.10.0] - 2026-09-23
+
+Big memory: room for AI models.
+
+### Added
+- Device tree parser (`kernel/fdt.c`): RAM start/size from `/memory` and the CPU count from `/cpus`. QEMU passes the device tree address in `a1`; `boot.S` hands it to `kernel_main(dtb)` and `aispace_main(dtb)`
+- Buddy page allocator (`kernel/page.c`): blocks of 4 KiB up to 1 GiB (orders 0–18), splitting on allocation and merging buddies on free, one metadata byte per page. New `page_alloc_order()`, `page_alloc_contiguous()`, `page_largest_free()`, `page_ram_start()` / `page_ram_end()`
+- 2 MiB megapages: `vm_map_range()` maps with level-1 leaf entries when aligned (2 GiB of RAM = 1026 entries). `vm_map()` refuses to map inside a megapage, and `vm_debug()` understands them
+- Spinlocks (`kernel/spinlock.c`): `spin_lock` / `spin_unlock` (interrupts off while held), `spin_trylock`, used by the heap and the page allocator
+- Shared UART lock between the kernel and the AI space: a core owns the UART for a whole line (`console_owner` in the mailbox, compare-and-swap, 10 ms timeout)
+- Self-tests: spinlock, a 64 MiB aligned contiguous block, 1024 single pages freed and merged back, the largest free block (1 GiB) written and read through megapages
+- `make test` checks the RAM size, CPU count, megapage count and that kernel and AI space output never mix on one line
+
+### Changed
+- QEMU runs with 2 GiB (`-m 2G`); KnocOS needs at least 1 GiB and works with 8 GiB+
+- AI space: 256 MiB at `0x90000000` (was 16 MiB at `0x87000000`)
+- Kernel heap virtual region moved to `0x2000000000` (`0x90000000` is now real RAM)
+- On a warm restart the AI space restores the device tree address in `a1` before jumping to `_start`
+- The AI's "bad pointer" diagnosis uses the real RAM end (published by the kernel in the mailbox)
+- `memory.c` helpers and `make pages` / `make size` use the real memory layout instead of 128 MiB
+
 ## [0.9.0] - 2026-09-23
 
 Fault containment and warm kernel restart: the AI never stops.

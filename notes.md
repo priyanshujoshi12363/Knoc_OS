@@ -13,11 +13,11 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 1: Basics:** what an OS is, bare metal, QEMU, RISC-V
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
-- **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
+- **Part 4: Memory:** the device tree, the buddy allocator, virtual memory (Sv39) and megapages, kernel heap, spinlocks
 - **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space, fault containment and the warm kernel restart
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** big memory, user mode, filesystem, AI-OS
+- **Part 8: What comes next:** user mode, filesystem, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -192,7 +192,7 @@ device_init_all()          start every driver, enable its IRQ
 echo loop                  interactive, Ctrl-D powers off
 ```
 
-The order matters. For example, the heap lives at virtual address `0x90000000`, which only exists **after** paging is on, so `heap_activate()` must come after `vm_enable()`.
+The order matters. For example, the heap lives at virtual address `0x2000000000`, which only exists **after** paging is on, so `heap_activate()` must come after `vm_enable()`.
 
 ---
 
@@ -236,33 +236,79 @@ Built on the UART: `log_info()` prints `[INFO] ...`, `log_warn()` prints `[WARN]
 
 ## 4.1 Physical memory and pages
 
-QEMU gives us **128 MiB of RAM**, from `0x80000000` to `0x88000000`.
+RAM starts at `0x80000000`. **How much** there is depends on the machine: `make run` gives QEMU 2 GiB (`-m 2G`), so RAM ends at `0x100000000`. Up to v0.9.0 KnocOS hard-coded 128 MiB. Now it asks the firmware (4.2).
 
 Memory is managed in **pages** of **4 KiB (4096 bytes)**:
 
 ```text
-128 MiB / 4 KiB = 32768 pages
+2 GiB / 4 KiB = 524,288 pages
 ```
 
-**Why pages?** Tracking every byte is impossible. Tracking 32768 pages is easy, and the CPU's paging hardware works in 4 KiB pages too.
+**Why pages?** Tracking every byte is impossible. Tracking pages is easy, and the CPU's paging hardware works in 4 KiB pages too.
 
-## 4.2 The bitmap page allocator (`kernel/page.c`)
+## 4.2 The device tree: asking how much RAM there is (`kernel/fdt.c`)
 
-One **bit per page**: 1 = used, 0 = free. 32768 pages need 32768 bits = **4 KiB** of bitmap.
+A real computer can have any amount of RAM, so the kernel must **ask**. On RISC-V and ARM, firmware answers with a **device tree**: a binary file describing the machine (RAM, CPUs, devices and their addresses and IRQs). QEMU builds one and passes its address in register **`a1`** to every core at power-on. **Windows/PC comparison:** ACPI tables and the UEFI memory map do the same job on a PC.
+
+The flattened format is a header plus a list of big-endian tokens:
 
 ```text
-page_init():
-  mark all pages used
-  mark pages from (stack_top rounded up to 4 KiB) to RAM end as free
-  → the kernel and stack pages stay reserved forever
-
-page_alloc():   find the first 0 bit, set it to 1, return its address
-page_free(p):   check the address is valid, aligned, not reserved, not already free → set bit to 0
+BEGIN_NODE ""                 the root
+  PROP #address-cells = 2     addresses are 2 × 32 bits
+  PROP #size-cells    = 2
+  BEGIN_NODE "memory@80000000"
+    PROP reg = <0x0 0x80000000  0x0 0x80000000>    start, size
+  END_NODE
+  BEGIN_NODE "cpus"
+    BEGIN_NODE "cpu@0" ... END_NODE
+    BEGIN_NODE "cpu@1" ... END_NODE
+  END_NODE
+END_NODE
+END
 ```
 
-**Windows comparison:** Windows' memory manager keeps a similar database of every physical page (the "PFN database").
+`fdt_parse()` walks the tokens, reads `/memory` → `reg` and counts `/cpus/cpu@N`:
 
-## 4.3 Why virtual memory?
+```text
+[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
+```
+
+Three details:
+- **The tree lives in RAM** (QEMU puts it just below 3 GiB, at `0xBFE00000`), so the page allocator must reserve it, or it would be handed out and overwritten
+- **Why at least 1 GiB?** With 512 MiB, QEMU puts the tree at `0x9FE00000`, inside the AI space, where PMP stops the kernel from reading it. The kernel checks this and stops with a clear message
+- **Warm restart:** core 0 jumps to `_start` again, but `a1` then holds garbage. The AI space remembered the address from its own power-on `a1` and puts it back before releasing core 0
+
+## 4.3 The buddy page allocator (`kernel/page.c`)
+
+Up to v0.9.0, KnocOS used a **bitmap** (1 bit per page) with a first-fit search. That can't answer "give me **64 MiB in one piece**", which AI model weights need. A **buddy allocator** can. Linux uses one for the same reason.
+
+**The idea:** free memory is kept as blocks of **2^order pages**, each aligned to its own size:
+
+| Order | Block size | |
+|---|---|---|
+| 0 | 4 KiB | one page |
+| 9 | 2 MiB | one megapage |
+| 14 | 64 MiB | a small model |
+| 18 | 1 GiB | the biggest block |
+
+There's one free list per order. **Allocating** takes the smallest free block that fits and cuts it in half until it's the right size. Each unused half goes on the free list for its size:
+
+```text
+want 4 KiB, only a 16 KiB block is free:
+[ 16 KiB                    ]  split
+[ 8 KiB      ][ 8 KiB free  ]  split
+[4K][4K free ][ 8 KiB free  ]  → return the first 4K
+```
+
+**Freeing** is the clever part. Every block has exactly one **buddy**, the other half it was split from, and its index is one XOR away: `buddy = index ^ 2^order`. If the buddy is free too, they merge into one block of the next order, and this repeats. So memory **heals itself** back into big blocks. The self-test proves it: after 1024 single pages are freed in a scrambled order, the largest free block is back to 1 GiB.
+
+**Bookkeeping:** one byte per page (`0x80` = head of a free block, `0x40` = head of an allocated block, low 5 bits = order). For 2 GiB that's 512 KiB, placed right after the boot stack. The free lists themselves cost nothing: each free block stores its `next`/`prev` pointers **inside its own first page** (it's free, so nobody else is using it).
+
+**At boot**, `page_init()` subtracts the reserved areas (kernel + stack + page info, the AI space, the device tree) and cuts every free range into the largest aligned blocks that fit. With 2 GiB: 1791 MiB free, largest block 1 GiB (`0xC0000000–0xFFFFFFFF`).
+
+**Windows comparison:** Windows' memory manager keeps a database of every physical page (the "PFN database"), and large-page allocations need contiguous physical memory just like this.
+
+## 4.4 Why virtual memory?
 
 Without virtual memory, every program sees real physical addresses:
 - Programs could read and overwrite each other's memory.
@@ -273,12 +319,12 @@ With **virtual memory**, each address a program uses goes through a **translatio
 
 ```text
 virtual address  ──► page tables ──►  physical address
-0x90000000       ──►               ──► 0x80009000 (whatever page_alloc gave)
+0x2000000000     ──►               ──► 0x80009000 (whatever page_alloc gave)
 ```
 
 **Windows comparison:** every Windows process has its own address space. Chrome's `0x10000` and Spotify's `0x10000` are different physical memory.
 
-## 4.4 Sv39: RISC-V's paging scheme (`kernel/vm.c`)
+## 4.5 Sv39: RISC-V's paging scheme (`kernel/vm.c`)
 
 **Sv39** = 39-bit virtual addresses, 3 levels of page tables.
 
@@ -295,16 +341,16 @@ A virtual address is split like this:
 - Each page table has **512 entries** (2^9) of 8 bytes = exactly **one 4 KiB page**.
 - The **offset** (12 bits = 4096) is the byte inside the page.
 
-### Worked example: translating `0x90000000` (the heap)
+### Worked example: translating `0x2000000000` (the heap)
 
 ```text
-VPN[2] = (0x90000000 >> 30) & 0x1FF = 2
-VPN[1] = (0x90000000 >> 21) & 0x1FF = 128
-VPN[0] = (0x90000000 >> 12) & 0x1FF = 0
-offset =  0x90000000 & 0xFFF        = 0
+VPN[2] = (0x2000000000 >> 30) & 0x1FF = 128
+VPN[1] = (0x2000000000 >> 21) & 0x1FF = 0
+VPN[0] = (0x2000000000 >> 12) & 0x1FF = 0
+offset =  0x2000000000 & 0xFFF        = 0
 
-root table[2]    → points to a level-1 table
-level-1 table[128] → points to a level-0 table
+root table[128]  → points to a level-1 table
+level-1 table[0]   → points to a level-0 table
 level-0 table[0]   → points to the physical page (for example 0x80009000)
 physical address = 0x80009000 + offset 0
 ```
@@ -342,14 +388,27 @@ sfence.vma                                       // flush the translation cache 
 
 KnocOS maps RAM with **virtual = physical** (`0x80000000 → 0x80000000`). That way, the code keeps running at the same addresses the moment paging turns on. Devices are identity-mapped too.
 
+### Megapages: 2 MiB in one entry
+
+A leaf entry doesn't have to be at level 0. If the **level-1** entry has R/W/X set, it maps a whole **2 MiB** region directly (a "megapage"), and there's no level-0 table below it. The address offset is then 21 bits instead of 12. (A level-2 leaf would be a 1 GiB "gigapage".)
+
+| Mapping 2 GiB of RAM with | Entries | Page table memory |
+|---|---|---|
+| 4 KiB pages | 524,288 | 1024 level-0 tables = **4 MiB** |
+| 2 MiB megapages | 1024 | 2 level-1 tables = **8 KiB** |
+
+It's also faster: one TLB entry covers 2 MiB instead of 4 KiB. That matters for AI, because a model's weights are read from start to end over and over. `vm_map_range()` uses a megapage whenever both addresses are 2 MiB aligned and at least 2 MiB is left, and 4 KiB pages otherwise. With 2 GiB, RAM takes 1024 megapages and the PLIC 2 more (`RAM mapped with 2 MiB megapages: 1026`).
+
+**Why the heap moved:** the heap used to live at virtual `0x90000000`, which was fine while RAM ended at `0x88000000`. With 2 GiB, `0x90000000` is real RAM, identity-mapped by a megapage, so the heap moved far above any RAM, to `0x2000000000` (128 GiB).
+
 **Critical lesson:** after paging is on, **any address not in the page tables causes a page fault**, including devices. That's why `vm_init()` maps the UART, the PLIC and the power device. M-mode ignores page tables, which is why the timer code running in M-mode doesn't need a mapping.
 
-## 4.5 The kernel heap (`kernel/heap.c`)
+## 4.6 The kernel heap (`kernel/heap.c`)
 
 Pages are 4 KiB, but the kernel often needs 24 bytes or 3000 bytes. The **heap** splits pages into variable-size blocks: that's `kmalloc(size)` / `kfree(ptr)`.
 
 ```text
-0x90000000
+0x2000000000
 ┌────────┬───────────┬────────┬──────────────┬────────┬─────────
 │ header │  3000 B   │ header │    free      │ header │ ...
 │ size   │ (in use)  │ size   │              │        │
@@ -363,11 +422,33 @@ Pages are 4 KiB, but the kernel often needs 24 bytes or 3000 bytes. The **heap**
 | **First fit** | Use the first free block that's big enough | Simple and fast enough |
 | **Splitting** | A big free block is cut to the requested size, and the rest stays free | Don't waste a whole block on a small request |
 | **Coalescing** | On `kfree`, neighbouring free blocks merge into one | Avoid "fragmentation": many small free pieces that can't fit big requests |
-| **Growth** | If nothing fits, `page_alloc()` a new page and map it at the heap end | The heap grows as needed, up to `0xA0000000` |
+| **Growth** | If nothing fits, `page_alloc()` a new page and map it at the heap end | The heap grows as needed, up to 256 MiB |
 | **Alignment** | Sizes are rounded up to 8 bytes | `uint64_t` values must be 8-byte aligned |
 | **Safety** | `kfree` ignores NULL, unknown pointers and double frees | Bugs shouldn't corrupt the heap |
 
 **Windows comparison:** the Windows kernel's "pool allocator" (`ExAllocatePool`) does this job.
+
+## 4.7 Spinlocks (`kernel/spinlock.c`)
+
+Two things can go wrong when code shares data:
+- **Preemption:** a timer tick switches to another process in the middle of `kmalloc`, and that process calls `kmalloc` too, on a half-updated block list
+- **Two cores:** core 0 and core 1 touch the same memory at the same moment
+
+A **spinlock** is a word that is 0 (free) or 1 (taken). Taking it has to be **atomic**, meaning no other core can sneak in between "read" and "write". RISC-V's `amoswap` swaps a value in memory in one step:
+
+```c
+while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE) != 0) { }   // amoswap.w.aq
+...critical section...
+__atomic_store_n(&lock->locked, 0, __ATOMIC_RELEASE);
+```
+
+`ACQUIRE`/`RELEASE` are **memory ordering**: no read or write from inside the critical section may move outside it. `spin_lock()` also **turns interrupts off** first. Otherwise a timer tick could switch to a process that then spins forever on a lock the sleeping process holds. The kernel heap and the page allocator both use one now.
+
+### Sharing the UART between two cores
+
+The AI space can't call kernel code, so it can't use `spinlock_t`. Instead both sides use one word in the mailbox, `console_owner` (0 free, 1 kernel, 2 AI space), taken with **compare-and-swap**: "if it's 0, make it mine". A core owns the UART for **a whole line** and gives it back at `\n`. Before v0.10.0 the two cores could mix characters on one line.
+
+One twist: the owner might **crash in the middle of a line** (the kernel panics while printing). So waiting has a **10 ms timeout**, after which the line is printed anyway. A lock shared with code that can crash must never wait forever. `make test` checks that no line ever contains both kernel and AI space output.
 
 ---
 
@@ -622,7 +703,7 @@ It's the same interrupt path as the keyboard. **`trap.c` and `plic.c` didn't cha
 ### Details worth understanding
 
 - **Memory fences** (`__sync_synchronize()`): the CPU and compiler may reorder memory writes. The device must see the descriptors *before* it sees `idx` change, so a fence forces that order. Shared memory with a device almost always needs fences.
-- **Physical addresses:** the device knows nothing about our page tables. It needs **physical** addresses. The queue pages and the driver's own buffers are identity-mapped (virtual = physical), but a heap buffer at `0x90000000` isn't. So the driver copies through its own sector buffer, and callers can pass any kernel buffer.
+- **Physical addresses:** the device knows nothing about our page tables. It needs **physical** addresses. The queue pages and the driver's own buffers are identity-mapped (virtual = physical), but a heap buffer at `0x2000000000` isn't. So the driver copies through its own sector buffer, and callers can pass any kernel buffer.
 - **One request at a time:** simple and correct for now. A faster driver would keep several requests in flight (the queue has 8 slots).
 
 ### Proof that data survives
@@ -748,27 +829,27 @@ core 0: kernel (S-mode, paging on)          core 1: AI space (M-mode, physical a
 
 ### Two cores
 
-QEMU runs with `-smp 2`. **Both cores start at `_start`** at the same moment. `boot.S` reads `mhartid` (which core am I?): core 1 jumps to `aispace_boot`, gets its own stack in the AI region and calls `aispace_main()`, which never returns. Core 0 boots the kernel as before.
+QEMU runs with `-smp 2 -m 2G`. **Both cores start at `_start`** at the same moment. `boot.S` reads `mhartid` (which core am I?): core 1 jumps to `aispace_boot`, gets its own stack in the AI region and calls `aispace_main()`, which never returns. Core 0 boots the kernel as before.
 
 ### PMP: hardware memory protection the kernel can't undo
 
 **PMP** (Physical Memory Protection) is a set of M-mode registers that say which physical addresses lower modes may access. The kernel runs in S-mode, so **it cannot change them**. Core 0 sets two entries at boot:
 
 ```text
-entry 0: 0x87000000–0x87FFFFFF (16 MiB)   permissions: none   ← the AI space
+entry 0: 0x90000000–0x9FFFFFFF (256 MiB)  permissions: none   ← the AI space
 entry 1: everything                       permissions: RWX
 the lowest-numbered matching entry wins → the AI space is blocked, the rest is allowed
 ```
 
-The address encoding is called **NAPOT** ("naturally aligned power of two"): `pmpaddr = (base | (size/2 - 1)) >> 2`. For a 16 MiB region at `0x87000000` that's `0x21DFFFFF`.
+The address encoding is called **NAPOT** ("naturally aligned power of two"): `pmpaddr = (base | (size/2 - 1)) >> 2`. For a 256 MiB region at `0x90000000` that's `0x25FFFFFF`. The base must be aligned to the size, which is why the AI space sits at `0x90000000` (256 MiB aligned). Until v0.9.0 it was 16 MiB at `0x87000000`.
 
 PMP is **per core**. Core 1's own PMP isn't set, and PMP doesn't restrict M-mode unless it's locked, so the AI space can see everything, including the kernel's memory. The protection is **one-way**: the AI can inspect the kernel, but not the other way around.
 
-**Proof:** at boot, the kernel does a **probe read** of `0x87000000` (a load that returns an error instead of crashing, `trap_probe_read()`). It must fail with a *load access fault*, and `make test` checks that it does.
+**Proof:** at boot, the kernel does a **probe read** of `0x90000000` (a load that returns an error instead of crashing, `trap_probe_read()`). It must fail with a *load access fault*, and `make test` checks that it does.
 
 ### Keeping the AI code in the AI space
 
-The linker script puts `aispace.o`'s code, data and stack at `0x87000000` (`EXCLUDE_FILE(*aispace.o)` keeps them out of the kernel's sections). `aispace.c` is **self-contained**: its own UART output, clock reading and a small polled disk driver. It calls **no kernel function**, because kernel code could be the thing that's broken. `nm -u kernel/aispace.o` lists only `guardian_mailbox`.
+The linker script puts `aispace.o`'s code, data and stack at `0x90000000` (`EXCLUDE_FILE(*aispace.o)` keeps them out of the kernel's sections). `aispace.c` is **self-contained**: its own UART output, clock reading and a small polled disk driver. It calls **no kernel function**, because kernel code could be the thing that's broken. `nm -u kernel/aispace.o` lists only `guardian_mailbox` and linker symbols (addresses such as `kernel_start` and `_start`, needed for the warm restart), never a kernel function.
 
 ### The mailbox
 
@@ -977,8 +1058,9 @@ Same lesson as v0.8.0's warm-reboot bugs: **never assume the hardware is clean a
 | 0.7.0 | Processes and the AI-aware scheduler |
 | 0.8.0 | AI space: survives kernel crashes, black box, recovery |
 | 0.9.0 | Fault containment, AI verdicts, warm kernel restart: the AI never stops |
+| 0.10.0 | Big memory: device tree, buddy allocator, megapages, spinlocks, 256 MiB AI space |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.9.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.10.0 && git push --tags`.
 
 ---
 
@@ -1033,26 +1115,17 @@ How to investigate:
 
 # Part 8: What Comes Next
 
-## 8.1 Big memory (v0.10.0)
-
-Fault containment and the warm restart are done (see 5.13). Next, room for real AI models:
-
-- **RAM size from the device tree** instead of a hard-coded 128 MiB, and 2–4 GiB+ in QEMU
-- **2 MiB megapages** (fewer page table entries for big model files) and a **buddy allocator** for large contiguous blocks
-- **Spinlocks** so both cores can share structures safely (for example the UART, which both print to today)
-- A bigger AI region for the small NN runtime
-
-## 8.2 User mode and system calls
+## 8.1 User mode and system calls (v0.11.0)
 
 - Programs run in **U-mode** with `U` bit page mappings, so they can't touch the kernel or devices.
 - To ask the kernel for something, a program runs **`ecall`**, which traps to S-mode (exception 8). The kernel reads the request number in `a7` and the arguments in `a0`–`a5`.
 - **Windows comparison:** `syscall` into `ntoskrnl`, like `NtReadFile` and `NtCreateFile`.
 
-## 8.3 A filesystem (Phase 6)
+## 8.2 A filesystem (v0.12.0)
 
 Right now the disk is just 2048 numbered sectors. A **filesystem** organizes them into **files and folders**: a small table on the disk says "file `hello.txt` is in sectors 10–12, 1234 bytes long". It will use `device_read_block` / `device_write_block` on `disk0`, without knowing it's virtio. **Windows comparison:** NTFS on your C: drive.
 
-## 8.4 Toward the AI-OS
+## 8.3 Toward the AI-OS
 
 After the kernel foundation: filesystem, shell, the small neural network runtime, the LLM runtime, the agent, KnocNet and app compatibility. See `goal.md`. Every one of those depends on what's in these notes: memory for models, the scheduler for AI workloads, drivers for disk/network/GPU, and traps for security and self-diagnosis.
 
@@ -1070,10 +1143,11 @@ After the kernel foundation: filesystem, shell, the small neural network runtime
 | `0x0C000000` | PLIC | ✅ 4 MiB |
 | `0x10000000` | UART0 (IRQ 10) | ✅ 1 page |
 | `0x10001000` | virtio slot 0: `disk0` (IRQ 1) | ✅ 1 page |
-| `0x80000000` | RAM start, kernel | ✅ identity, 128 MiB |
-| `0x87000000` | AI space (16 MiB) | Mapped, but **PMP blocks the kernel** |
-| `0x88000000` | RAM end | |
-| `0x90000000` | Kernel heap (virtual) | ✅ grows on demand |
+| `0x80000000` | RAM start, kernel, stack, page info | ✅ identity, 2 MiB megapages |
+| `0x90000000` | AI space (256 MiB) | Mapped, but **PMP blocks the kernel** |
+| `0xBFE00000` | Device tree (placed by QEMU) | ✅ reserved |
+| `0x100000000` | RAM end with `-m 2G` (from the device tree) | |
+| `0x2000000000` | Kernel heap (virtual) | ✅ grows on demand |
 
 ## CSR cheat sheet
 

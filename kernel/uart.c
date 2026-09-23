@@ -1,5 +1,7 @@
 #include "uart.h"
 #include "device.h"
+#include "mailbox.h"
+#include "timer.h"
 
 #define UART_RBR 0
 #define UART_THR 0
@@ -16,9 +18,12 @@
 
 #define UART_RX_BUFFER_SIZE 128
 
+#define CONSOLE_LOCK_TIMEOUT (TIMER_FREQ_HZ / 100)
+
 static volatile char rx_buffer[UART_RX_BUFFER_SIZE];
 static volatile uint32_t rx_head = 0;
 static volatile uint32_t rx_tail = 0;
+static int console_line_open = 0;
 
 static uint8_t uart_read_reg(uint32_t reg)
 {
@@ -40,13 +45,67 @@ static void uart_init(void)
     uart_write_reg(UART_IER, UART_IER_RX_AVAILABLE);
 }
 
+/* Core 0 and the AI space share the UART. A core owns it for a whole
+   line, so lines never mix. After a timeout the line is printed anyway:
+   the other core may have crashed while owning it. */
+static void console_line_begin(void)
+{
+    uint64_t start = timer_read();
+
+    while (1)
+    {
+        uint32_t expected = CONSOLE_FREE;
+
+        if (__atomic_compare_exchange_n(&guardian_mailbox.console_owner,
+                                        &expected,
+                                        CONSOLE_KERNEL,
+                                        0,
+                                        __ATOMIC_ACQUIRE,
+                                        __ATOMIC_RELAXED))
+        {
+            break;
+        }
+
+        if (timer_read() - start > CONSOLE_LOCK_TIMEOUT)
+        {
+            break;
+        }
+    }
+
+    console_line_open = 1;
+}
+
+static void console_line_end(void)
+{
+    uint32_t expected = CONSOLE_KERNEL;
+
+    __atomic_compare_exchange_n(&guardian_mailbox.console_owner,
+                                &expected,
+                                CONSOLE_FREE,
+                                0,
+                                __ATOMIC_RELEASE,
+                                __ATOMIC_RELAXED);
+
+    console_line_open = 0;
+}
+
 void uart_putc(char c)
 {
+    if (!console_line_open)
+    {
+        console_line_begin();
+    }
+
     while (!(uart_read_reg(UART_LSR) & UART_LSR_THR_EMPTY))
     {
     }
 
     uart_write_reg(UART_THR, (uint8_t)c);
+
+    if (c == '\n')
+    {
+        console_line_end();
+    }
 }
 
 void uart_puts(const char *str)

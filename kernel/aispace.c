@@ -15,12 +15,13 @@
 #define AI_REBOOT_DELAY (AI_TIMER_HZ / 2)
 #define AI_PARK_TIMEOUT (AI_TIMER_HZ / 2)
 #define AI_PROCESS_RESTART_LIMIT 3
+#define AI_CONSOLE_TIMEOUT (AI_TIMER_HZ / 100)
 
 #define AI_POWER 0x00100000UL
 #define AI_POWER_REBOOT 0x7777
 
 #define AI_RAM_START 0x80000000UL
-#define AI_RAM_END 0x88000000UL
+#define AI_RAM_DEFAULT_END 0xC0000000UL
 #define AI_NULL_LIMIT 0x1000UL
 
 #define AI_QUEUE_SIZE 8
@@ -73,6 +74,7 @@ extern char kernel_image_end[];
 extern char aispace_snapshot[];
 extern char aispace_snapshot_end[];
 
+static uintptr_t ai_dtb;
 static uint64_t ai_image_size;
 static int ai_have_snapshot;
 static uint64_t ai_start_time;
@@ -88,15 +90,71 @@ _Static_assert(__builtin_offsetof(guardian_mailbox_t, boot_ack) == MAILBOX_BOOT_
 _Static_assert(sizeof(blackbox_record_t) <= BLACKBOX_SECTOR_SIZE,
                "a black box record must fit in one sector");
 
+static uint64_t ai_time(void);
+
+static int ai_line_open;
+
+static void ai_line_begin(void)
+{
+    uint64_t start = ai_time();
+
+    while (1)
+    {
+        uint32_t expected = CONSOLE_FREE;
+
+        if (__atomic_compare_exchange_n(&guardian_mailbox.console_owner,
+                                        &expected,
+                                        CONSOLE_AISPACE,
+                                        0,
+                                        __ATOMIC_ACQUIRE,
+                                        __ATOMIC_RELAXED))
+        {
+            break;
+        }
+
+        /* The kernel may have crashed in the middle of a line */
+        if (ai_time() - start > AI_CONSOLE_TIMEOUT)
+        {
+            break;
+        }
+    }
+
+    ai_line_open = 1;
+}
+
+static void ai_line_end(void)
+{
+    uint32_t expected = CONSOLE_AISPACE;
+
+    __atomic_compare_exchange_n(&guardian_mailbox.console_owner,
+                                &expected,
+                                CONSOLE_FREE,
+                                0,
+                                __ATOMIC_RELEASE,
+                                __ATOMIC_RELAXED);
+
+    ai_line_open = 0;
+}
+
 static void ai_putc(char c)
 {
     volatile uint8_t *uart = (volatile uint8_t *)AI_UART;
+
+    if (!ai_line_open)
+    {
+        ai_line_begin();
+    }
 
     while (!(uart[AI_UART_LSR] & AI_UART_THR_EMPTY))
     {
     }
 
     uart[0] = (uint8_t)c;
+
+    if (c == '\n')
+    {
+        ai_line_end();
+    }
 }
 
 static void ai_puts(const char *text)
@@ -452,6 +510,7 @@ static void ai_diagnose(blackbox_record_t *record)
     char *d = record->diagnosis;
     uint64_t code = record->scause & AI_SCAUSE_CODE_MASK;
     uint64_t address = record->stval;
+    uint64_t ram_end = guardian_mailbox.ram_end ? guardian_mailbox.ram_end : AI_RAM_DEFAULT_END;
 
     d[0] = 0;
 
@@ -473,7 +532,7 @@ static void ai_diagnose(blackbox_record_t *record)
         {
             ai_append(d, "Null pointer: the code used an address near 0.", BLACKBOX_DIAGNOSIS_MAX);
         }
-        else if (address < AI_RAM_START || address >= AI_RAM_END)
+        else if (address < AI_RAM_START || address >= ram_end)
         {
             ai_append(d, "Bad pointer: the code accessed an address that is not mapped (stval).", BLACKBOX_DIAGNOSIS_MAX);
         }
@@ -736,7 +795,10 @@ void aispace_park_core0(void)
     __sync_synchronize();
 
     asm volatile("fence.i");
-    asm volatile("jr %0" :: "r"(_start));
+
+    /* _start expects the device tree address in a1, like at power-on */
+    register uintptr_t a1 asm("a1") = ai_dtb;
+    asm volatile("jr %0" :: "r"(_start), "r"(a1));
 
     while (1)
     {
@@ -1016,13 +1078,14 @@ static void ai_trap(void)
     }
 }
 
-void aispace_main(void)
+void aispace_main(uintptr_t dtb)
 {
     volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
 
     asm volatile("csrw mtvec, %0" :: "r"((uint64_t)(uintptr_t)ai_trap));
 
     ai_start_time = ai_time();
+    ai_dtb = dtb;
 
     /* Core 0 waits in boot.S until we acknowledge it, so the kernel
        has not changed its own memory yet: this copy is clean */

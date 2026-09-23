@@ -1,9 +1,11 @@
 #include "heap.h"
 #include "page.h"
 #include "vm.h"
+#include "spinlock.h"
 
-#define HEAP_START 0x90000000UL
-#define HEAP_MAX 0xA0000000UL
+/* Far above RAM, which is identity-mapped from 0x80000000 */
+#define HEAP_START 0x2000000000UL
+#define HEAP_MAX (HEAP_START + 0x10000000UL)
 #define HEAP_ALIGNMENT 8UL
 
 typedef struct heap_block
@@ -17,6 +19,7 @@ static heap_block_t *heap_first_block;
 static heap_block_t *heap_last_block;
 static uintptr_t heap_physical_page;
 static uintptr_t heap_end;
+static spinlock_t heap_lock = SPINLOCK_INIT;
 
 static uint64_t align_size(uint64_t size)
 {
@@ -218,7 +221,7 @@ void heap_activate(void)
     heap_last_block = heap_first_block;
 }
 
-void *kmalloc(uint64_t size)
+static void *kmalloc_locked(uint64_t size)
 {
     if (size == 0 || heap_first_block == 0)
     {
@@ -257,7 +260,7 @@ void *kmalloc(uint64_t size)
     }
 }
 
-void kfree(void *address)
+static void kfree_locked(void *address)
 {
     if (address == 0 || heap_first_block == 0)
     {
@@ -280,4 +283,19 @@ void kfree(void *address)
     block->free = 1;
 
     coalesce_blocks();
+}
+void *kmalloc(uint64_t size)
+{
+    uint64_t interrupts = spin_lock(&heap_lock);
+    void *address = kmalloc_locked(size);
+    spin_unlock(&heap_lock, interrupts);
+
+    return address;
+}
+
+void kfree(void *address)
+{
+    uint64_t interrupts = spin_lock(&heap_lock);
+    kfree_locked(address);
+    spin_unlock(&heap_lock, interrupts);
 }

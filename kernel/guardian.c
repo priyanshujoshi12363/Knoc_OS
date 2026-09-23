@@ -122,6 +122,11 @@ void guardian_set_safe_mode(int enabled)
     guardian_mailbox.safe_mode = (uint32_t)enabled;
 }
 
+void guardian_set_ram_end(uint64_t ram_end)
+{
+    guardian_mailbox.ram_end = ram_end;
+}
+
 int guardian_restart_safe_mode(void)
 {
     return guardian_online && guardian_mailbox.restart_safe_mode;

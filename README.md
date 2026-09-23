@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.9.0-blue)
+![Version](https://img.shields.io/badge/version-v0.10.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -27,8 +27,10 @@ KnocOS currently has:
 - **Device abstraction**: every driver has the same shape (`init`, `interrupt`, `read`, `write`) and is registered in a device table, like the Windows driver model and Device Manager
 - Interactive **keyboard echo** (Enter = new line, Backspace erases)
 - Kernel logging (`log_info`, `log_warn`, `log_trap`) and a `panic` handler
-- **Physical page allocator** (bitmap, 4 KiB pages)
-- **Sv39 virtual memory** (3-level page tables, identity-mapped kernel, paging enabled via `satp`)
+- **Device tree parsing**: RAM size and CPU count come from the firmware, not hard-coded (runs with 1 GiB to 8 GiB+, `make run` uses 2 GiB)
+- **Buddy page allocator**: 4 KiB pages up to 1 GiB contiguous blocks, which merge back when freed (room for AI models)
+- **Spinlocks**: the heap and page allocator are safe under preemption, and a shared UART lock keeps the kernel's and the AI space's lines from mixing
+- **Sv39 virtual memory** (3-level page tables, all RAM identity-mapped with **2 MiB megapages**, paging enabled via `satp`)
 - **Kernel heap** (`kmalloc` / `kfree`) in its own virtual region with block splitting, coalescing and automatic page growth
 - **Timer interrupts at 100 Hz**: M-mode catches the hardware timer and forwards each tick to the kernel (S-mode), which counts it. Time is read with `rdtime`
 - Machine-mode trap handler that saves/restores all registers and prints `mcause` for unhandled traps
@@ -45,23 +47,28 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.9.0 starting
+[INFO] KnocOS v0.10.0 starting
 [INFO] Supervisor interrupts enabled
-[INFO] Page memory initialized
+[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
+[INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
 [INFO] Virtual memory initialized
 [INFO] Kernel page tables ready
 [INFO] Kernel heap mapping prepared
 [INFO] Enabling Sv39
 [INFO] Sv39 enabled
+[INFO] RAM mapped with 2 MiB megapages: 1026
 [INFO] Kernel heap activated
 [INFO] PMP verified: the kernel cannot read the AI space
-[INFO] AI space online (core 1, 16 MiB protected at 0x0000000087000000)
+[INFO] AI space online (core 1, 256 MiB protected at 0x0000000090000000)
+[INFO] Spinlock verified: exclusive, interrupts off while held
 [INFO] Allocation A successful
 ...
 [INFO] Kernel heap 4.0 stress test passed
+[INFO] Buddy allocator verified: 64 MiB contiguous block, 1024 single pages freed and merged back
+[INFO] Large memory verified: 1024 MiB block at 0x00000000C0000000 read and written through megapages
 [INFO] Supervisor timer interrupts verified
 [TRAP] Breakpoint
-[TRAP] sepc   = 0x0000000080001308
+[TRAP] sepc   = 0x0000000080001930
 [INFO] Supervisor trap handler verified
 [INFO] Device ready: uart0 (IRQ 10)
 [INFO] Device ready: power0
@@ -114,39 +121,27 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Fault Containment + Warm Kernel Restart (v0.9.0)
+## ✅ Just Completed: Big Memory (v0.10.0)
 
-**The AI never stops.** In v0.8.0 the AI space survived a kernel crash, but its only fix was rebooting the whole machine, which restarted the AI too. Now:
+**Room for real AI models.** KnocOS used to assume exactly 128 MiB of RAM, with a 16 MiB AI space. Now:
 
-- **A crashing process only kills itself.** The kernel stops that process and keeps running. The AI space diagnoses the crash and sends back a verdict: restart it, leave it stopped (after 3 crashes), or disable the driver it crashed in.
-- **A crashing kernel is restarted by the AI, not rebooted.** At boot the AI space copies the clean kernel into its protected memory. On a crash or freeze it stops core 0, checks the kernel code against the clean copy, saves the black box, restores the kernel and restarts **only core 0**. Core 1 keeps running the whole time.
+- **The firmware says how much RAM there is.** The kernel reads the **device tree** QEMU passes at boot (RAM size, CPU count) and uses all of it: 1 GiB to 8 GiB+ tested, `make run` uses 2 GiB
+- **Buddy page allocator:** hands out anything from one 4 KiB page up to a **1 GiB contiguous block** (model weights need big contiguous memory), and freed blocks merge back
+- **2 MiB megapages:** all RAM is mapped with 1026 page-table entries instead of 524,288
+- **AI space grows from 16 MiB to 256 MiB** (`0x90000000`), room for the small NN runtime (v0.14)
+- **Spinlocks:** the heap and the page allocator are locked, and the kernel and the AI space share the UART **one whole line at a time**, so their output no longer mixes
 
 ```text
-[INFO] Test driver fault (Ctrl-X): the faulty0 driver writes to an unmapped address
-[OOPS] Store page fault in process console (pid 7) inside driver faulty0: stopping only this process
-[AI] Process crash contained: console (pid 7), the kernel keeps running
-[AI] Diagnosis: Bad pointer: the code accessed an address that is not mapped (stval).
-[AI] Action: disable driver faulty0 (the crash happened inside it), restart console
-[INFO] Driver faulty0 disabled (AI verdict)
-[INFO] Process console restarted as pid 8, restart #2 (AI verdict)
-
-[INFO] Test code corruption (Ctrl-O): overwriting log_info() with zeros, then calling it
-[TRAP] Illegal instruction
-[PANIC] Unhandled supervisor trap
-[AI] Kernel crash detected: TRAP - Unhandled supervisor trap
-[AI] Core 0 stopped: the kernel is paused while the AI works
-[AI] Kernel code check: 14 bytes differ from the clean copy (code corrupted)
-[AI] Diagnosis: Kernel code was overwritten in memory: a bad pointer wrote over it. The clean copy fixes it.
-[AI] Black box saved (crash #2, 2 in a row)
-[AI] Action: warm kernel restart (only core 0, the AI keeps running)
-[AI] Restoring the kernel from its clean copy (38 KiB) and restarting core 0, restart #2
-[INFO] KnocOS v0.9.0 starting
-[INFO] AI space online (core 1, 16 MiB protected at 0x0000000087000000)
-[INFO] Warm restart #2 by the AI space: kernel restored from a clean copy, the AI kept running (AI uptime 18049 ms)
-[WARN] Device disabled by the AI space: faulty0 (it crashed before)
+[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
+[INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
+[INFO] RAM mapped with 2 MiB megapages: 1026
+[INFO] AI space online (core 1, 256 MiB protected at 0x0000000090000000)
+[INFO] Spinlock verified: exclusive, interrupts off while held
+[INFO] Buddy allocator verified: 64 MiB contiguous block, 1024 single pages freed and merged back
+[INFO] Large memory verified: 1024 MiB block at 0x00000000C0000000 read and written through megapages
 ```
 
-The "brain" is still rules (Tier 0). The small NN (v0.15) and later an LLM plug into the same place. **Next up: v0.10.0, big memory** (RAM size from the device tree, megapages, spinlocks for 2 cores) to make room for real AI models.
+Before this: **v0.9.0**, fault containment and warm kernel restart. A crashing process stops alone and the AI space decides the fix (restart it or disable its driver). A crashing kernel is restored from a clean copy while the AI keeps running. **Next up: v0.11.0, user mode + system calls**, so a buggy program can't touch the kernel at all.
 
 Recent progress:
 
@@ -162,7 +157,8 @@ Recent progress:
 | `42e7855` | virtio-blk disk driver (`disk0`), block devices in the device model, version `v0.6.0` |
 | `bf051b7` | Processes, context switching, AI-aware scheduler, M-mode private stack, version `v0.7.0` |
 | `04db193` | AI space on core 1 (PMP-protected), heartbeat mailbox, crash/freeze detection, black box, rule brain, safe mode, boot-loop protection, version `v0.8.0` |
-| *(uncommitted)* | Fault containment, AI verdicts (restart process / disable driver), warm kernel restart from a clean copy, kernel code check, version `v0.9.0` |
+| `2773100` | Fault containment, AI verdicts (restart process / disable driver), warm kernel restart from a clean copy, kernel code check, version `v0.9.0` |
+| *(uncommitted)* | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
 
 What works right now:
 
@@ -189,7 +185,7 @@ What works right now:
 Next steps:
 
 - [x] v0.9.0: fault containment (a crashing process only kills itself), process auto-restart, disabling a crashing driver, warm kernel restart by the AI space
-- [ ] v0.10.0: big memory (2–4 GiB+) for AI models
+- [x] v0.10.0: big memory (2–4 GiB+) for AI models
 - [ ] v0.11.0+: user mode, filesystem, shell (see the Milestone Roadmap)
 
 ---
@@ -202,7 +198,7 @@ ISA:          RV64G
 ABI:          LP64D
 Machine:      QEMU virt
 Kernel base:  0x80000000
-RAM:          128 MiB (0x80000000 – 0x88000000)
+RAM:          from the device tree (make run: 2 GiB, 0x80000000 – 0x100000000; minimum 1 GiB)
 Cores:        2 (core 0 = kernel, core 1 = AI space)
 Page size:    4 KiB
 Paging:       Sv39
@@ -215,9 +211,10 @@ QEMU reset
    │
    ▼
 _start (Machine mode)          boot/boot.S
-   ├─ core 1? → aispace_boot → aispace_main() (M-mode, protected memory, never returns)
+   ├─ core 1? → aispace_boot → aispace_main(dtb) (M-mode, protected memory, never returns)
+   ├─ core 0: keep the device tree address (a1), wait for the AI space's clean copy
    ├─ core 0: clear .bss, set stack pointer
-   ├─ PMP: block the AI space (0x87000000, 16 MiB), allow everything else
+   ├─ PMP: block the AI space (0x90000000, 256 MiB), allow everything else
    ├─ satp = 0 (paging off), clear leftover interrupt state (a warm reboot keeps old CSRs)
    ├─ mtvec = machine_trap
    ├─ stvec = supervisor_trap
@@ -226,18 +223,20 @@ _start (Machine mode)          boot/boot.S
    ├─ mstatus.MPP = S, MPIE = 1
    ├─ mcounteren.TM = 1 (rdtime)
    ├─ mtimecmp = mtime + TIMER_INTERVAL
-   ├─ mie.MTIE = 1
+   ├─ mie.MTIE + mie.MSIE = 1 (MSIE: the AI space can stop core 0)
    └─ mret
    │
    ▼
-kernel_main (Supervisor mode)  kernel/main.c
+kernel_main(dtb) (Supervisor mode)  kernel/main.c
    ├─ trap_enable_interrupts()  sie.SSIE + sie.SEIE + sstatus.SIE
-   ├─ page_init()     physical page allocator
-   ├─ vm_init()       build Sv39 page tables
+   ├─ fdt_parse()     RAM size and CPU count from the device tree
+   ├─ page_init()     buddy allocator over all free RAM
+   ├─ vm_init()       build Sv39 page tables (RAM with 2 MiB megapages)
    ├─ heap_init()     map first heap page
    ├─ vm_enable()     write satp, sfence.vma
    ├─ heap_activate() create first heap block
-   ├─ heap stress test
+   ├─ guardian_init(), spinlock test
+   ├─ heap stress test, buddy allocator test, 1 GiB block test
    ├─ timer interrupt test
    ├─ supervisor trap test (ebreak)
    ├─ plic_init()
@@ -272,18 +271,22 @@ Key press ────────► UART ──► PLIC (IRQ 10) ──► sup
    ...
 0x80000000 ─────────────── RAM START / kernel_start
      │  .text + .rodata          (R-X)
-     │  .data + .bss             (RW-)  incl. page bitmap
+     │  .data + .bss             (RW-)
+     │  .mailbox                 (shared with the AI space)
      ├──────────────────────── kernel_end
      │  Kernel stack (16 KiB)
      ├──────────────────────── stack_top
-     │  (page aligned)
-     │  Free pages → page_alloc()
-     │    page tables, heap pages, ...
-0x87000000 ─────────────── AI SPACE (16 MiB)   ← PMP: the kernel cannot read, write or execute here
-     │  AI space code (R-X) and data (RW-)
-     │  AI space stack (16 KiB)
-     │  (rest reserved for future AI runtimes and models)
-0x88000000 ─────────────── RAM END
+     │  Page info: 1 byte per page (512 KiB for 2 GiB)
+     │  Free memory → buddy allocator (page tables, heap pages, big blocks)
+0x90000000 ─────────────── AI SPACE (256 MiB)  ← PMP: the kernel cannot read, write or execute here
+     │  AI space code (R-X) and data (RW-), stack (16 KiB)
+     │  Clean copy of the kernel (for warm restarts)
+     │  (rest reserved for the small NN runtime and models)
+0xA0000000 ─────────────── free memory → buddy allocator
+     │  ...
+0xBFE00000 ─────────────── device tree (placed by QEMU, reserved)
+0xC0000000 ─────────────── free memory: one 1 GiB block
+0x100000000 ────────────── RAM END (with 2 GiB)
 ```
 
 (Exact addresses of `kernel_end` / `stack_top` change as the kernel grows. Use `make size` or `nm` to see them.)
@@ -292,11 +295,11 @@ Key press ────────► UART ──► PLIC (IRQ 10) ──► sup
 
 | Virtual range | Maps to | Flags | Purpose |
 |---|---|---|---|
-| `0x80000000 – 0x88000000` | same (identity) | `R W X` | Kernel + all RAM |
+| `0x80000000 – RAM end` | same (identity), **2 MiB megapages** | `R W X` | Kernel + all RAM |
 | `0x0C000000 – 0x0C400000` | same (identity) | `R W` | PLIC |
 | `0x10000000` (1 page) | same (identity) | `R W` | UART |
 | `0x10001000` (1 page) | same (identity) | `R W` | virtio-blk (slot 0) |
-| `0x90000000 – 0xA0000000` | pages from `page_alloc()` | `R W` | Kernel heap (grows on demand) |
+| `0x2000000000 – 0x2010000000` | pages from `page_alloc()` | `R W` | Kernel heap (grows on demand, far above RAM) |
 
 ---
 
@@ -311,7 +314,9 @@ KnocOS/
 │   ├── main.c        # kernel_main: init sequence + self-tests
 │   ├── logging.c/h   # Log levels and panic(), built on the UART driver
 │   ├── memory.c      # Early RAM / kernel / stack accounting helpers
-│   ├── page.c/h      # Bitmap physical page allocator
+│   ├── page.c/h      # Buddy page allocator (4 KiB pages up to 1 GiB blocks)
+│   ├── fdt.c/h       # Device tree parser: RAM size, CPU count
+│   ├── spinlock.c/h  # Spinlocks (interrupts off while held)
 │   ├── vm.c/h        # Sv39 page tables, mapping, satp enable, debug
 │   ├── heap.c/h      # kmalloc / kfree kernel heap
 │   ├── timer.c/h     # rdtime, tick counter, timer interrupt, shared timer constants
@@ -352,8 +357,9 @@ KnocOS/
 ### Boot: `boot/boot.S`
 
 - Checks `mhartid`: **core 1 jumps to `aispace_boot`** (its own stack, then `aispace_main`), and any other extra core parks
+- Core 0 keeps the **device tree address** from `a1` (QEMU puts it there for every core) and passes it to `kernel_main(dtb)`. On a warm restart the AI space puts it back in `a1`
 - Core 0 **clears `.bss`** (a warm reboot doesn't clear memory) and sets `sp` to `stack_top`
-- **PMP:** entry 0 blocks the AI space region (`0x87000000`, 16 MiB, no permissions), entry 1 allows all other memory. The kernel (S-mode) cannot change PMP, so it can never reach the AI space
+- **PMP:** entry 0 blocks the AI space region (`0x90000000`, 256 MiB, no permissions), entry 1 allows all other memory. The kernel (S-mode) cannot change PMP, so it can never reach the AI space
 - Resets `satp` to 0 (paging off) and clears `sie`/`mie`/`mip`, because a warm reboot leaves old values in the CPU
 - Installs `machine_trap` (`mtvec`) and `supervisor_trap` (`stvec`)
 - Delegates exceptions to S-mode (`medeleg = 0xB1FF`) and the supervisor software + external interrupts (`mideleg = SIP_SSIP | SIP_SEIP`)
@@ -380,33 +386,49 @@ KnocOS/
 - `log_trap_hex()` → `[TRAP] label0x0000000000000000`
 - `panic()` → `[PANIC] ...` then halts forever
 
-### Physical pages: `kernel/page.c`
+### Device tree: `kernel/fdt.c`
 
-- 32768 pages × 4 KiB = 128 MiB, tracked by a 4 KiB bitmap (1 bit per page)
-- Pages below the page-aligned `stack_top` (kernel + stack) are permanently reserved
-- `page_alloc()`: first-fit scan, returns a physical page address or `0`
-- `page_free()`: validates range, alignment, reserved region and double free
-- `page_total()`, `page_used()`, `page_free_count()`, `page_debug()` (prints a USED/FREE run-length memory map)
+- QEMU (like real firmware) passes a **flattened device tree** in `a1`: a binary description of the machine
+- `fdt_parse()` walks its tokens (`BEGIN_NODE`, `PROP`, `END_NODE`) and reads `/memory` → `reg` (RAM start and size, using the root `#address-cells` / `#size-cells`) and counts `/cpus/cpu@N`
+- The device tree itself lives in RAM (QEMU puts it at `0xBFE00000`), so the page allocator reserves it. KnocOS needs at least **1 GiB**, otherwise QEMU places the tree inside the AI space
+
+### Physical pages: `kernel/page.c` (buddy allocator)
+
+- Free memory is kept as **blocks of 2^order pages**: order 0 = 4 KiB, order 9 = 2 MiB, order 18 = 1 GiB, each aligned to its own size, with one free list per order
+- **Allocating** takes the smallest free block that fits and splits it in halves until it has the right size
+- **Freeing** checks the block's **buddy** (`index ^ 2^order`, the half it was split from). If the buddy is free, they merge, and this repeats up to 1 GiB
+- One metadata byte per page (free/allocated head + order), placed right after the boot stack: 512 KiB for 2 GiB of RAM
+- Reserved at boot: kernel + stack + page info, the AI space, the device tree
+- `page_alloc()` (one page), `page_alloc_order(order)`, `page_alloc_contiguous(bytes)`, `page_free(address)` (any block size, ignores bad or double frees)
+- `page_total()`, `page_used()`, `page_free_count()`, `page_largest_free()`, `page_debug()` (free blocks per size)
+- Protected by a spinlock, so it's safe when a timer tick switches processes in the middle of an allocation
+
+### Spinlocks: `kernel/spinlock.c`
+
+- `spin_lock()` turns interrupts off, then spins on an atomic swap (`amoswap`) until the lock is free. `spin_unlock()` releases it and restores interrupts
+- Used by the heap and the page allocator. Turning interrupts off matters on one core too: otherwise a timer tick could switch to a process that then waits forever for the lock
+- **The UART is shared by two cores:** a core owns it for a **whole line** (`console_owner` in the mailbox, taken with compare-and-swap, released at `\n`). A 10 ms timeout means a core that crashed while owning it can't block the other. `make test` checks that no line ever mixes kernel and AI space output
 
 ### Virtual memory: `kernel/vm.c`
 
 - Sv39 3-level page tables (512 × 8-byte PTEs per table), tables allocated with `page_alloc()`
 - `vm_map()` walks VPN[2] → VPN[1] → VPN[0] and creates intermediate tables on demand
-- `vm_map_range()` maps a range page by page
-- `vm_init()` identity-maps all RAM (`RWX`), the UART (`RW`) and the PLIC (`RW`)
+- **Megapages:** a leaf entry in the level-1 table maps 2 MiB at once, with no level-0 table. `vm_map_range()` uses them whenever both addresses are 2 MiB aligned, and 4 KiB pages otherwise
+- `vm_init(ram_start, ram_end)` identity-maps all RAM (`RWX`, megapages), the UART, power, virtio and PLIC (`RW`)
 - `vm_enable()` writes `satp` (mode 8 = Sv39) and flushes the TLB with `sfence.vma`
 - `vm_debug(va)` prints the full page-table walk for an address
 
 ### Kernel heap: `kernel/heap.c`
 
-- Virtual heap region `0x90000000 – 0xA0000000`
+- Virtual heap region `0x2000000000 – 0x2010000000` (moved from `0x90000000`, which is now real RAM)
+- `kmalloc` / `kfree` are protected by a spinlock
 - Linked list of blocks with header `{ size, free, next }`, 8-byte aligned allocations
 - **First-fit** allocation
 - **Splitting**: large free blocks are split to fit the request
 - **Coalescing**: adjacent free blocks merge on `kfree`
 - **Automatic growth**: when no block fits, a new physical page is allocated and mapped at `heap_end`, and the last free block is extended
 - `kfree` ignores `NULL`, pointers not in the heap and double frees
-- Two-phase init: `heap_init()` maps the first page *before* paging, and `heap_activate()` writes the first block header *after* Sv39 is on (`0x90000000` is only reachable through the page tables)
+- Two-phase init: `heap_init()` maps the first page *before* paging, and `heap_activate()` writes the first block header *after* Sv39 is on (`0x2000000000` is only reachable through the page tables)
 
 ### Timer: `kernel/timer.c`
 
@@ -486,7 +508,7 @@ There are two kinds of devices, like on Linux and Windows:
 | `device_read()` / `device_write()` | The same call for every character device (`-1` if not ready or not supported) | `ReadFile()` / `WriteFile()` |
 | `device_read_block()` / `device_write_block()` | Read or write one block of a block device (checks the block number is in range) | Sector reads by a storage driver |
 | `device_handle_irq(irq)` | Run the interrupt handler of the device that owns `irq` | Interrupt dispatch to a driver's ISR |
-| `device_list()` / `device_count()` | Print / count the table | Device Manager |
+| `devihow to check how much storage left on ubuntu\ce_list()` / `device_count()` | Print / count the table | Device Manager |
 | `device_disable(dev)` | Stop using a driver (not ready, IRQ off), after an AI verdict | Disabling a device in Device Manager |
 
 Every call into a driver is wrapped with `process_driver_enter()` / `process_driver_leave()`, so when a crash happens the kernel knows **which driver** was running. Drivers on the AI space's disabled list are skipped by `device_init_all()` after a warm restart.
@@ -541,8 +563,8 @@ core 0: KnocOS kernel                        core 1: AI space (M-mode, own memor
 ```
 
 **Protection:**
-- The AI space lives at `0x87000000` (16 MiB): its code, data and stack are placed there by the linker script. The page allocator never hands out those pages
-- **PMP** (set in M-mode on core 0 at boot) blocks the kernel from reading, writing or executing there. `make test` checks it: the kernel's probe read of `0x87000000` must fail with an access fault
+- The AI space lives at `0x90000000` (256 MiB): its code, data and stack are placed there by the linker script, followed by the clean copy of the kernel. The page allocator never hands out those pages
+- **PMP** (set in M-mode on core 0 at boot) blocks the kernel from reading, writing or executing there. `make test` checks it: the kernel's probe read of `0x90000000` must fail with an access fault
 - `aispace.c` is **self-contained**: its own UART output, clock reading and polled disk driver. It calls no kernel code. Its only link to the kernel is the mailbox (`nm -u kernel/aispace.o` shows just `guardian_mailbox`)
 
 **The mailbox** (`kernel/mailbox.h`, its own linker section): the AI space resets it on startup. The kernel writes the heartbeat and uptime every tick, the current process on every switch, and crash details (`scause`, `sepc`, `stval`, `ra`, `sp`, message) on a trap or panic. Core 0's M-mode timer handler writes `last_kernel_pc` every tick, so even a frozen kernel reveals **where** it's stuck.
@@ -643,7 +665,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.9.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.10.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -653,14 +675,14 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 `make test` runs `scripts/test.sh`, which:
 
 1. Creates a fresh temporary disk image with `Hello from the host!` in sector 0
-2. **Boot 1:** checks that every self-test message appears (including the disk tests and `Disk boot count: 1`) and there is no `[PANIC]`
+2. **Boot 1:** checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests and `Disk boot count: 1`) and there is no `[PANIC]`
 3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
 5. **Boot 2** with the same disk image: checks `Disk boot count: 2`, which proves data written to the disk survives a reboot
-6. **Run 3** (fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead
+6. **Run 3** (fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
 7. **Run 4**, same disk: one more panic is the 4th crash in a row → the kernel stays halted and the AI space says it stays online
 
-QEMU runs with `-smp 2` (core 0 = kernel, core 1 = AI space).
+QEMU runs with `-smp 2 -m 2G` (core 0 = kernel, core 1 = AI space, 2 GiB of RAM). `make run RAM=8G` runs with more memory (at least `1G`).
 
 The disk used by `make run` is `disk.img` in the project folder. It isn't deleted by `make clean`, so its data persists between runs.
 
@@ -736,7 +758,10 @@ riscv64-unknown-elf-objdump -d knocos.elf   # disassembly
 - [x] Basic RAM model
 - [x] Kernel and stack boundaries
 - [x] Page alignment
-- [x] Physical page allocator (bitmap)
+- [x] Physical page allocator (bitmap, replaced by a buddy allocator in v0.10.0)
+- [x] Device tree: RAM size from the firmware
+- [x] 2 MiB megapages
+- [x] Spinlocks
 - [x] Page tracking and debug map
 - [x] Virtual memory
 - [x] RISC-V Sv39 page tables, paging enabled
@@ -886,6 +911,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.9.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.10.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages.
