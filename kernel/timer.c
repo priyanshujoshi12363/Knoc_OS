@@ -1,5 +1,6 @@
 #include "timer.h"
 #include "trap.h"
+#include "mailbox.h"
 
 static volatile uint64_t ticks = 0;
 
@@ -23,6 +24,10 @@ void timer_interrupt(void)
     uint64_t next = *mtimecmp + TIMER_INTERVAL;
 
     *mtimecmp = next;
+
+    uint64_t mepc;
+    asm volatile("csrr %0, mepc" : "=r"(mepc));
+    guardian_mailbox.last_kernel_pc = mepc;
 
     asm volatile("csrs mip, %0" :: "r"(SIP_SSIP));
 }

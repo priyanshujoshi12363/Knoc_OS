@@ -49,6 +49,7 @@ typedef struct trap_frame
 void supervisor_trap_handler(trap_frame_t *frame);
 uint64_t trap_breakpoint_count(void);
 void trap_enable_interrupts(void);
+int trap_probe_read(uintptr_t address, uint64_t *value);
 
 #endif
 

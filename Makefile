@@ -12,7 +12,7 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
          -DKNOCOS_VERSION='"v$(VERSION)"'
 
 QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
-QEMU_FLAGS = -machine virt -bios none -nographic
+QEMU_FLAGS = -machine virt -smp 2 -bios none -nographic
 
 DISK = disk.img
 DISK_SECTORS = 2048
@@ -37,7 +37,9 @@ KERNEL_OBJS = boot/boot.o \
               kernel/virtio_blk.o \
               kernel/process.o \
               kernel/switch.o \
-              kernel/string.o
+              kernel/string.o \
+              kernel/guardian.o \
+              kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 

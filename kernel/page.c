@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "page.h"
 #include "uart.h"
+#include "aispace.h"
 
 #define RAM_START 0x80000000UL
 #define RAM_END   0x88000000UL
@@ -47,7 +48,7 @@ void page_init(void)
         ((uintptr_t)&stack_top + PAGE_SIZE - 1)
         & ~(PAGE_SIZE - 1);
 
-    uintptr_t usable_end = RAM_END;
+    uintptr_t usable_end = AISPACE_BASE;
 
     first_free_page =
         (usable_start - RAM_START) / PAGE_SIZE;
@@ -60,7 +61,7 @@ void page_init(void)
         page_set_free(i);
     }
 
-    used_pages = first_free_page;
+    used_pages = TOTAL_PAGES - (last_free_page - first_free_page);
 }
 
 void *page_alloc(void)

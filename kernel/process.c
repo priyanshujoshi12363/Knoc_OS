@@ -4,6 +4,7 @@
 #include "trap.h"
 #include "uart.h"
 #include "logging.h"
+#include "guardian.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -190,6 +191,7 @@ static void schedule(void)
     }
 
     current = next;
+    guardian_set_current(next->pid, next->name);
     context_switch(&previous->context, &next->context);
 }
 
@@ -214,6 +216,7 @@ void process_init(void)
     idle->slice_left = class_info[PROCESS_CLASS_IDLE].slice;
 
     current = idle;
+    guardian_set_current(idle->pid, idle->name);
 }
 
 int process_create(const char *name,

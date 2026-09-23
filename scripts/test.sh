@@ -3,34 +3,45 @@ set -u
 
 KERNEL=${KERNEL:-knocos.elf}
 TIMEOUT=${TIMEOUT:-15}
+GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
 LOG=$(mktemp)
 DISK=$(mktemp)
 trap 'rm -f "$LOG" "$DISK"' EXIT
 
 FAILED=0
 
-dd if=/dev/zero of="$DISK" bs=512 count=2048 status=none
-printf 'Hello from the host!' | dd of="$DISK" conv=notrunc status=none
+new_disk() {
+    dd if=/dev/zero of="$DISK" bs=512 count=2048 status=none
+    printf 'Hello from the host!' | dd of="$DISK" conv=notrunc status=none
+}
 
-boot() {
-    (sleep 2; printf 'knocos-echo-test\r'; sleep 1; printf '\004'; sleep 2) |
-        timeout "$TIMEOUT" env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-        qemu-system-riscv64 -machine virt -bios none -nographic \
+qemu() {
+    timeout "$1" env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+        qemu-system-riscv64 -machine virt -smp 2 -bios none -nographic \
         -global virtio-mmio.force-legacy=false \
         -drive file="$DISK",if=none,format=raw,id=disk0 \
         -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
         -kernel "$KERNEL" > "$LOG" 2>&1
-    STATUS=$?
+}
 
+new_disk
+
+boot() {
+    (sleep 2; printf 'knocos-echo-test\r'; sleep 1; printf '\004'; sleep 2) | qemu "$TIMEOUT"
+    STATUS=$?
+    check_status "$TIMEOUT" no-panic
+}
+
+check_status() {
     if [ "$STATUS" -eq 124 ]; then
-        echo "  FAIL QEMU did not power off within ${TIMEOUT}s"
+        echo "  FAIL QEMU did not power off within ${1}s"
         FAILED=1
     elif [ "$STATUS" -ne 0 ]; then
         echo "  FAIL QEMU exited with status $STATUS"
         FAILED=1
     fi
 
-    if grep -q "\[PANIC\]" "$LOG"; then
+    if [ "$2" = "no-panic" ] && grep -q "\[PANIC\]" "$LOG"; then
         echo "  FAIL kernel panic"
         FAILED=1
     fi
@@ -66,6 +77,9 @@ check \
     "Kernel heap 4.0 stress test passed" \
     "Supervisor timer interrupts verified" \
     "Supervisor trap handler verified" \
+    "PMP verified: the kernel cannot read the AI space" \
+    "AI space online (core 1" \
+    "Black box: no previous crashes" \
     "Device ready: uart0 (IRQ 10)" \
     "Device ready: power0" \
     "Device ready: disk0 (IRQ 1)" \
@@ -86,6 +100,36 @@ echo "Boot 2: disk data survives a reboot"
 boot
 check \
     "Disk boot count: 2" \
+    "Powering off"
+show_log_on_failure
+
+echo "Boots 3-6: the AI space detects crashes and freezes, recovers, and enters safe mode"
+new_disk
+(
+    sleep 4;  printf '\006'
+    sleep 7;  printf '\027'
+    sleep 10; printf '\020'
+    sleep 7;  printf '\004'
+    sleep 3
+) | qemu "$GUARDIAN_TIMEOUT"
+STATUS=$?
+check_status "$GUARDIAN_TIMEOUT" panic-allowed
+check \
+    "Test fault (Ctrl-F)" \
+    "[AI] Kernel crash detected: TRAP" \
+    "[AI] Diagnosis: Bad pointer" \
+    "[AI] Black box saved (crash #1, 1 in a row)" \
+    "Previous crash detected: #1 TRAP" \
+    "AI diagnosis: Bad pointer" \
+    "Test freeze (Ctrl-W)" \
+    "[AI] Kernel freeze detected: FREEZE" \
+    "[AI] Black box saved (crash #2, 2 in a row)" \
+    "Previous crash detected: #2 FREEZE" \
+    "Test panic (Ctrl-P)" \
+    "[AI] Kernel crash detected: PANIC - Test panic (Ctrl-P)" \
+    "[AI] Action: reboot into safe mode" \
+    "Previous crash detected: #3 PANIC" \
+    "SAFE MODE" \
     "Powering off"
 show_log_on_failure
 

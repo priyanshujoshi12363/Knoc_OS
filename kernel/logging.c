@@ -1,5 +1,6 @@
 #include "logging.h"
 #include "uart.h"
+#include "guardian.h"
 
 void log_info(const char *message)
 {
@@ -51,6 +52,8 @@ void panic(const char *message)
     uart_puts("[PANIC] ");
     uart_puts(message);
     uart_putc('\n');
+
+    guardian_report_panic(message);
 
     while (1)
     {

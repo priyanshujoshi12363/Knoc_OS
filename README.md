@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.7.0-blue)
+![Version](https://img.shields.io/badge/version-v0.8.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -36,6 +36,7 @@ KnocOS currently has:
 - Standalone `timer/` test program for reading `mtime`
 - **Power-off / reboot** driver (QEMU test device): press **Ctrl-D** to shut KnocOS down
 - **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
+- **AI space (Guardian core)**: CPU core 1 runs a protected space the kernel can't touch (PMP hardware). It watches the kernel, and when the kernel crashes or freezes it **keeps running**: it diagnoses the problem, saves a crash report (black box) to disk, and recovers by rebooting, switching to safe mode, or halting a boot loop
 - **Processes and an AI-aware scheduler**: kernel processes with their own stacks, context switching, timer preemption, and 4 scheduling classes where **AI agent work gets the largest CPU share** (60%) while the keyboard stays instant and nothing starves
 - **Automated tests** (`make test`) and **GitHub Actions CI** on every push
 - Make-based build with automatic header dependencies and `-Wall -Wextra -Werror`
@@ -43,7 +44,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.7.0 starting
+[INFO] KnocOS v0.8.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Page memory initialized
 [INFO] Virtual memory initialized
@@ -52,6 +53,8 @@ KnocOS currently has:
 [INFO] Enabling Sv39
 [INFO] Sv39 enabled
 [INFO] Kernel heap activated
+[INFO] PMP verified: the kernel cannot read the AI space
+[INFO] AI space online (core 1, 16 MiB protected at 0x0000000087000000)
 [INFO] Allocation A successful
 ...
 [INFO] Kernel heap 4.0 stress test passed
@@ -71,6 +74,7 @@ KnocOS currently has:
 [INFO] Disk write/read test passed
 [INFO] Disk says: Hello from the host!     ← text written into disk.img from Linux
 [INFO] Disk boot count: 1                  ← stored on the disk, +1 on every boot
+[INFO] Black box: no previous crashes
 [INFO] Scheduler started (AI-aware: INTERACTIVE first, then AI_AGENT 60 / NORMAL 30 / BACKGROUND 10)
 [INFO] Workers created: agent-coder (AI_AGENT), normal-task (NORMAL), nn-sorter (BACKGROUND)
        PID  NAME            CLASS        STATE     CPU TICKS
@@ -105,9 +109,27 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Processes and the AI-Aware Scheduler
+## ✅ Just Completed: the AI Space (Guardian Core)
 
-KnocOS can now run **many processes at once** on one CPU, and its scheduler is designed for an AI OS: **AI agent processes get the largest share of the CPU**, the keyboard and other interactive work always responds immediately, and background work (like small NNs) still gets its share. **Next up: an AI runtime space that survives kernel crashes** (black box + watchdog), then **more memory for AI models**.
+KnocOS now has an **AI space that survives kernel crashes**. CPU core 1 runs it in memory the kernel physically cannot touch. When the kernel crashes or freezes, core 1 keeps running: it detects the problem, diagnoses it, saves a black box report to disk, and recovers.
+
+```text
+[INFO] Test fault (Ctrl-F): writing to an unmapped address
+[PANIC] Unhandled supervisor trap
+[AI] Kernel crash detected: TRAP - Unhandled supervisor trap
+[AI]   process: console (pid 6), uptime ticks: 396
+[AI]   scause = 0x000000000000000F  sepc = 0x00000000800007A4  stval = 0x0000000040000000
+[AI] Diagnosis: Bad pointer: the kernel accessed an address that is not mapped (stval).
+[AI] Black box saved (crash #1, 1 in a row)
+[AI] Action: reboot
+[INFO] KnocOS v0.8.0 starting
+...
+[WARN] Previous crash detected: #1 TRAP - Unhandled supervisor trap
+[WARN]   AI diagnosis: Bad pointer: the kernel accessed an address that is not mapped (stval).
+[WARN]   AI action: reboot
+```
+
+The "brain" is rules for now (Tier 0). The small NN (v0.15) and later an LLM plug into the same place. **Next up: v0.9.0, fault containment and warm kernel restart**, so a crashing process doesn't take down the kernel, and the AI space can restart the kernel without stopping itself.
 
 Recent progress:
 
@@ -121,7 +143,8 @@ Recent progress:
 | `cb619ec` | Power-off driver, `make test`, CI, strict warnings, auto dependencies, version `v0.4.0` |
 | `1ad97f8` | Device abstraction: device table, `uart0` and `power0` drivers, version `v0.5.0` |
 | `42e7855` | virtio-blk disk driver (`disk0`), block devices in the device model, version `v0.6.0` |
-| *(uncommitted)* | Processes, context switching, AI-aware scheduler, M-mode private stack, version `v0.7.0` |
+| `bf051b7` | Processes, context switching, AI-aware scheduler, M-mode private stack, version `v0.7.0` |
+| *(uncommitted)* | AI space on core 1 (PMP-protected), heartbeat mailbox, crash/freeze detection, black box, rule brain, safe mode, boot-loop protection, version `v0.8.0` |
 
 What works right now:
 
@@ -147,11 +170,9 @@ What works right now:
 
 Next steps:
 
-- [ ] Crash black box: `panic()` saves a crash report to the disk, and the next boot reports it
-- [ ] Watchdog: M-mode detects a frozen kernel and saves its state
-- [ ] AI runtime space isolated from the kernel (after user mode)
-- [ ] More RAM and large-memory support for AI models
-- [ ] User mode + system calls, filesystem, shell
+- [ ] v0.9.0: fault containment (a crashing process only kills itself), process auto-restart, disabling a crashing driver, warm kernel restart by the AI space
+- [ ] v0.10.0: big memory (2–4 GiB+) for AI models
+- [ ] v0.11.0+: user mode, filesystem, shell (see the Milestone Roadmap)
 
 ---
 
@@ -164,6 +185,7 @@ ABI:          LP64D
 Machine:      QEMU virt
 Kernel base:  0x80000000
 RAM:          128 MiB (0x80000000 – 0x88000000)
+Cores:        2 (core 0 = kernel, core 1 = AI space)
 Page size:    4 KiB
 Paging:       Sv39
 ```
@@ -175,8 +197,10 @@ QEMU reset
    │
    ▼
 _start (Machine mode)          boot/boot.S
-   ├─ set stack pointer
-   ├─ PMP: allow all memory
+   ├─ core 1? → aispace_boot → aispace_main() (M-mode, protected memory, never returns)
+   ├─ core 0: clear .bss, set stack pointer
+   ├─ PMP: block the AI space (0x87000000, 16 MiB), allow everything else
+   ├─ satp = 0 (paging off), clear leftover interrupt state (a warm reboot keeps old CSRs)
    ├─ mtvec = machine_trap
    ├─ stvec = supervisor_trap
    ├─ medeleg: exceptions → S-mode
@@ -237,6 +261,10 @@ Key press ────────► UART ──► PLIC (IRQ 10) ──► sup
      │  (page aligned)
      │  Free pages → page_alloc()
      │    page tables, heap pages, ...
+0x87000000 ─────────────── AI SPACE (16 MiB)   ← PMP: the kernel cannot read, write or execute here
+     │  AI space code (R-X) and data (RW-)
+     │  AI space stack (16 KiB)
+     │  (rest reserved for future AI runtimes and models)
 0x88000000 ─────────────── RAM END
 ```
 
@@ -278,7 +306,11 @@ KnocOS/
 │   ├── virtio_blk.c/h# virtio-blk disk driver (disk0)
 │   ├── process.c/h   # Processes and the AI-aware scheduler
 │   ├── switch.S      # context_switch: save/restore registers between processes
-│   └── string.c/h    # memcpy / memset (needed by the compiler on bare metal)
+│   ├── string.c/h    # memcpy / memset (needed by the compiler on bare metal)
+│   ├── aispace.c/h   # AI space on core 1: watch, diagnose, black box, recover (self-contained)
+│   ├── guardian.c/h  # Kernel side of the Guardian: mailbox, heartbeat, crash reporting, boot report
+│   ├── mailbox.h     # Shared kernel ↔ AI space mailbox layout
+│   └── blackbox.h    # On-disk crash report format
 ├── timer/
 │   ├── timer.S       # Standalone program that prints mtime in a loop
 │   └── linker.ld
@@ -300,8 +332,10 @@ KnocOS/
 
 ### Boot: `boot/boot.S`
 
-- Sets `sp` to `stack_top`
-- Configures PMP entry 0 as NAPOT covering all memory with `RWX`, which Supervisor mode needs in order to run
+- Checks `mhartid`: **core 1 jumps to `aispace_boot`** (its own stack, then `aispace_main`), and any other extra core parks
+- Core 0 **clears `.bss`** (a warm reboot doesn't clear memory) and sets `sp` to `stack_top`
+- **PMP:** entry 0 blocks the AI space region (`0x87000000`, 16 MiB, no permissions), entry 1 allows all other memory. The kernel (S-mode) cannot change PMP, so it can never reach the AI space
+- Resets `satp` to 0 (paging off) and clears `sie`/`mie`/`mip`, because a warm reboot leaves old values in the CPU
 - Installs `machine_trap` (`mtvec`) and `supervisor_trap` (`stvec`)
 - Delegates exceptions to S-mode (`medeleg = 0xB1FF`) and the supervisor software + external interrupts (`mideleg = SIP_SSIP | SIP_SEIP`)
 - Sets `mepc = supervisor_start`, `MPP = Supervisor`, `MPIE = 1`
@@ -473,6 +507,41 @@ Adding a new device means writing its driver file and calling its register funct
 
 **Current limits (fine for now, to fix later):** the kernel isn't fully preemption-safe yet (the heap has no locks, so `process_create` disables interrupts around it), the console polls every tick instead of waiting on an event, and a disk request waits with `wfi` instead of letting other processes run.
 
+### AI space (Guardian core): `kernel/aispace.c` + `kernel/guardian.c`
+
+```text
+core 0: KnocOS kernel                        core 1: AI space (M-mode, own memory)
+  every tick: heartbeat++  ──── mailbox ────►  watches the heartbeat every 10 ms
+  panic / trap: crash info ──── mailbox ────►  crash? → collect → diagnose → black box → act
+  M-mode timer: last_kernel_pc ─ mailbox ───►  no heartbeat for 2 s? → freeze → same steps
+```
+
+**Protection:**
+- The AI space lives at `0x87000000` (16 MiB): its code, data and stack are placed there by the linker script. The page allocator never hands out those pages
+- **PMP** (set in M-mode on core 0 at boot) blocks the kernel from reading, writing or executing there. `make test` checks it: the kernel's probe read of `0x87000000` must fail with an access fault
+- `aispace.c` is **self-contained**: its own UART output, clock reading and polled disk driver. It calls no kernel code. Its only link to the kernel is the mailbox (`nm -u kernel/aispace.o` shows just `guardian_mailbox`)
+
+**The mailbox** (`kernel/mailbox.h`, its own linker section): the AI space resets it on startup. The kernel writes the heartbeat and uptime every tick, the current process on every switch, and crash details (`scause`, `sepc`, `stval`, `ra`, `sp`, message) on a trap or panic. Core 0's M-mode timer handler writes `last_kernel_pc` every tick, so even a frozen kernel reveals **where** it's stuck.
+
+**What happens on a crash or freeze:**
+1. **Detect:** `kernel_state = PANICKED` (crash), or no heartbeat for 2 s (freeze)
+2. **Collect** the details from the mailbox
+3. **Diagnose (rule brain, Tier 0):** null pointer, bad pointer, page fault in RAM, access to the protected AI space, illegal instruction, misaligned access, internal panic, or infinite loop with interrupts off
+4. **Black box:** the AI space resets the disk and writes the report with its **own polled driver** (no interrupts, no kernel code needed). Last 8 sectors of the disk: 1 header sector (total crashes, reported crashes, crashes in a row) + 4 report slots
+5. **Act:**
+
+| Crashes in a row | Action |
+|---|---|
+| 1–2 | Reboot |
+| 3 | Reboot into **safe mode** (minimal services only) |
+| 4+ | **Halt** (boot loop detected), so the problem can be investigated |
+
+6. **Next boot:** the kernel reads the black box and prints every new report with the AI's diagnosis and action. A `guardian` background process resets the crash streak after 60 s without a crash
+
+**Test keys** (in the console): **Ctrl-F** writes to an unmapped address (trap), **Ctrl-P** panics, **Ctrl-W** freezes the kernel with interrupts off.
+
+**Limits (next steps):** the brain is rules for now (a small NN in v0.15, an LLM later). A reboot restarts the AI space too, briefly (v0.9 adds a warm kernel restart so the AI never stops). A crash inside a process still takes down the whole kernel (v0.9 adds fault containment).
+
 ### Disk: `kernel/virtio_blk.c`
 
 A **virtual hard disk**: QEMU exposes the file `disk.img` on your PC as a virtio block device, like the `.vdi` file behind a VirtualBox disk.
@@ -516,7 +585,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.7.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.8.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -530,6 +599,9 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 3. Types `knocos-echo-test` + Enter and checks the echo (this tests the UART → PLIC → trap path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
 5. **Boot 2** with the same disk image: checks `Disk boot count: 2`, which proves data written to the disk survives a reboot
+6. **Boots 3–6** (the AI space), on a fresh disk in one QEMU session: Ctrl-F (bad pointer) → the AI detects, diagnoses, saves and reboots → the next boot reports it. Ctrl-W (freeze) → detected within 2 s. Ctrl-P (3rd crash in a row) → the AI chooses safe mode → the next boot starts in **SAFE MODE**
+
+QEMU runs with `-smp 2` (core 0 = kernel, core 1 = AI space).
 
 The disk used by `make run` is `disk.img` in the project folder. It isn't deleted by `make clean`, so its data persists between runs.
 
@@ -667,6 +739,21 @@ Long-term ideas (not part of the current implementation):
 
 ---
 
+## Milestone Roadmap
+
+The detailed plan is in [`goal.md`](goal.md) (section 4b).
+
+| Phase | Versions | Goal |
+|---|---|---|
+| A. AI survives crashes | v0.8 – v0.9 | AI space on its own core with protected memory, black box, watchdog, warm kernel restart |
+| B. Real OS foundation | v0.10 – v0.13 | Big memory, user mode, filesystem, shell |
+| C. First real AI | v0.14 – v0.15 | Small NN runtime, crash classifier and intent classifier NNs |
+| D. LLM agent | v0.16 – v0.19 | C library, llama.cpp port (Qwen), AI memory layer, agent + tools |
+| E. Connected | v0.20 | Networking, model download, KnocNet |
+| → v1.0 | | Real hardware, speed, app compatibility |
+
+---
+
 ## Road to Production
 
 KnocOS aims to become a production-grade operating system. This is what that requires and where it stands today.
@@ -708,7 +795,8 @@ KnocOS aims to become a production-grade operating system. This is what that req
 | Kernel pages with correct permissions (no `RWX` mappings) | ⬜ |
 | Stack overflow protection (guard pages) | ⬜ |
 | Permission / capability system | ⬜ |
-| Crash recovery (no single fault takes down the whole OS) | ⬜ |
+| Crash detection, black box and automatic recovery (AI space on its own core) | ✅ |
+| Fault containment (no single fault takes down the whole OS) | ⬜ |
 | Secure boot / update path | ⬜ |
 
 ### Platform
@@ -737,6 +825,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.7.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.8.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
-Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share.
+Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers.

@@ -1,19 +1,46 @@
 #include "../kernel/timer.h"
 #include "../kernel/trap.h"
+#include "../kernel/aispace.h"
 
 .section .text
 .global _start
 .extern kernel_main
 .extern timer_interrupt
 .extern supervisor_trap_handler
+.extern aispace_main
 
 _start:
+    csrr t0, mhartid
+    li t1, AISPACE_HART
+    beq t0, t1, aispace_boot
+    bnez t0, park
+
+    la t0, bss_start
+    la t1, bss_end
+
+clear_bss:
+    bgeu t0, t1, clear_bss_done
+    sd zero, 0(t0)
+    addi t0, t0, 8
+    j clear_bss
+
+clear_bss_done:
     la sp, stack_top
 
-    li t0, -1
+    csrw satp, zero
+    sfence.vma zero, zero
+
+    csrw sie, zero
+    csrw mie, zero
+    csrw mip, zero
+
+    li t0, AISPACE_PMP_NAPOT_ADDR
     csrw pmpaddr0, t0
 
-    li t0, 0x1F
+    li t0, PMP_ALL_NAPOT_ADDR
+    csrw pmpaddr1, t0
+
+    li t0, PMP_CFG_KERNEL
     csrw pmpcfg0, t0
 
     la t0, machine_stack_top
@@ -62,6 +89,14 @@ _start:
 
 supervisor_start:
     call kernel_main
+
+aispace_boot:
+    la sp, aispace_stack_top
+    call aispace_main
+
+park:
+    wfi
+    j park
 
 loop:
     j loop

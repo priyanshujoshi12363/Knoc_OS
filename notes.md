@@ -14,10 +14,10 @@ Each part links theory to the actual KnocOS code, so you can open the file and s
 - **Part 2: Building and booting:** toolchain, linker script, `boot.S`, privilege modes
 - **Part 3: Talking to hardware:** memory-mapped I/O, UART, logging
 - **Part 4: Memory:** physical pages, virtual memory (Sv39), kernel heap
-- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler
+- **Part 5: Traps, interrupts, devices and processes:** exceptions, timer, PLIC, keyboard input, the device driver model, the disk, processes and the AI-aware scheduler, the AI space
 - **Part 6: Engineering:** Makefile, tests, CI, versioning
 - **Part 7: Debugging:** tools, reading a crash, bugs we hit and fixed
-- **Part 8: What comes next:** the Guardian, user mode, filesystem, AI-OS
+- **Part 8: What comes next:** fault containment, user mode, filesystem, AI-OS
 - **Cheat sheets:** addresses, CSRs, commands, glossary
 
 ---
@@ -159,8 +159,10 @@ QEMU starts the CPU in **M-mode** at `_start` (`0x80000000`). Step by step:
 
 | Step | Code | Why |
 |---|---|---|
-| 1 | `la sp, stack_top` | C code needs a stack before any function call |
-| 2 | `pmpaddr0 = -1`, `pmpcfg0 = 0x1F` | **PMP** (physical memory protection) blocks S-mode from all memory by default. This entry says "S-mode may access everything" |
+| 0 | `csrr mhartid` | Both cores start here. **Core 1 → the AI space** (section 5.12). Core 0 continues |
+| 1 | clear `.bss`, `la sp, stack_top` | Zero the uninitialized globals (a warm reboot doesn't), then give C code a stack |
+| 2 | `pmpaddr0/1`, `pmpcfg0` | **PMP** (physical memory protection) blocks S-mode from all memory by default. Entry 0 **denies** the AI space region, entry 1 allows everything else |
+| 2b | `satp = 0`, clear `sie`/`mie`/`mip` | After a warm reboot the CPU may still have paging on and old interrupt bits set. Start clean |
 | 3 | `mscratch = machine_stack_top`, `mtvec = machine_trap` | M-mode gets its own private stack, and the address where the CPU jumps on an M-mode trap |
 | 4 | `stvec = supervisor_trap` | Where the CPU jumps on an S-mode trap |
 | 5 | `medeleg = 0xB1FF` | **Delegate exceptions** (page faults, illegal instruction, ...) to S-mode so the kernel handles them |
@@ -730,6 +732,111 @@ over this cycle: agent 12 ticks, normal 6, background 2  =  60% / 30% / 10%
 
 ---
 
+## 5.12 The AI space: AI that survives kernel crashes (`kernel/aispace.c`)
+
+### The idea
+
+If the AI lived inside the kernel, a kernel crash would kill it too. So the AI gets **its own CPU core** and **its own memory that the kernel physically cannot touch**. When the kernel dies, the AI keeps running, diagnoses the problem and recovers. **Windows comparison:** VBS / the Secure Kernel (a space the normal Windows kernel can't access). Apple's Secure Enclave and the management processors in PCs work on the same principle.
+
+```text
+core 0: kernel (S-mode, paging on)          core 1: AI space (M-mode, physical addresses)
+   can crash or freeze                         never touched by the kernel
+          │                                               ▲
+          └───────────── mailbox (shared page) ───────────┘
+            heartbeat, current process, crash details, last_kernel_pc
+```
+
+### Two cores
+
+QEMU runs with `-smp 2`. **Both cores start at `_start`** at the same moment. `boot.S` reads `mhartid` (which core am I?): core 1 jumps to `aispace_boot`, gets its own stack in the AI region and calls `aispace_main()`, which never returns. Core 0 boots the kernel as before.
+
+### PMP: hardware memory protection the kernel can't undo
+
+**PMP** (Physical Memory Protection) is a set of M-mode registers that say which physical addresses lower modes may access. The kernel runs in S-mode, so **it cannot change them**. Core 0 sets two entries at boot:
+
+```text
+entry 0: 0x87000000–0x87FFFFFF (16 MiB)   permissions: none   ← the AI space
+entry 1: everything                       permissions: RWX
+the lowest-numbered matching entry wins → the AI space is blocked, the rest is allowed
+```
+
+The address encoding is called **NAPOT** ("naturally aligned power of two"): `pmpaddr = (base | (size/2 - 1)) >> 2`. For a 16 MiB region at `0x87000000` that's `0x21DFFFFF`.
+
+PMP is **per core**. Core 1's own PMP isn't set, and PMP doesn't restrict M-mode unless it's locked, so the AI space can see everything, including the kernel's memory. The protection is **one-way**: the AI can inspect the kernel, but not the other way around.
+
+**Proof:** at boot, the kernel does a **probe read** of `0x87000000` (a load that returns an error instead of crashing, `trap_probe_read()`). It must fail with a *load access fault*, and `make test` checks that it does.
+
+### Keeping the AI code in the AI space
+
+The linker script puts `aispace.o`'s code, data and stack at `0x87000000` (`EXCLUDE_FILE(*aispace.o)` keeps them out of the kernel's sections). `aispace.c` is **self-contained**: its own UART output, clock reading and a small polled disk driver. It calls **no kernel function**, because kernel code could be the thing that's broken. `nm -u kernel/aispace.o` lists only `guardian_mailbox`.
+
+### The mailbox
+
+A shared structure in its own linker section. The AI space clears it when it starts.
+
+| Field | Written by | Used for |
+|---|---|---|
+| `heartbeat`, `uptime_ticks` | Kernel, every tick | Freeze detection |
+| `current_pid`, `current_name` | Kernel, every process switch | "Which process was running?" |
+| `last_kernel_pc` | **Core 0's M-mode timer**, every tick | "Where is the kernel stuck?" This works **even when the kernel is frozen**, because M-mode timer interrupts can't be blocked by the kernel |
+| `scause`, `sepc`, `stval`, `ra`, `sp`, `message`, `crash_type` | Kernel, on a trap or panic | The crash details |
+| `kernel_state` | Kernel | `PANICKED` tells the AI "I'm dead, take over" |
+| `watch_enabled` | Kernel, when boot is finished | The AI only watches for freezes once the kernel is running normally |
+
+### What the AI does
+
+```text
+every 10 ms:
+  kernel_state == PANICKED?            → handle crash
+  heartbeat unchanged for 2 s + watch? → handle freeze
+
+handle:
+  collect   details from the mailbox
+  diagnose  rules (Tier 0) → a sentence
+  save      reset the disk, write the report with its own polled driver
+  act       reboot / safe mode / halt, depending on the crash streak
+```
+
+**Why a polled driver?** The kernel's disk driver waits for an interrupt that goes to core 0's kernel, which is dead. The AI space instead **polls**: "is the used ring updated yet?" in a loop, with a timeout. Windows does the same when it writes a crash dump after a blue screen.
+
+### The black box on disk
+
+The last 8 sectors of `disk0`:
+
+```text
+sector N-8   header: magic, total_crashes, reported_crashes, consecutive_crashes
+sector N-7   report slot 1  ┐
+sector N-6   report slot 2  │ reports go round-robin: crash #5 overwrites slot 1
+sector N-5   report slot 3  │
+sector N-4   report slot 4  ┘
+```
+
+On the next boot, `guardian_boot_report()` (kernel side) prints every report newer than `reported_crashes`, then marks them reported.
+
+### Recovery and boot-loop protection
+
+| Crashes in a row | Action | Windows equivalent |
+|---|---|---|
+| 1–2 | Reboot | Automatic restart after a BSOD |
+| 3 | Reboot into safe mode | Safe Mode |
+| 4+ | Halt | Automatic Repair instead of looping forever |
+
+The `guardian` background process resets the streak after 60 s without a crash.
+
+### Reboots don't reset everything: two lessons
+
+A **warm reboot** (QEMU's reset, or pressing a reset button) restarts the CPU but **doesn't clear RAM or every CPU register**:
+- **`.bss` kept old values.** C assumes uninitialized globals start at zero, but nothing cleared them: the first boot only worked because RAM started zeroed. Now `boot.S` clears `.bss` explicitly.
+- **`satp` kept paging on.** The new kernel started with the *old* page table active, then overwrote that same memory while building new tables, and froze. Now `boot.S` sets `satp = 0` and clears the interrupt registers.
+
+A kernel must **never assume the hardware state is clean at boot**.
+
+### Where the real AI plugs in
+
+The diagnosis is **rules** today. The same function (`ai_diagnose`) is where the **small NN crash classifier** goes in v0.15. It will be trained on reports produced by breaking KnocOS on purpose, like the Ctrl-F/P/W test keys. Later, a small LLM will explain crashes in plain language and choose among the same safe actions.
+
+---
+
 # Part 6: Engineering
 
 ## 6.1 The Makefile
@@ -737,7 +844,7 @@ over this cycle: agent 12 ticks, normal 6, background 2  =  60% / 30% / 10%
 - **Pattern rules** (`%.o: %.c`) compile any C file the same way.
 - **`-MMD -MP`**: the compiler writes a `.d` file listing every header each `.c` file includes, and `make` reads them. Changing a header rebuilds exactly the files that use it.
 - **`-Wall -Wextra -Werror`**: turns on many warnings and makes **any warning a build error**. Warnings often hide real bugs.
-- **`-DKNOCOS_VERSION='"v0.7.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
+- **`-DKNOCOS_VERSION='"v0.8.0"'`**: the version from the `VERSION` file becomes a C string the kernel prints at boot.
 
 ## 6.2 Automated testing (`make test`)
 
@@ -766,8 +873,9 @@ over this cycle: agent 12 ticks, normal 6, background 2  =  60% / 30% / 10%
 | 0.5.0 | Device abstraction, Phase 4 complete |
 | 0.6.0 | virtio-blk disk driver, permanent storage |
 | 0.7.0 | Processes and the AI-aware scheduler |
+| 0.8.0 | AI space: survives kernel crashes, black box, recovery |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.7.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.8.0 && git push --tags`.
 
 ---
 
@@ -815,14 +923,18 @@ How to investigate:
 | `undefined reference to memcpy` | Copying a struct makes GCC call `memcpy`, and bare metal has no C library | A kernel must provide `memcpy`/`memset` itself (`kernel/string.c`) |
 | (avoided) M-mode writing to a process stack | Process stacks are virtual heap addresses, but M-mode uses physical addresses | Give M-mode its own stack with `mscratch` |
 | (avoided) Returning to the wrong place after a switch | `sepc`/`sstatus` are CPU registers shared by every trap | Save them in the handler and restore before `sret` |
+| False "freeze" right after a reboot | `.bss` was never cleared, so the mailbox kept "watching = on" from the previous boot | Clear `.bss` in `boot.S`; the AI space resets the mailbox |
+| New kernel froze after a warm reboot | `satp` still had paging on from the previous boot, and the kernel overwrote its own live page table | Set `satp = 0` at boot. Never trust CPU state after a warm reset |
 
 ---
 
 # Part 8: What Comes Next
 
-## 8.1 The Guardian: AI that survives crashes
+## 8.1 Fault containment and warm kernel restart (v0.9.0)
 
-From goal.md: a crash **black box** (`panic()` writes a report to the disk and the next boot reads it), then an M-mode **watchdog** (M-mode still gets the timer when the kernel is frozen, so it can notice "the kernel hasn't counted a tick in 2 seconds" and save its state), then an AI runtime space isolated from the kernel. M-mode's private stack, added for the scheduler, is the first building block.
+- **Fault containment:** when a *process* crashes (like the Ctrl-F bad pointer in the console), kill only that process and keep the kernel running, like a Linux "oops". The AI space still gets a report
+- **Auto-restart** of crashed processes, and **disabling a driver** that keeps crashing on the next boot
+- **Warm kernel restart:** the AI space keeps a clean copy of the kernel and restarts **only core 0**, so the AI never stops, not even during a reboot
 
 ## 8.2 User mode and system calls
 
@@ -853,6 +965,7 @@ After the kernel foundation: filesystem, shell, the small neural network runtime
 | `0x10000000` | UART0 (IRQ 10) | ✅ 1 page |
 | `0x10001000` | virtio slot 0: `disk0` (IRQ 1) | ✅ 1 page |
 | `0x80000000` | RAM start, kernel | ✅ identity, 128 MiB |
+| `0x87000000` | AI space (16 MiB) | Mapped, but **PMP blocks the kernel** |
 | `0x88000000` | RAM end | |
 | `0x90000000` | Kernel heap (virtual) | ✅ grows on demand |
 
@@ -915,7 +1028,13 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | **vruntime** | Virtual runtime: CPU time scaled by weight. Lowest runs next |
 | **CSR** | Control and status register: CPU configuration |
 | **ELF** | Executable file format used on Linux and bare-metal RISC-V |
+| **Black box** | Crash reports saved to disk so the next boot (and the AI) knows what happened |
 | **Hart** | Hardware thread: a RISC-V CPU core |
+| **Heartbeat** | A counter the kernel bumps every tick. If it stops changing, the kernel is frozen |
+| **NAPOT** | "Naturally aligned power of two": the PMP address format for aligned regions |
+| **Safe mode** | A boot with minimal services, used after repeated crashes |
+| **Warm reboot** | Restarting the CPU without clearing RAM or all registers |
+| **Watchdog** | Something that checks a heartbeat and acts when it stops |
 | **Identity mapping** | Virtual address = physical address |
 | **IRQ** | Interrupt request number of a device |
 | **MMIO** | Memory-mapped I/O: devices appear as addresses |

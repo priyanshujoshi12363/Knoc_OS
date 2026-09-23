@@ -2,6 +2,34 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.8.0] - 2026-09-23
+
+The AI space: AI that survives kernel crashes.
+
+### Added
+- AI space on CPU core 1 (`kernel/aispace.c`): runs in M-mode in its own 16 MiB region at `0x87000000`, self-contained (own UART output, clock, polled virtio-blk driver), linked into its own sections
+- PMP protection: the kernel (core 0, S-mode) cannot read, write or execute the AI space. A boot self-test probes it
+- Kernel ↔ AI space mailbox (`kernel/mailbox.h`): heartbeat, uptime, current process, crash details, and `last_kernel_pc` written by the M-mode timer
+- Crash detection (panic and unhandled traps) and freeze detection (no heartbeat for 2 s)
+- Rule-based diagnosis (Tier 0 brain): null pointer, bad pointer, page fault, protected memory, illegal instruction, misaligned access, panic, infinite loop
+- Black box (`kernel/blackbox.h`): crash reports in the last 8 sectors of the disk, written by the AI space; the kernel prints new reports at boot (`kernel/guardian.c`)
+- Recovery actions: reboot, safe mode after 3 crashes in a row, halt after 4 (boot-loop protection); a `guardian` process resets the streak after 60 s without a crash
+- Test keys: Ctrl-F (bad pointer), Ctrl-P (panic), Ctrl-W (freeze)
+- `trap_probe_read()`: a read that returns an error instead of crashing on a bad address
+- `make test` boots 3–6: fault → freeze → panic → safe mode, all detected, diagnosed, saved and recovered
+- Milestone roadmap v0.8 → v1.0 in `goal.md` and README
+
+### Changed
+- QEMU runs with 2 cores (`-smp 2`)
+- `boot.S`: routes core 1 to the AI space, clears `.bss`, sets 2 PMP entries, resets `satp` and interrupt state on every boot
+- Linker script: AI space sections, explicit small-data sections, `bss_start`/`bss_end`, a `.mailbox` section
+- The page allocator stops below the AI space
+- `panic()` and unhandled traps report to the AI space
+
+### Fixed
+- `.bss` was never cleared: it only worked because the first boot started from zeroed RAM. A warm reboot kept old values
+- After a warm reboot, paging (`satp`) was still on from the previous boot, so the new kernel corrupted its own live page tables
+
 ## [0.7.0] - 2026-09-23
 
 Processes and the AI-aware scheduler.

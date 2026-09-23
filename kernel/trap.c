@@ -4,16 +4,21 @@
 #include "plic.h"
 #include "device.h"
 #include "process.h"
+#include "guardian.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
 
 #define EXCEPTION_BREAKPOINT 3
+#define EXCEPTION_LOAD_ACCESS_FAULT 5
+#define EXCEPTION_LOAD_PAGE_FAULT 13
 #define INTERRUPT_SUPERVISOR_SOFTWARE 1
 #define INTERRUPT_SUPERVISOR_EXTERNAL 9
 #define INSTRUCTION_SIZE 4
 
 static volatile uint64_t breakpoint_count = 0;
+static volatile int probe_active = 0;
+static volatile int probe_faulted = 0;
 
 static const char *exception_names[] = {
     [0] = "Instruction address misaligned",
@@ -143,6 +148,7 @@ void supervisor_trap_handler(trap_frame_t *frame)
     {
         clear_sip(SIP_SSIP);
         timer_tick();
+        guardian_heartbeat();
         scheduler_tick();
 
         write_sepc(sepc);
@@ -160,6 +166,18 @@ void supervisor_trap_handler(trap_frame_t *frame)
         return;
     }
 
+    if (probe_active &&
+        !(scause & SCAUSE_INTERRUPT) &&
+        ((scause & SCAUSE_CODE_MASK) == EXCEPTION_LOAD_ACCESS_FAULT ||
+         (scause & SCAUSE_CODE_MASK) == EXCEPTION_LOAD_PAGE_FAULT))
+    {
+        probe_faulted = 1;
+
+        write_sepc(sepc + INSTRUCTION_SIZE);
+        write_sstatus(sstatus);
+        return;
+    }
+
     if (!(scause & SCAUSE_INTERRUPT) &&
         (scause & SCAUSE_CODE_MASK) == EXCEPTION_BREAKPOINT)
     {
@@ -172,6 +190,8 @@ void supervisor_trap_handler(trap_frame_t *frame)
         write_sstatus(sstatus);
         return;
     }
+
+    guardian_record_trap(scause, sepc, stval, frame->ra, frame->sp);
 
     log_trap(trap_name(scause));
     log_trap_hex("scause = ", scause);
@@ -186,6 +206,26 @@ void supervisor_trap_handler(trap_frame_t *frame)
 uint64_t trap_breakpoint_count(void)
 {
     return breakpoint_count;
+}
+
+int trap_probe_read(uintptr_t address, uint64_t *value)
+{
+    uint64_t result = 0;
+
+    probe_faulted = 0;
+    probe_active = 1;
+
+    asm volatile("ld %0, 0(%1)" : "=r"(result) : "r"(address) : "memory");
+
+    probe_active = 0;
+
+    if (probe_faulted)
+    {
+        return -1;
+    }
+
+    *value = result;
+    return 0;
 }
 
 void trap_enable_interrupts(void)

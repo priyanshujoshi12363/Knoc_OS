@@ -4,6 +4,8 @@ PHDRS
 {
     text PT_LOAD FLAGS(5);
     data PT_LOAD FLAGS(6);
+    aitext PT_LOAD FLAGS(5);
+    aidata PT_LOAD FLAGS(6);
 }
 
 SECTIONS
@@ -13,20 +15,37 @@ SECTIONS
     kernel_start = .;
 
     .text : {
-        *(.text)
+        *(EXCLUDE_FILE(*aispace.o) .text)
+        *(EXCLUDE_FILE(*aispace.o) .text.*)
     } :text
 
     .rodata : {
-        *(.rodata)
+        *(EXCLUDE_FILE(*aispace.o) .rodata)
+        *(EXCLUDE_FILE(*aispace.o) .rodata.*)
+        *(EXCLUDE_FILE(*aispace.o) .srodata)
+        *(EXCLUDE_FILE(*aispace.o) .srodata.*)
     } :text
 
     .data : {
-        *(.data)
+        *(EXCLUDE_FILE(*aispace.o) .data)
+        *(EXCLUDE_FILE(*aispace.o) .data.*)
+        *(EXCLUDE_FILE(*aispace.o) .sdata)
+        *(EXCLUDE_FILE(*aispace.o) .sdata.*)
     } :data
 
-    .bss : {
-        *(.bss)
-        *(COMMON)
+    .bss : ALIGN(16) {
+        bss_start = .;
+        *(EXCLUDE_FILE(*aispace.o) .sbss)
+        *(EXCLUDE_FILE(*aispace.o) .sbss.*)
+        *(EXCLUDE_FILE(*aispace.o) .bss)
+        *(EXCLUDE_FILE(*aispace.o) .bss.*)
+        *(EXCLUDE_FILE(*aispace.o) COMMON)
+        . = ALIGN(16);
+        bss_end = .;
+    } :data
+
+    .mailbox : ALIGN(64) {
+        *(.mailbox)
     } :data
 
     kernel_end = .;
@@ -36,4 +55,26 @@ SECTIONS
     stack_bottom = .;
     . += 16K;
     stack_top = .;
+
+    . = 0x87000000;
+
+    aispace_start = .;
+
+    .aispace.text : {
+        *aispace.o(.text .text.*)
+        *aispace.o(.rodata .rodata.* .srodata .srodata.*)
+    } :aitext
+
+    .aispace.data : ALIGN(4096) {
+        *aispace.o(.data .data.* .sdata .sdata.*)
+        *aispace.o(.bss .bss.* .sbss .sbss.* COMMON)
+    } :aidata
+
+    . = ALIGN(16);
+
+    aispace_stack_bottom = .;
+    . += 16K;
+    aispace_stack_top = .;
+
+    aispace_end = .;
 }

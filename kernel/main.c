@@ -11,10 +11,18 @@
 #include "device.h"
 #include "virtio_blk.h"
 #include "process.h"
+#include "guardian.h"
+#include "aispace.h"
+#include "blackbox.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_D 0x04
 #define KEY_BACKSPACE 0x7F
+#define KEY_CTRL_F 0x06
+#define KEY_CTRL_P 0x10
+#define KEY_CTRL_W 0x17
+
+#define TEST_FAULT_ADDRESS 0x40000000UL
 
 #define DISK_HOST_SECTOR 0
 #define DISK_BOOT_COUNT_SECTOR 1
@@ -132,7 +140,7 @@ static void console_process(void *arg)
 {
     (void)arg;
 
-    log_info("Keyboard echo ready, start typing (Ctrl-D to power off)");
+    log_info("Keyboard echo ready, start typing (Ctrl-D power off, test keys: Ctrl-P panic, Ctrl-F fault, Ctrl-W freeze)");
 
     while (1)
     {
@@ -144,7 +152,28 @@ static void console_process(void *arg)
             continue;
         }
 
-        if (c == KEY_CTRL_D)
+        if (c == KEY_CTRL_P)
+        {
+            device_write(console, "\n", 1);
+            panic("Test panic (Ctrl-P)");
+        }
+        else if (c == KEY_CTRL_F)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test fault (Ctrl-F): writing to an unmapped address");
+            *(volatile uint64_t *)TEST_FAULT_ADDRESS = 1;
+        }
+        else if (c == KEY_CTRL_W)
+        {
+            device_write(console, "\n", 1);
+            log_info("Test freeze (Ctrl-W): interrupts off, infinite loop");
+            asm volatile("csrc sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
+
+            while (1)
+            {
+            }
+        }
+        else if (c == KEY_CTRL_D)
         {
             uint8_t command = POWER_COMMAND_OFF;
 
@@ -297,6 +326,22 @@ void kernel_main(void)
     heap_activate();
 
     log_info("Kernel heap activated");
+
+    uint64_t probe_value;
+
+    if (trap_probe_read((uintptr_t)&probe_value, &probe_value) != 0)
+    {
+        panic("Probe of kernel memory failed");
+    }
+
+    if (trap_probe_read(AISPACE_BASE, &probe_value) == 0)
+    {
+        panic("AI space memory is not protected");
+    }
+
+    log_info("PMP verified: the kernel cannot read the AI space");
+
+    guardian_init();
 
     void *block_a = kmalloc(3000);
 
@@ -499,14 +544,34 @@ void kernel_main(void)
         log_warn("No disk attached");
     }
 
+    uint64_t consecutive_crashes = guardian_boot_report(disk);
+    int safe_mode = consecutive_crashes >= BLACKBOX_SAFE_MODE_THRESHOLD;
+
+    guardian_set_safe_mode(safe_mode);
+
     process_init();
 
-    if (process_create("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0) < 0)
+    if (safe_mode)
+    {
+        log_warn("SAFE MODE: several crashes in a row, starting minimal services only");
+
+        if (process_create("console", PROCESS_CLASS_INTERACTIVE, console_process, 0) < 0)
+        {
+            panic("Could not create console process");
+        }
+    }
+    else if (process_create("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0) < 0)
     {
         panic("Could not create scheduler test process");
     }
 
+    if (process_create("guardian", PROCESS_CLASS_BACKGROUND, guardian_healthy_process, 0) < 0)
+    {
+        panic("Could not create guardian process");
+    }
+
     scheduler_start();
+    guardian_start_watch();
 
     while (1)
     {
