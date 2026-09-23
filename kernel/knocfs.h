@@ -82,6 +82,7 @@ void knocfs_usage(uint64_t *total_bytes, uint64_t *free_bytes, uint32_t *files);
 int knocfs_lookup(const char *path, uint32_t *inode);
 int knocfs_create(const char *path, uint16_t type, uint32_t *inode);
 int knocfs_remove(const char *path);
+int knocfs_rename(const char *from, const char *to);
 int knocfs_stat(uint32_t inode, knocfs_stat_t *stat);
 int knocfs_readdir(uint32_t directory, uint32_t index, knocfs_dirent_t *entry);
 int knocfs_truncate(uint32_t inode);

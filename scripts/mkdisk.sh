@@ -32,3 +32,15 @@ done
 
 $KNOCFS put-text "$DISK" /hello.txt "Hello from a file on KnocFS!"
 $KNOCFS make-test-model "$DISK" /models/test-model.bin 8
+
+if [ -f models/filenet/filenet.knm ]; then
+    $KNOCFS put "$DISK" models/filenet/filenet.knm /models/filenet.knm
+fi
+
+SAMPLES=$(mktemp -d)
+python3 scripts/sample_downloads.py "$SAMPLES"
+$KNOCFS mkdir "$DISK" /home/Downloads
+for sample in "$SAMPLES"/*; do
+    $KNOCFS put "$DISK" "$sample" "/home/Downloads/$(basename "$sample")"
+done
+rm -rf "$SAMPLES"

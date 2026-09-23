@@ -40,8 +40,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_SYSINFO] = "sysinfo",
     [SYS_DEVINFO] = "devinfo",
     [SYS_CRASHINFO] = "crashinfo",
-    [SYS_RANDOM] = "random",
-    [SYS_INJECT] = "inject",
+    [SYS_GETARGS] = "getargs",
+    [SYS_RENAME] = "rename",
 };
 
 const char *syscall_name(uint64_t number)
@@ -154,11 +154,6 @@ static const char *capability_name(uint32_t capability)
     if (capability == CAP_SYSTEM)
     {
         return "SYSTEM";
-    }
-
-    if (capability == CAP_DEBUG)
-    {
-        return "DEBUG";
     }
 
     return "MEMORY";
@@ -583,23 +578,6 @@ static int64_t sys_crashinfo(uint64_t index, uintptr_t out)
     return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
 }
 
-/* xorshift64: good enough to vary the test crashes, seeded from the clock */
-static uint64_t random_state;
-
-static int64_t sys_random(void)
-{
-    if (random_state == 0)
-    {
-        random_state = timer_read() | 1;
-    }
-
-    random_state ^= random_state << 13;
-    random_state ^= random_state >> 7;
-    random_state ^= random_state << 17;
-
-    return (int64_t)(random_state >> 1);
-}
-
 static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
 {
     char path[PATH_MAX];
@@ -623,11 +601,19 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
     return knocfs_remove(path);
 }
 
-static int64_t sys_spawn(uintptr_t name_address)
+static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address)
 {
     char name[PROCESS_NAME_MAX];
+    char args[ARGS_MAX];
 
     if (copy_string_from_user(name, name_address, PROCESS_NAME_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    args[0] = 0;
+
+    if (args_address != 0 && copy_string_from_user(args, args_address, ARGS_MAX) != 0)
     {
         return E_FAULT;
     }
@@ -639,9 +625,58 @@ static int64_t sys_spawn(uintptr_t name_address)
         return E_NOTFOUND;
     }
 
-    int pid = process_spawn(program);
+    int pid = process_spawn_args(program, args);
 
     return pid < 0 ? E_NOMEM : pid;
+}
+
+static int64_t sys_getargs(uintptr_t buffer, uint64_t length)
+{
+    const char *args = process_args();
+    uint64_t size = 0;
+
+    while (args[size])
+    {
+        size++;
+    }
+
+    if (length == 0)
+    {
+        return E_INVAL;
+    }
+
+    if (size >= length)
+    {
+        size = length - 1;
+    }
+
+    char terminator = 0;
+
+    if (copy_to_user(buffer, args, size) != 0 || copy_to_user(buffer + size, &terminator, 1) != 0)
+    {
+        return E_FAULT;
+    }
+
+    return (int64_t)size;
+}
+
+static int64_t sys_rename(uintptr_t from_address, uintptr_t to_address)
+{
+    char from[PATH_MAX];
+    char to[PATH_MAX];
+
+    if (!allowed(SYS_RENAME, CAP_FILES_WRITE))
+    {
+        return E_PERM;
+    }
+
+    if (copy_string_from_user(from, from_address, PATH_MAX) != 0 ||
+        copy_string_from_user(to, to_address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    return knocfs_rename(from, to);
 }
 
 int64_t syscall_handle(trap_frame_t *frame)
@@ -681,7 +716,7 @@ int64_t syscall_handle(trap_frame_t *frame)
             return E_PERM;
         }
 
-        return sys_spawn(frame->a0);
+        return sys_spawn(frame->a0, frame->a1);
 
     case SYS_MEM_ALLOC:
         if (!allowed(number, CAP_MEMORY))
@@ -713,17 +748,11 @@ int64_t syscall_handle(trap_frame_t *frame)
     case SYS_WAIT:
         return sys_wait(frame->a0);
 
-    case SYS_RANDOM:
-        return sys_random();
+    case SYS_GETARGS:
+        return sys_getargs(frame->a0, frame->a1);
 
-    case SYS_INJECT:
-        if (!allowed(number, CAP_DEBUG))
-        {
-            return E_PERM;
-        }
-
-        process_set_label((uint32_t)frame->a0);
-        return 0;
+    case SYS_RENAME:
+        return sys_rename(frame->a0, frame->a1);
 
     case SYS_PS:
     case SYS_KILL:

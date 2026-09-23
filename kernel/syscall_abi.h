@@ -27,8 +27,8 @@
 #define SYS_SYSINFO 19
 #define SYS_DEVINFO 20
 #define SYS_CRASHINFO 21
-#define SYS_RANDOM 22
-#define SYS_INJECT 23
+#define SYS_GETARGS 22
+#define SYS_RENAME 23
 #define SYS_COUNT 24
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
@@ -45,6 +45,7 @@
 #define FILE_TYPE_FILE 1
 #define FILE_TYPE_DIR 2
 #define PATH_MAX 128
+#define ARGS_MAX 128
 #define FILE_NAME_MAX 60
 
 #define E_BADCALL -1
@@ -70,7 +71,6 @@
 #define CAP_FILES_READ 0x8
 #define CAP_FILES_WRITE 0x10
 #define CAP_SYSTEM 0x20
-#define CAP_DEBUG 0x40
 
 /* User address space (Sv39 root slots 64-127, never used by the kernel) */
 #define USER_BASE 0x1000000000UL

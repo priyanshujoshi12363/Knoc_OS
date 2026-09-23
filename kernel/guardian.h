@@ -16,8 +16,6 @@ void guardian_start_watch(void);
 void guardian_set_safe_mode(int enabled);
 int guardian_restart_safe_mode(void);
 void guardian_set_ram_end(uint64_t ram_end);
-void guardian_set_collect(int enabled);
-void guardian_set_inject_label(uint32_t label);
 int guardian_driver_disabled(const char *name);
 
 void guardian_record_trap(uint64_t scause,

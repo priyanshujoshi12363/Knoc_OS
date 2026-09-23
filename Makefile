@@ -53,7 +53,7 @@ KERNEL_OBJS = boot/boot.o \
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize
 USER_LIB_OBJS = user/crt0.o user/ulib.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) $(USER_PROGRAMS:%=user/%.o)

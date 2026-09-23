@@ -98,12 +98,6 @@ typedef struct guardian_mailbox
     volatile uint32_t fault_denied;
     volatile uint32_t fault_trace_count;
     volatile uint8_t fault_trace[MAILBOX_TRACE_MAX];
-
-    /* Collect mode: crashes are made on purpose for training data, and
-       each one carries its true cause (kernel/crash_labels.h) */
-    volatile uint32_t collect_mode;
-    volatile uint32_t inject_label;
-    volatile uint32_t fault_label;
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;

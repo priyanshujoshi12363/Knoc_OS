@@ -10,3 +10,5 @@ disk.img
 user/*.elf
 models/.venv/
 models/data/files/
+models/filenet/cache/
+__pycache__/

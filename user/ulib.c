@@ -94,6 +94,21 @@ int spawn(const char *name)
     return (int)syscall(SYS_SPAWN, (long)name, 0, 0);
 }
 
+int spawn_args(const char *name, const char *args)
+{
+    return (int)syscall(SYS_SPAWN, (long)name, (long)args, 0);
+}
+
+long getargs(char *buffer, unsigned long length)
+{
+    return syscall(SYS_GETARGS, (long)buffer, (long)length, 0);
+}
+
+int rename(const char *from, const char *to)
+{
+    return (int)syscall(SYS_RENAME, (long)from, (long)to, 0);
+}
+
 void *mem_alloc(unsigned long bytes)
 {
     long result = syscall(SYS_MEM_ALLOC, (long)bytes, 0, 0);
@@ -129,6 +144,22 @@ int devinfo(unsigned long index, device_info_t *info)
 int crashinfo(unsigned long index, crash_info_t *info)
 {
     return (int)syscall(SYS_CRASHINFO, (long)index, (long)info, 0);
+}
+
+int memcmp_bytes(const void *a, const void *b, unsigned long length)
+{
+    const unsigned char *x = (const unsigned char *)a;
+    const unsigned char *y = (const unsigned char *)b;
+
+    for (unsigned long i = 0; i < length; i++)
+    {
+        if (x[i] != y[i])
+        {
+            return x[i] - y[i];
+        }
+    }
+
+    return 0;
 }
 
 unsigned long strlen(const char *text)

@@ -5,7 +5,7 @@
    calls: the shell is an ordinary user program. */
 
 #define LINE_MAX 128
-#define ARGS_MAX 8
+#define WORDS_MAX 8
 #define PARTS_MAX 32
 #define CAT_CHUNK 256
 #define MIB (1024UL * 1024)
@@ -126,7 +126,7 @@ static int split(char *text, char **args)
 {
     int count = 0;
 
-    while (*text && count < ARGS_MAX)
+    while (*text && count < WORDS_MAX)
     {
         while (*text == ' ')
         {
@@ -484,9 +484,54 @@ static int program_exists(const char *name)
     return stat(path, &info) == 0 && info.type == FILE_TYPE_FILE;
 }
 
-static void run_program(const char *name, int background)
+static void join_args(int argc, char **args, int first, char *out)
 {
-    int pid = spawn(name);
+    unsigned long length = 0;
+
+    out[0] = 0;
+
+    for (int i = first; i < argc; i++)
+    {
+        char resolved[PATH_MAX];
+        const char *word = args[i];
+        file_stat_t info;
+
+        if (strcmp(word, "&") == 0)
+        {
+            continue;
+        }
+
+        if (word[0] != '-' && word[0] != '/')
+        {
+            resolve(word, resolved);
+
+            if (stat(resolved, &info) == 0)
+            {
+                word = resolved;
+            }
+        }
+
+        if (length > 0 && length < ARGS_MAX - 1)
+        {
+            out[length++] = ' ';
+        }
+
+        for (unsigned long j = 0; word[j] && length < ARGS_MAX - 1; j++)
+        {
+            out[length++] = word[j];
+        }
+
+        out[length] = 0;
+    }
+}
+
+static void run_program(const char *name, int background, int argc, char **args, int first)
+{
+    char program_args[ARGS_MAX];
+
+    join_args(argc, args, first, program_args);
+
+    int pid = spawn_args(name, program_args);
 
     if (pid < 0)
     {
@@ -753,7 +798,7 @@ static int execute(int argc, char **args)
         }
         else
         {
-            run_program(args[1], argc > 2 && strcmp(args[2], "&") == 0);
+            run_program(args[1], strcmp(args[argc - 1], "&") == 0, argc, args, 2);
         }
     }
     else if (strcmp(command, "mem") == 0)
@@ -786,7 +831,7 @@ static int execute(int argc, char **args)
     }
     else if (program_exists(command))
     {
-        run_program(command, argc > 1 && strcmp(args[argc - 1], "&") == 0);
+        run_program(command, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
     }
     else
     {
@@ -800,7 +845,7 @@ static int execute(int argc, char **args)
 
 int main(void)
 {
-    char *args[ARGS_MAX];
+    char *args[WORDS_MAX];
 
     print("\nKnocOS shell (knocsh). Type help for commands.\n");
 

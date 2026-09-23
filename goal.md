@@ -52,6 +52,7 @@ Find files by **meaning**, not just filename or path ("the invoice from last mon
 
 ### 🗂️ Automatic File Organization
 Files go where they belong automatically, e.g. a WhatsApp video lands in `WhatsApp/Videos`.
+- *Built in v0.14.0:* `organize` in the knocsh shell, a 280K-parameter int8 classifier (type + source) with a rules layer and a `Random/` fallback, plan / apply / undo
 - *Small NN:* file-type and source classifier
 - *OS:* rule engine plus a user-reviewable move log (undo always possible)
 
@@ -160,7 +161,7 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
 | Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
 | Shell (v0.13.0) | ✅ Done | `knocsh`: files, programs, `ps`/`kill`/Ctrl-C, and the AI's view (`crashes`, `ai`) |
-| Small NN runtime (v0.14.0) | 🚧 Next | The first neural network running inside KnocOS |
+| First AI model in KnocOS (v0.14.0) | ✅ Done | File organizer: an int8 type + source classifier with a rules layer and a `Random/` fallback, running as `/bin/organize` |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
 

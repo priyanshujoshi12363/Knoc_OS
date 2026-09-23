@@ -101,6 +101,9 @@ clear_bss_done:
     li t0, 0x0800
     csrs mstatus, t0
 
+    li t0, MSTATUS_FS_INITIAL
+    csrs mstatus, t0
+
     li t0, 0x2
     csrs mcounteren, t0
 

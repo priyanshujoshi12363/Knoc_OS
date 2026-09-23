@@ -2,6 +2,22 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.14.0] - 2026-09-24
+
+The first AI model inside KnocOS: the file organizer.
+
+### Added
+- `models/`: dataset script (`data/make_filedata.py`) and the file classifier (`filenet/`): features, numpy training with a settings search and confidence calibration, the int8 `.knm` model format, `organize.py` and `realcheck.py` for testing on real files
+- `/bin/organize`: classifies every file in a folder (type and source), then the AI (at least 90% sure), a rules layer (extensions, signatures, app name patterns, readable text) or `Random/` picks the folder; plan by default, `--apply` moves, `--undo` restores
+- The trained model on the disk at `/models/filenet.knm`, and sample files in `/home/Downloads`
+- Floating-point support for programs: `mstatus.FS` is enabled and the 32 FP registers and `fcsr` are saved and restored on every process switch
+- Program arguments: `spawn(name, args)` and `getargs`; the shell passes everything after the program name (paths resolved against the current directory)
+- `rename(from, to)` system call and `knocfs_rename`: moves files and folders by changing directory entries
+- `make test`: organize plan, apply, check and undo on the sample Downloads
+
+### Removed
+- Unused crash data collection code (crash labels, `random` / `inject` system calls, `DEBUG` capability, collect mode mailbox fields)
+
 ## [0.13.0] - 2026-09-23
 
 The shell: KnocOS can be used by typing commands.

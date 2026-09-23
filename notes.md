@@ -1295,6 +1295,56 @@ Safe mode: on
 
 After Ctrl-F crashes the console process, the AI restarts it, and the restarted console starts at the top of its code again, including "start the shell". That would have started a **second** shell while the first was still running, with two programs fighting over the keyboard. The console now starts a shell only when no program owns the terminal.
 
+## 5.18 The first AI model inside KnocOS: the file organizer (v0.14.0)
+
+### What the model does
+
+A Downloads folder is a mess of PDFs, photos, installers and archives. The **file classifier** looks at each file and answers two questions in **one pass** (the "System-1" idea behind models like Jev and Laya, but tiny and local):
+- **What is it?** image, audio, video, document, text, code, program, archive, AI model, data
+- **Where did it come from?** WhatsApp, Telegram, camera, screenshot, screen recording, other
+
+### Features: turning a file into numbers
+
+The network can't read a file directly. `features.py` (and the same code in C) turns the **name** and the **first 512 bytes** into 1,352 numbers between 0 and 1:
+
+| Part | Size | What it catches |
+|---|---|---|
+| Byte histogram | 256 | How much text vs binary, typical byte values |
+| Hashed byte pairs | 512 | Short patterns inside the content |
+| Bytes by position (0–31, 257–262) | 256 | Signatures: `%PDF`, `\x89PNG`, `PK`, ELF, TAR's `ustar` |
+| Hashed letter triples of the name | 256 | `-wa`, `scr`, `img`, `.pd`: app naming styles |
+| Extension | 64 | `.pdf`, `.mp4`... (but the model doesn't trust it blindly) |
+| Shape | 8 | Name length, digits, capitals, spaces, file size, how much is readable text |
+
+**Hashing** (FNV-1a) maps anything (a byte pair, a letter triple) to a fixed number of buckets, so the input size never changes.
+
+### The network and int8
+
+1,352 inputs → 192 → 96 → 16 outputs (10 types + 6 sources), with ReLU between the layers. Training (numpy, on the PC) uses Adam, tries several sizes and keeps the best on the validation set. **Temperature scaling** then calibrates the confidence, so "95%" really means right about 95% of the time.
+
+For KnocOS the weights are stored as **int8** (one byte each, 276 KB for the whole model). Each output neuron keeps one float scale: the int8 products are added up as integers and multiplied by the scale once. That's how phones run neural networks. The int8 model is exactly as accurate as the float one.
+
+### Three layers, so no file gets lost
+
+```text
+AI sure (>= 90%)?              → the AI's folder     (Documents/, WhatsApp/Images/...)
+else the rules know it?        → the rules' folder   (extension, signature bytes, app names, readable text)
+   (.iso .deb .xlsx fonts...   → always the rules: the AI hasn't learned these types)
+else                           → Random/
+```
+
+Everything moved is written to `.organize-log`, and `organize --undo` moves it all back and removes the empty folders.
+
+### What KnocOS needed for it
+
+- **Floating point for programs:** the RISC-V FPU is off until `mstatus.FS` is set. With it on, each program has 32 more registers, so the scheduler saves and restores them (`fp_save` / `fp_restore`) on every switch, or one program would see another's numbers
+- **Program arguments:** `spawn(name, args)` stores an argument string in the new process, and `getargs` reads it. The shell passes everything after the program name
+- **`rename`:** moving a file only rewrites two directory entries (add in the new folder, clear in the old one). The data itself doesn't move, so it's instant even for huge files
+
+### Testing on real files
+
+Generated data is never the whole story. `realcheck.py` compares the model with Linux's `file` tool on real folders. That's how three real problems were found and fixed: numbered PDFs mistaken for system files, text tokens mistaken for code, and `.tar.bz2` mistaken for audio. Each fix was better training data, not a bigger model.
+
 ---
 
 # Part 6: Engineering
@@ -1339,8 +1389,9 @@ After Ctrl-F crashes the console process, the AI restarts it, and the restarted 
 | 0.11.0 | User mode, system calls, capabilities, quotas, system call trace for the AI |
 | 0.12.0 | Wait queues, KnocFS filesystem, programs and models on disk |
 | 0.13.0 | The shell knocsh, the terminal layer, Ctrl-C, system information calls |
+| 0.14.0 | The first AI model inside KnocOS: the file organizer |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.13.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.14.0 && git push --tags`.
 
 ---
 

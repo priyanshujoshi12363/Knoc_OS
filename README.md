@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.13.0-blue)
+![Version](https://img.shields.io/badge/version-v0.14.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.13.0 starting
+[INFO] KnocOS v0.14.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,52 +136,30 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: The Shell, knocsh (v0.13.0)
+## ✅ Just Completed: The First AI Model Inside KnocOS, the File Organizer (v0.14.0)
 
-**You can use KnocOS now.** After booting, you get a prompt and type commands, like `bash` or `cmd`:
+**A neural network now runs inside KnocOS.** `organize` sorts a messy Downloads folder the way a person would:
 
 ```text
-KnocOS shell (knocsh). Type help for commands.
-knoc:/$ ls /bin
-      8248  badcall
-     21216  knocsh
-      8496  modelcheck
-      ...
-knoc:/$ echo saved by the shell > /home/shell.txt
-knoc:/$ cd /home
-knoc:/home$ cat shell.txt
-saved by the shell
-knoc:/home$ ps
-  PID  NAME          CLASS        STATE     CPU  MEMORY    MODE
-  16   knocsh        INTERACTIVE  RUNNING   2    84    KiB user
-  2    guardian      BACKGROUND   BLOCKED   0    0     KiB kernel
-  15   console       INTERACTIVE  BLOCKED   0    0     KiB kernel
-knoc:/home$ counter
-[counter] 1
-[counter] 2
-^C
-knocsh: counter stopped (Ctrl-C)
-knoc:/home$ ai
-AI space: online on core 1, running for 13 s
-Warm kernel restarts: 0
-Crashes in the black box: 0 (0 in a row)
-Safe mode: off
-Drivers disabled by the AI: none
+knoc:/$ organize /home/Downloads --apply
+file                                     AI type          AI source             layer   destination
+335505283.pdf                            document 100%     other            100%  ai      Documents/335505283.pdf
+WhatsApp Image 2025-12-13 at 2.46.41 PM. image    100%     whatsapp         100%  ai      WhatsApp/Images/...
+Screenshot from 2026-06-10 08-06-32.png  image    100%     screenshot       100%  ai      Screenshots/...
+ubuntu-24.04-desktop-amd64.iso           data      67%     other            100%  rules   Disk Images/ubuntu-24.04-desktop-amd64.iso
+mystery.xyz                              archive   71%     other            100%  random  Random/mystery.xyz
+
+14 files: 10 by the AI, 3 by the rules, 1 to Random/
+Files moved. Undo with: organize /home/Downloads --undo
 ```
 
-| Commands | |
-|---|---|
-| Files | `ls [DIR]`, `cd DIR`, `pwd`, `cat FILE`, `echo TEXT [> FILE]`, `mkdir DIR`, `rm PATH` |
-| Programs | `NAME` or `run NAME [&]` (from `/bin`), `ps`, `kill PID`, **Ctrl-C** stops the running program |
-| System | `mem` (RAM + disk), `devices`, `crashes` (the AI's black box reports), `ai` (AI space status), `uptime`, `clear`, `help`, `exit` |
+- **The model** (`models/filenet/`): a small int8 neural network (about 280,000 parameters, 276 KB) that reads a file's name and first 512 bytes and answers two questions in one pass: **what is it** (image, video, document, code, program, archive, AI model...) and **where did it come from** (WhatsApp, Telegram, camera, screenshot, screen recording, other). It's trained on your PC with numpy and scores 45/45 on real Downloads files
+- **Three layers:** the AI decides when it's at least 90% sure; otherwise (and for types it doesn't know yet, like `.iso`, `.deb`, `.xlsx`, fonts) a plain rules program decides; anything left goes to `Random/`, so no file is ever lost
+- **Safe:** it shows a plan first, `--apply` moves, `--undo` puts everything back and removes the empty folders
+- **Same answers as the Python version**, checked file by file: `/bin/organize` computes the same features and the same int8 math in C
+- **New in the kernel for it:** floating-point support for programs (the FPU is on, and its registers are saved on every process switch), program arguments (`spawn(name, args)`, `getargs`), and `rename` for moving files and folders on KnocFS
 
-- **The shell is a user program** (`/bin/knocsh`, INTERACTIVE class). If it crashes, the AI restarts it like any other program
-- **A terminal layer** (`kernel/tty.c`): the kernel console keeps the control keys (Ctrl-C, Ctrl-D and the test keys) and passes every other key to the shell
-- **6 new system calls** for things only the kernel knows: `wait`, `ps`, `kill` (user programs only), `sysinfo`, `devinfo`, `crashinfo`, guarded by a new `SYSTEM` capability
-- **Safe mode starts the shell too**, so after a crash loop you can type `crashes` and `ai` to see what the AI found
-- `kill` now releases the killed process's locks and wakes anyone waiting for it
-
-Before this: **v0.12.0**, wait queues and the KnocFS filesystem (programs and model files on disk). **Next up: v0.14.0, the small NN runtime**: the first neural network running inside KnocOS.
+Before this: **v0.13.0**, the shell `knocsh`. **Next up: more small AI models** (for example an anomaly detector that watches CPU, memory and disk), running on the same int8 runtime.
 
 Recent progress:
 
@@ -201,7 +179,8 @@ Recent progress:
 | `4447fb6` | Device tree, buddy allocator, 2 MiB megapages, 256 MiB AI space, spinlocks + shared UART lock, 2 GiB RAM, version `v0.10.0` |
 | `4197404` | User mode, per-program page tables, 9 system calls, capabilities, memory quotas, system call trace for the AI, ELF loader, 7 user programs, version `v0.11.0` |
 | `5f6f06b` | Wait queues, sleep locks, multi-sector disk requests, KnocFS (extents), file system calls, programs from `/bin`, host tool, version `v0.12.0` |
-| *(uncommitted)* | The shell `knocsh`, terminal layer, Ctrl-C, 6 system calls (`wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo`), version `v0.13.0` |
+| `2b9471a` | The shell `knocsh`, terminal layer, Ctrl-C, 6 system calls (`wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo`), version `v0.13.0` |
+| *(uncommitted)* | File organizer AI (type + source classifier, rules layer, `Random/`), `/bin/organize`, FPU for programs, program arguments, `rename`, version `v0.14.0` |
 
 What works right now:
 
@@ -828,7 +807,7 @@ Compiler flags:
 -ffreestanding -fno-pie -fno-pic -nostdlib -nostartfiles -nodefaultlibs
 -Wall -Wextra -Werror        # every warning is an error
 -MMD -MP                     # automatic header dependencies
--DKNOCOS_VERSION='"v0.13.0"'  # from the VERSION file
+-DKNOCOS_VERSION='"v0.14.0"'  # from the VERSION file
 ```
 
 Header files and `boot/linker.ld` are tracked automatically, so `make` always rebuilds what changed.
@@ -1074,6 +1053,6 @@ The goal is not simply to produce an operating system. The goal is to understand
 
 ## Status
 
-**Early development (v0.13.0):** being built toward a production-grade OS. Not yet ready for real-world use.
+**Early development (v0.14.0):** being built toward a production-grade OS. Not yet ready for real-world use.
 
 Boot, logging, physical memory, Sv39 paging and the kernel heap are working. Timer interrupts (forwarded to the kernel) and Supervisor-mode exception handling are working. The PLIC and an interrupt-driven UART driver are in, so KnocOS now reacts to the keyboard. A power-off driver, automated tests and CI are in place. Device abstraction is done, so **Phase 4 is complete**, and a virtio-blk disk driver gives KnocOS permanent storage. Processes and an AI-aware scheduler now let several tasks run at once, with AI agent work getting the largest CPU share. An AI space on its own CPU core, protected by hardware, survives kernel crashes and freezes, diagnoses them and recovers. A crashing process now only stops itself, and the AI space decides the fix; a crashing kernel is restarted from a clean copy while the AI keeps running. KnocOS now reads its RAM size from the device tree and manages gigabytes of memory with a buddy allocator and megapages. Programs run in user mode with their own page tables and talk to the kernel only through checked system calls. Processes sleep on wait queues instead of polling, and KnocFS stores programs, files and AI model files on the disk. The shell `knocsh` lets you use it: files, programs, processes, and the AI's crash reports.

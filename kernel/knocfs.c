@@ -822,6 +822,92 @@ int knocfs_remove(const char *path)
     return result;
 }
 
+static int inside(const char *path, const char *folder)
+{
+    int i = 0;
+
+    while (folder[i] && path[i] == folder[i])
+    {
+        i++;
+    }
+
+    return folder[i] == 0 && (path[i] == '/' || path[i] == 0);
+}
+
+int knocfs_rename(const char *from, const char *to)
+{
+    char old_name[KNOCFS_NAME_MAX];
+    char new_name[KNOCFS_NAME_MAX];
+    uint32_t old_parent;
+    uint32_t new_parent;
+    uint32_t number;
+    uint32_t existing;
+    uint32_t old_slot;
+    uint32_t new_slot;
+
+    if (!mounted)
+    {
+        return E_IO;
+    }
+
+    if (inside(to, from))
+    {
+        return E_INVAL;
+    }
+
+    sleeplock_acquire(&fs_lock);
+
+    int result = resolve(from, 0, &old_parent, old_name);
+
+    if (result == 0)
+    {
+        result = resolve(to, 0, &new_parent, new_name);
+    }
+
+    if (result == 0 && (old_name[0] == 0 || new_name[0] == 0))
+    {
+        result = E_INVAL;
+    }
+
+    if (result == 0)
+    {
+        result = dir_find(old_parent, old_name, &number, &old_slot);
+    }
+
+    if (result == 0)
+    {
+        result = dir_find(new_parent, new_name, &existing, &new_slot);
+        result = result == 0 ? E_EXISTS : (result == E_NOTFOUND ? 0 : result);
+    }
+
+    if (result == 0)
+    {
+        knocfs_dirent_t entry;
+        knocfs_dirent_t empty;
+
+        memset(&entry, 0, sizeof(entry));
+        entry.inode = number;
+        memcpy(entry.name, new_name, sizeof(entry.name));
+        memset(&empty, 0, sizeof(empty));
+
+        if (write_locked(new_parent, (uint64_t)new_slot * sizeof(entry), &entry, sizeof(entry)) != sizeof(entry))
+        {
+            result = E_IO;
+        }
+        else if (new_parent == old_parent && new_slot == old_slot)
+        {
+            result = 0;
+        }
+        else if (write_locked(old_parent, (uint64_t)old_slot * sizeof(empty), &empty, sizeof(empty)) != sizeof(empty))
+        {
+            result = E_IO;
+        }
+    }
+
+    sleeplock_release(&fs_lock);
+    return result;
+}
+
 int knocfs_stat(uint32_t number, knocfs_stat_t *stat)
 {
     knocfs_inode_t inode;

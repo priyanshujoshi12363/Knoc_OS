@@ -9,20 +9,19 @@ from collections import Counter, defaultdict
 HEAD_BYTES = 512
 CLASSES = ["image", "audio", "video", "document", "text",
            "code", "program", "archive", "model", "data"]
-SOURCES = ["whatsapp", "telegram", "camera", "screenshot", "screen_recording",
-           "browser", "user", "system"]
+SOURCES = ["whatsapp", "telegram", "camera", "screenshot", "screen_recording", "other"]
 
 SOURCES_FOR = {
-    "image": {"whatsapp": 3, "telegram": 2, "camera": 3, "screenshot": 3, "browser": 2},
-    "video": {"whatsapp": 3, "telegram": 2, "camera": 3, "screen_recording": 2, "browser": 1},
-    "audio": {"whatsapp": 3, "telegram": 2, "browser": 2, "user": 1},
-    "document": {"whatsapp": 2, "telegram": 2, "browser": 3, "user": 2},
-    "text": {"browser": 1, "user": 3},
-    "code": {"browser": 1, "user": 3},
-    "archive": {"browser": 3, "telegram": 1, "whatsapp": 1},
-    "model": {"browser": 4, "user": 1},
-    "data": {"browser": 1, "user": 1},
-    "program": {"browser": 1},
+    "image": {"whatsapp": 3, "telegram": 2, "camera": 3, "screenshot": 3, "other": 2},
+    "video": {"whatsapp": 3, "telegram": 2, "camera": 3, "screen_recording": 2, "other": 1},
+    "audio": {"whatsapp": 3, "telegram": 2, "other": 3},
+    "document": {"whatsapp": 2, "telegram": 2, "other": 5},
+    "text": {"other": 1},
+    "code": {"other": 1},
+    "archive": {"other": 3, "telegram": 1, "whatsapp": 1},
+    "model": {"other": 1},
+    "data": {"other": 1},
+    "program": {"other": 1},
 }
 
 SOURCE_DIRS = ["/usr/share", "/usr/lib", "/usr/bin", "/usr/include"]
@@ -132,7 +131,7 @@ def collect_real(per_class, per_extension, rng):
                 if not valid(extension, head):
                     continue
                 label = EXTENSIONS[extension]
-            samples.append({"label": label, "source": "system", "name": os.path.basename(path),
+            samples.append({"label": label, "source": "other", "name": os.path.basename(path),
                             "size": size, "origin": "real", "head": head})
             kept += 1
 
@@ -202,11 +201,41 @@ def make_wav(rng):
     return pad(rng, header), "wav"
 
 
+PDF_OBJECTS = [
+    ["/Type /Catalog", "/Pages 2 0 R"],
+    ["/Type /Pages", "/Kids [3 0 R]", "/Count {count}"],
+    ["/Type /Page", "/Parent 2 0 R", "/MediaBox [0 0 612 792]", "/Contents 4 0 R"],
+    ["/Type /ExtGState", "/ca 0.{alpha}", "/CA 0.{alpha}"],
+    ["/Type /Font", "/Subtype /Type1", "/BaseFont /Helvetica"],
+    ["/Type /XObject", "/Subtype /Image", "/Width {width}", "/Height {height}"],
+    ["/Linearized 1", "/L {length}", "/O {page}", "/N {count}"],
+    ["/Producer ({producer})", "/Creator ({producer})", "/CreationDate (D:2024{month}01120000)"],
+    ["/Length {length}", "/Filter /FlateDecode"],
+]
+PDF_PRODUCERS = ["Microsoft Word", "LibreOffice", "Skia/PDF", "iText", "ReportLab", "wkhtmltopdf",
+                 "Adobe PDF Library", "Ghostscript", "Chromium", "FPDF"]
+
+
 def make_pdf(rng):
-    version = rng.choice(["1.3", "1.4", "1.5", "1.7", "2.0"])
-    body = (f"%PDF-{version}\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\n"
-            f"endobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count {rng.randint(1, 300)} >>\n")
-    return pad(rng, body.encode("latin-1")), "pdf"
+    version = rng.choice(["1.3", "1.4", "1.5", "1.6", "1.7", "2.0"])
+    newline = rng.choice(["\n", "\n", "\r\n", "\r"])
+    multiline = rng.random() < 0.5
+    parts = [f"%PDF-{version}"]
+    if rng.random() < 0.85:
+        parts.append("%\xe2\xe3\xcf\xd3")
+    values = {"count": rng.randint(1, 300), "alpha": rng.randint(1, 9), "width": rng.randint(64, 3000),
+              "height": rng.randint(64, 3000), "length": rng.randint(1000, 900000),
+              "page": rng.randint(3, 99), "producer": rng.choice(PDF_PRODUCERS),
+              "month": f"{rng.randint(1, 12):02}"}
+    for _ in range(rng.randint(2, 5)):
+        keys = [key.format(**values) for key in rng.choice(PDF_OBJECTS)]
+        number = rng.randint(1, 60)
+        if multiline:
+            body = newline.join(["<<"] + keys + [">>"])
+        else:
+            body = "<< " + " ".join(keys) + " >>"
+        parts.append(f"{number} 0 obj{newline}{body}{newline}endobj")
+    return pad(rng, newline.join(parts).encode("latin-1")), "pdf"
 
 
 def make_office(rng):
@@ -247,6 +276,20 @@ def make_tar(rng):
     header[156] = ord("0")
     header[257:265] = b"ustar\x0000"
     return bytes(header), "tar"
+
+
+def make_compressed(rng):
+    kind = rng.choice(["gz", "bz2", "xz", "zst"])
+    if kind == "gz":
+        header = b"\x1f\x8b\x08" + bytes([rng.choice([0, 8])]) + rng.randbytes(6)
+    elif kind == "bz2":
+        header = b"BZh" + bytes([ord("1") + rng.randrange(9)]) + b"1AY&SY"
+    elif kind == "xz":
+        header = b"\xfd7zXZ\x00\x00" + bytes([rng.choice([1, 4])])
+    else:
+        header = b"\x28\xb5\x2f\xfd" + bytes([rng.choice([0x24, 0x64, 0xa4])])
+    extension = rng.choice(["tar." + kind, "tar." + kind, kind])
+    return pad(rng, header), extension
 
 
 def make_7z(rng):
@@ -398,6 +441,13 @@ def make_json(rng):
     return body.encode()[:HEAD_BYTES], "json"
 
 
+def make_token(rng):
+    alphabet = rng.choice(["abcdefghijklmnopqrstuvwxyz0123456789",
+                           "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"])
+    token = "".join(rng.choice(alphabet) for _ in range(rng.randint(16, 120)))
+    return token.encode(), rng.choice(["txt", "", "", "key"])
+
+
 def make_code(rng):
     kind = rng.choice(["c", "py", "js", "sh"])
     name = words(rng, 1)
@@ -429,9 +479,10 @@ GENERATORS = {
     "video": [make_video],
     "audio": [make_audio],
     "document": [lambda rng, source: rng.choice([make_pdf, make_pdf, make_office, make_html])(rng)],
-    "text": [lambda rng, source: rng.choice([make_csv, make_note, make_json])(rng)],
+    "text": [lambda rng, source: rng.choice([make_csv, make_note, make_json, make_token])(rng)],
     "code": [lambda rng, source: make_code(rng)],
-    "archive": [lambda rng, source: rng.choice([make_zip, make_zip, make_rar, make_tar, make_7z])(rng)],
+    "archive": [lambda rng, source: rng.choice([make_zip, make_zip, make_rar, make_tar, make_7z,
+                                                make_compressed, make_compressed])(rng)],
     "model": [lambda rng, source: rng.choice([make_gguf, make_safetensors, make_onnx, make_knm])(rng)],
     "data": [lambda rng, source: make_sqlite(rng)],
     "program": [lambda rng, source: make_elf(rng)],
@@ -516,6 +567,10 @@ def browser_name(rng, label, extension):
             return f"{family}-{size}-instruct-{quant}.gguf"
         return f"{rng.choice(['model', 'pytorch_model', family])}.{extension}"
     style = rng.random()
+    if style < 0.15:
+        stem = str(rng.randint(10**5, 10**11))
+        return f"{stem}.{extension}" if extension else stem
+    style = rng.random()
     stem = "_".join(rng.sample(BROWSER_WORDS, rng.randint(1, 2)))
     if style < 0.3:
         stem += f"_{rng.choice(['march', 'final', 'v2', '2024', 'new'])}"
@@ -546,7 +601,7 @@ def user_name(rng, label, extension):
 NAMERS = {
     "whatsapp": whatsapp_name, "telegram": telegram_name, "camera": camera_name,
     "screenshot": screenshot_name, "screen_recording": screen_recording_name,
-    "browser": browser_name, "user": user_name,
+    "other": lambda rng, label, extension: (browser_name if rng.random() < 0.6 else user_name)(rng, label, extension),
 }
 
 
@@ -598,7 +653,7 @@ def main():
     source_counts = Counter(sample["source"] for sample in samples)
     source_target = args.per_class * 4 // 5
     for source in SOURCES:
-        if source == "system":
+        if source == "other":
             continue
         types = {label: weights[source] for label, weights in SOURCES_FOR.items() if source in weights}
         while source_counts[source] < source_target:

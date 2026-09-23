@@ -19,3 +19,4 @@ PROGRAM files
 PROGRAM modelcheck
 PROGRAM knocsh
 PROGRAM counter
+PROGRAM organize

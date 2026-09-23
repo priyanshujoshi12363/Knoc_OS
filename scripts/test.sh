@@ -2,7 +2,7 @@
 set -u
 
 KERNEL=${KERNEL:-knocos.elf}
-TIMEOUT=${TIMEOUT:-35}
+TIMEOUT=${TIMEOUT:-50}
 GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
 HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 LOG=$(mktemp)
@@ -91,7 +91,9 @@ show_log_on_failure() {
 echo "Boot 1: self-tests and the shell"
 boot "knocos-echo-test" "ls /bin" "cat /hello.txt" \
     "echo saved by the shell > /home/shell.txt" "cd /home" "pwd" "cat shell.txt" \
-    "ps" "mem" "devices" "ai" "crashes" "counter" "^C" "kill 2"
+    "ps" "mem" "devices" "ai" "crashes" "counter" "^C" "kill 2" \
+    "organize" "organize /home/Downloads --apply" "ls /home/Downloads/WhatsApp/Images" \
+    "ls /home/Downloads/Random" "organize /home/Downloads --undo" "ls /home/Downloads"
 check \
     "Supervisor interrupts enabled" \
     "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
@@ -131,7 +133,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: badcall bigmem counter crash files hello hog knocsh modelcheck noperm spy" \
+    "[files] /bin: badcall bigmem counter crash files hello hog knocsh modelcheck noperm organize spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -152,6 +154,15 @@ check \
     "[counter] 2" \
     "knocsh: counter stopped (Ctrl-C)" \
     "kill (only user programs can be stopped): permission denied" \
+    "14 files: 10 by the AI, 3 by the rules, 1 to Random/" \
+    "WhatsApp/Images/WhatsApp Image 2025-12-13 at 2.46.41 PM.jpeg" \
+    "Disk Images/ubuntu-24.04-desktop-amd64.iso" \
+    "Installers/code_1.93.1_amd64.deb" \
+    "Spreadsheets/budget_2024.xlsx" \
+    "random  Random/mystery.xyz" \
+    "Files moved. Undo with: organize /home/Downloads --undo" \
+    "       700  mystery.xyz" \
+    "Restored 14 files and removed the empty folders" \
     "Powering off"
 show_log_on_failure
 

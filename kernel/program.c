@@ -16,6 +16,7 @@ PROGRAM(files)
 PROGRAM(modelcheck)
 PROGRAM(knocsh)
 PROGRAM(counter)
+PROGRAM(organize)
 
 #define ENTRY(name, class, caps, flags) \
     {#name, program_##name##_start, program_##name##_end, class, caps, flags}
@@ -34,6 +35,7 @@ static const program_t programs[] = {
           CAP_CONSOLE | CAP_SPAWN | CAP_MEMORY | CAP_FILES_READ | CAP_FILES_WRITE | CAP_SYSTEM,
           PROGRAM_TERMINAL),
     ENTRY(counter, PROCESS_CLASS_NORMAL, CAP_CONSOLE, 0),
+    ENTRY(organize, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_MEMORY | CAP_FILES_READ | CAP_FILES_WRITE, 0),
 };
 
 #define PROGRAM_COUNT (sizeof(programs) / sizeof(programs[0]))

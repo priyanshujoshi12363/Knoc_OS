@@ -27,6 +27,9 @@ void yield(void);
 void sleep(unsigned long ticks);
 unsigned long uptime(void);
 int spawn(const char *name);
+int spawn_args(const char *name, const char *args);
+long getargs(char *buffer, unsigned long length);
+int rename(const char *from, const char *to);
 void *mem_alloc(unsigned long bytes);
 
 void print(const char *text);
@@ -35,6 +38,7 @@ void print_hex(unsigned long value);
 int is_error(long result);
 
 unsigned long strlen(const char *text);
+int memcmp_bytes(const void *a, const void *b, unsigned long length);
 int strcmp(const char *a, const char *b);
 char *strcpy(char *destination, const char *source);
 long parse_number(const char *text);

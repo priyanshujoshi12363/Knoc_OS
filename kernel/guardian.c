@@ -128,17 +128,6 @@ void guardian_set_ram_end(uint64_t ram_end)
     guardian_mailbox.ram_end = ram_end;
 }
 
-void guardian_set_collect(int enabled)
-{
-    guardian_mailbox.collect_mode = (uint32_t)enabled;
-}
-
-void guardian_set_inject_label(uint32_t label)
-{
-    guardian_mailbox.inject_label = label;
-    __sync_synchronize();
-}
-
 int guardian_restart_safe_mode(void)
 {
     return guardian_online && guardian_mailbox.restart_safe_mode;
@@ -404,7 +393,6 @@ static void post_fault(process_fault_t *fault)
     guardian_mailbox.fault_user = (uint32_t)fault->user;
     guardian_mailbox.fault_denied = fault->denied;
     guardian_mailbox.fault_trace_count = fault->trace_count;
-    guardian_mailbox.fault_label = fault->label;
 
     for (uint32_t i = 0; i < fault->trace_count && i < MAILBOX_TRACE_MAX; i++)
     {

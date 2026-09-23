@@ -63,8 +63,8 @@ typedef struct process
 
     open_file_t files[PROCESS_FILES_MAX];
 
-    /* Collect mode: the true cause of a crash made on purpose */
-    uint32_t label;
+    uint64_t fp_state[33];
+    char args[ARGS_MAX];
 } process_t;
 
 typedef struct class_info
@@ -107,6 +107,8 @@ static const char *boot_driver = 0;
 
 extern void context_switch(process_context_t *old_context,
                            process_context_t *new_context);
+extern void fp_save(uint64_t *state);
+extern void fp_restore(uint64_t *state);
 
 extern void user_enter(uintptr_t entry, uintptr_t user_sp, uintptr_t kernel_sp)
     __attribute__((noreturn));
@@ -151,6 +153,11 @@ static void process_trampoline(void);
 static void reset_context(process_t *p)
 {
     process_context_t empty = {0};
+
+    for (int i = 0; i < 33; i++)
+    {
+        p->fp_state[i] = 0;
+    }
 
     p->context = empty;
     p->context.ra = (uint64_t)(uintptr_t)process_trampoline;
@@ -260,6 +267,8 @@ static void schedule(void)
     current = next;
     guardian_set_current(next->pid, next->name);
     vm_switch(next->satp);
+    fp_save(previous->fp_state);
+    fp_restore(next->fp_state);
     context_switch(&previous->context, &next->context);
 }
 
@@ -358,7 +367,7 @@ static process_t *create_locked(const char *name,
     p->denied = 0;
     p->wait_channel = 0;
     p->woken = 0;
-    p->label = 0;
+    p->args[0] = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -557,6 +566,16 @@ static void user_process_start(void *arg)
 
 int process_spawn(const program_t *program)
 {
+    return process_spawn_args(program, "");
+}
+
+const char *process_args(void)
+{
+    return current->args;
+}
+
+int process_spawn_args(const program_t *program, const char *args)
+{
     if (program == 0)
     {
         return -1;
@@ -575,6 +594,16 @@ int process_spawn(const program_t *program)
     p->state = PROCESS_LOADING;
     p->user = 1;
     p->program = program;
+
+    int length = 0;
+
+    while (args[length] && length < ARGS_MAX - 1)
+    {
+        p->args[length] = args[length];
+        length++;
+    }
+
+    p->args[length] = 0;
     p->capabilities = program->capabilities;
     p->mem_limit = program->process_class == PROCESS_CLASS_AI_AGENT
                        ? PROCESS_QUOTA_AI_AGENT
@@ -710,28 +739,6 @@ void process_record_syscall(uint64_t number)
 void process_note_denied(void)
 {
     current->denied++;
-}
-
-void process_set_label(uint32_t label)
-{
-    current->label = label;
-}
-
-int process_state(int pid)
-{
-    uint64_t enabled = interrupts_disable();
-    int state = -1;
-
-    for (int i = 0; i < PROCESS_MAX; i++)
-    {
-        if (processes[i].state != PROCESS_UNUSED && processes[i].pid == pid)
-        {
-            state = processes[i].state;
-        }
-    }
-
-    interrupts_restore(enabled);
-    return state;
 }
 
 int64_t process_mem_alloc(uint64_t bytes)
@@ -1217,7 +1224,6 @@ int process_next_crash(process_fault_t *fault)
         fault->restarts = p->restarts;
         fault->user = p->user;
         fault->denied = p->denied;
-        fault->label = p->label;
         fault->trace_count = p->trace_count < PROCESS_TRACE_MAX ? p->trace_count : PROCESS_TRACE_MAX;
 
         for (uint32_t t = 0; t < fault->trace_count; t++)
