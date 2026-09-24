@@ -454,19 +454,46 @@ static void cmd_ps(void)
 
 static void cmd_kill(int argc, char **args)
 {
-    long pid = argc > 1 ? parse_number(args[1]) : -1;
-
-    if (pid < 0)
+    if (argc < 2)
     {
-        print("usage: kill PID\n");
+        print("usage: kill PID | NAME\n");
         return;
     }
 
-    long result = kill((int)pid);
+    long pid = parse_number(args[1]);
 
-    if (result != 0)
+    if (pid >= 0)
     {
-        fail(result == E_PERM ? "kill (only user programs can be stopped)" : "kill", result);
+        long result = kill((int)pid);
+
+        if (result != 0)
+        {
+            fail(result == E_PERM ? "kill (only user programs can be stopped)" : "kill", result);
+        }
+
+        return;
+    }
+
+    process_info_t info;
+    int pids[32];
+    int count = 0;
+
+    for (unsigned long i = 0; ps(i, &info) == 0 && count < 32; i++)
+    {
+        if (info.user && strcmp(info.name, args[1]) == 0 && strcmp(info.name, "knocsh") != 0)
+        {
+            pids[count++] = info.pid;
+        }
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        kill(pids[i]);
+    }
+
+    if (count == 0)
+    {
+        fail(args[1], E_NOTFOUND);
     }
 }
 
@@ -1033,6 +1060,91 @@ static void cmd_memory(int argc, char **args)
     }
 }
 
+static void cmd_health(void)
+{
+    telemetry_sample_t s;
+
+    if (telemetry(0, &s) != 0)
+    {
+        print("health: no telemetry yet\n");
+        return;
+    }
+
+    print("CPU ");
+    print_uint(s.cpu_busy);
+    print("%, ");
+    print_uint(s.processes);
+    print(" processes, RAM ");
+    print_uint((s.ram_total_kib - s.ram_free_kib) / 1024);
+    print(" / ");
+    print_uint(s.ram_total_kib / 1024);
+    print(" MiB used, disk ");
+    print_uint(s.disk_free_kib / 1024);
+    print(" / ");
+    print_uint(s.disk_total_kib / 1024);
+    print(" MiB free\n");
+    print("Per second: ");
+    print_uint(s.syscalls);
+    print(" system calls, ");
+    print_uint(s.disk_reads + s.disk_writes);
+    print(" disk requests, ");
+    print_uint(s.spawns);
+    print(" programs started, ");
+    print_uint(s.crashes);
+    print(" crashes\n");
+    print("Top CPU: ");
+    print(s.top_cpu_name[0] ? s.top_cpu_name : "-");
+    print(" ");
+    print_uint(s.top_cpu);
+    print("%   top memory: ");
+    print(s.top_mem_name[0] ? s.top_mem_name : "-");
+    print(" ");
+    print_uint(s.top_mem_kib / 1024);
+    print(" MiB   most system calls: ");
+    print(s.top_sys_name[0] ? s.top_sys_name : "-");
+    print("\n");
+
+    process_info_t info;
+    int running = 0;
+
+    for (unsigned long i = 0; ps(i, &info) == 0; i++)
+    {
+        running |= strcmp(info.name, "healthd") == 0;
+    }
+
+    print(running ? "Anomaly detector: running\n" : "Anomaly detector: not running\n");
+
+    graph_request_t request;
+    graph_edge_info_t edge;
+    int shown = 0;
+
+    for (unsigned long i = 0; i < 400 && shown < 5; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_RECENT, i);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        if (edge.relation == GRAPH_REL_ANOMALY)
+        {
+            if (!shown)
+            {
+                print("Recent problems:\n");
+            }
+
+            print_edge(&edge);
+            shown++;
+        }
+    }
+
+    if (!shown)
+    {
+        print("No problems recorded\n");
+    }
+}
+
 static void cmd_uptime(void)
 {
     unsigned long ticks = uptime();
@@ -1048,8 +1160,9 @@ static void cmd_help(void)
 {
     print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT [> FILE]  mkdir DIR  rm PATH\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
-    print("System:    mem  devices  crashes  ai  uptime  clear  exit\n");
+    print("System:    mem  devices  crashes  ai  health  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
+    print("AI:        ask QUESTION (the Qwen LLM)  organize DIR\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 
@@ -1128,6 +1241,23 @@ static int execute(int argc, char **args)
     else if (strcmp(command, "memory") == 0)
     {
         cmd_memory(argc, args);
+    }
+    else if (strcmp(command, "sleep") == 0)
+    {
+        long seconds = argc > 1 ? parse_number(args[1]) : -1;
+
+        if (seconds < 0)
+        {
+            print("usage: sleep SECONDS\n");
+        }
+        else
+        {
+            sleep((unsigned long)seconds * 100);
+        }
+    }
+    else if (strcmp(command, "health") == 0)
+    {
+        cmd_health();
     }
     else if (strcmp(command, "uptime") == 0)
     {

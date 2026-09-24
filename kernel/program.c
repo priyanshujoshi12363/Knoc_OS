@@ -17,6 +17,15 @@ PROGRAM(modelcheck)
 PROGRAM(knocsh)
 PROGRAM(counter)
 PROGRAM(organize)
+PROGRAM(leak)
+PROGRAM(spin)
+PROGRAM(diskload)
+PROGRAM(quiet)
+PROGRAM(spawner)
+PROGRAM(filler)
+PROGRAM(recorder)
+PROGRAM(healthd)
+PROGRAM(ask)
 
 #define ENTRY(name, class, caps, flags) \
     {#name, program_##name##_start, program_##name##_end, class, caps, flags}
@@ -36,6 +45,17 @@ static const program_t programs[] = {
           PROGRAM_TERMINAL),
     ENTRY(counter, PROCESS_CLASS_NORMAL, CAP_CONSOLE, 0),
     ENTRY(organize, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_MEMORY | CAP_FILES_READ | CAP_FILES_WRITE | CAP_KNOWLEDGE, 0),
+    ENTRY(leak, PROCESS_CLASS_AI_AGENT, CAP_CONSOLE | CAP_MEMORY, 0),
+    ENTRY(spin, PROCESS_CLASS_NORMAL, CAP_CONSOLE, 0),
+    ENTRY(diskload, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_FILES_READ | CAP_FILES_WRITE, 0),
+    ENTRY(quiet, PROCESS_CLASS_NORMAL, 0, 0),
+    ENTRY(spawner, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_SPAWN, 0),
+    ENTRY(filler, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_FILES_READ | CAP_FILES_WRITE, 0),
+    ENTRY(recorder, PROCESS_CLASS_BACKGROUND, CAP_CONSOLE | CAP_SYSTEM, 0),
+    ENTRY(healthd, PROCESS_CLASS_BACKGROUND,
+          CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_MEMORY, 0),
+    ENTRY(ask, PROCESS_CLASS_AI_AGENT,
+          CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_MEMORY, 0),
 };
 
 #define PROGRAM_COUNT (sizeof(programs) / sizeof(programs[0]))

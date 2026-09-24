@@ -66,6 +66,12 @@ typedef struct process
 
     uint64_t fp_state[33];
     char args[ARGS_MAX];
+    uint64_t syscalls;
+    uint64_t seen_cpu;
+    uint64_t seen_syscalls;
+    uint64_t spawned;
+    uint64_t seen_spawned;
+    uint64_t block_seq;
 } process_t;
 
 typedef struct class_info
@@ -102,6 +108,12 @@ static int resched_pending = 0;
 static uint64_t block_count = 0;
 static char crash_channel;
 static uint64_t disk_loads = 0;
+static uint64_t count_switches;
+static uint64_t count_syscalls;
+static uint64_t count_denied;
+static uint64_t count_spawns;
+static uint64_t count_crashes;
+static uint64_t seen_ticks;
 
 #define PROGRAM_FILE_MAX (16UL * 1024 * 1024)
 static const char *boot_driver = 0;
@@ -265,6 +277,7 @@ static void schedule(void)
         return;
     }
 
+    count_switches++;
     current = next;
     guardian_set_current(next->pid, next->name);
     vm_switch(next->satp);
@@ -369,6 +382,11 @@ static process_t *create_locked(const char *name,
     p->wait_channel = 0;
     p->woken = 0;
     p->args[0] = 0;
+    p->syscalls = 0;
+    p->seen_cpu = 0;
+    p->seen_syscalls = 0;
+    p->spawned = 0;
+    p->seen_spawned = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -636,6 +654,13 @@ int process_spawn_args(const program_t *program, const char *args)
 
     interrupts_restore(enabled);
 
+    count_spawns++;
+
+    if (current != 0)
+    {
+        current->spawned++;
+    }
+
     memgraph_record(GRAPH_KIND_ACTOR, current != 0 && current->user ? current->name : "kernel",
                     GRAPH_REL_STARTED, GRAPH_KIND_PROGRAM, program->name, "kernel", 100);
     return pid;
@@ -735,6 +760,8 @@ uint32_t process_capabilities(void)
 
 void process_record_syscall(uint64_t number)
 {
+    count_syscalls++;
+    current->syscalls++;
     current->trace[current->trace_count % PROCESS_TRACE_MAX] =
         number < 255 ? (uint8_t)number : 255;
     current->trace_count++;
@@ -742,6 +769,7 @@ void process_record_syscall(uint64_t number)
 
 void process_note_denied(void)
 {
+    count_denied++;
     current->denied++;
 }
 
@@ -856,7 +884,7 @@ int process_block(void *channel, uint64_t timeout)
     current->wake_tick = timeout != 0 ? timer_ticks() + timeout : 0;
     current->woken = 0;
     current->state = PROCESS_BLOCKED;
-    block_count++;
+    current->block_seq = ++block_count;
 
     schedule();
 
@@ -935,12 +963,42 @@ void process_wait_crash(uint64_t timeout)
     interrupts_restore(enabled);
 }
 
+static void track_lock(process_t *p, sleeplock_t *lock)
+{
+    for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
+    {
+        if (p->locks[i] == 0)
+        {
+            p->locks[i] = lock;
+            return;
+        }
+    }
+}
+
 void sleeplock_acquire(sleeplock_t *lock)
 {
     uint64_t enabled = interrupts_disable();
 
-    while (lock->locked)
+    while (1)
     {
+        if (!lock->locked)
+        {
+            lock->locked = 1;
+            lock->owner = current != 0 ? current->pid : 0;
+
+            if (current != 0)
+            {
+                track_lock(current, lock);
+            }
+
+            break;
+        }
+
+        if (current != 0 && lock->owner == current->pid)
+        {
+            break;
+        }
+
         if (process_can_block())
         {
             process_block(lock, 0);
@@ -953,30 +1011,13 @@ void sleeplock_acquire(sleeplock_t *lock)
         }
     }
 
-    lock->locked = 1;
-    lock->owner = current != 0 ? current->pid : 0;
-
-    if (current != 0)
-    {
-        for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
-        {
-            if (current->locks[i] == 0)
-            {
-                current->locks[i] = lock;
-                break;
-            }
-        }
-    }
-
     interrupts_restore(enabled);
 }
 
 void sleeplock_release(sleeplock_t *lock)
 {
     uint64_t enabled = interrupts_disable();
-
-    lock->locked = 0;
-    lock->owner = 0;
+    process_t *next = 0;
 
     if (current != 0)
     {
@@ -989,7 +1030,37 @@ void sleeplock_release(sleeplock_t *lock)
         }
     }
 
-    process_wake(lock);
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->state == PROCESS_BLOCKED && p->wait_channel == lock &&
+            (next == 0 || p->block_seq < next->block_seq))
+        {
+            next = p;
+        }
+    }
+
+    if (next == 0)
+    {
+        lock->locked = 0;
+        lock->owner = 0;
+    }
+    else
+    {
+        lock->owner = next->pid;
+        track_lock(next, lock);
+        next->woken = 1;
+        next->state = PROCESS_READY;
+        place_vruntime(next);
+
+        if (current == &processes[0] ||
+            (next->process_class == PROCESS_CLASS_INTERACTIVE &&
+             current->process_class != PROCESS_CLASS_INTERACTIVE))
+        {
+            resched_pending = 1;
+        }
+    }
 
     interrupts_restore(enabled);
 }
@@ -1126,6 +1197,117 @@ int process_alive(int pid)
     return alive;
 }
 
+static uint64_t since(uint64_t *seen, uint64_t now)
+{
+    uint64_t delta = now - *seen;
+
+    *seen = now;
+    return delta;
+}
+
+static void copy_telemetry_name(char *to, const char *from)
+{
+    int i = 0;
+
+    while (from[i] && i < TELEMETRY_NAME_MAX - 1)
+    {
+        to[i] = from[i];
+        i++;
+    }
+
+    to[i] = 0;
+}
+
+void process_telemetry(telemetry_sample_t *sample)
+{
+    static uint64_t seen_switches;
+    static uint64_t seen_syscall_count;
+    static uint64_t seen_denied;
+    static uint64_t seen_spawns;
+    static uint64_t seen_crashes;
+    uint64_t enabled = interrupts_disable();
+    uint64_t elapsed = since(&seen_ticks, timer_ticks());
+    uint64_t best_cpu = 0;
+    uint64_t best_sys = 0;
+    uint64_t best_mem = 0;
+    uint64_t best_spawn = 0;
+    uint64_t idle = 0;
+
+    if (elapsed == 0)
+    {
+        elapsed = 1;
+    }
+
+    sample->switches = (uint32_t)since(&seen_switches, count_switches);
+    sample->syscalls = (uint32_t)since(&seen_syscall_count, count_syscalls);
+    sample->denied = (uint32_t)since(&seen_denied, count_denied);
+    sample->spawns = (uint32_t)since(&seen_spawns, count_spawns);
+    sample->crashes = (uint32_t)since(&seen_crashes, count_crashes);
+    sample->processes = 0;
+    sample->user_memory_kib = 0;
+    sample->top_cpu_pid = sample->top_mem_pid = sample->top_sys_pid = sample->top_spawn_pid = -1;
+    sample->top_cpu_name[0] = sample->top_mem_name[0] = sample->top_sys_name[0] = 0;
+    sample->top_spawn_name[0] = 0;
+
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+        uint64_t cpu = since(&p->seen_cpu, p->cpu_ticks);
+        uint64_t sys = since(&p->seen_syscalls, p->syscalls);
+        uint64_t spawned = since(&p->seen_spawned, p->spawned);
+
+        if (p->state == PROCESS_UNUSED || p->state == PROCESS_EXITED)
+        {
+            continue;
+        }
+
+        if (i == 0)
+        {
+            idle = cpu;
+            continue;
+        }
+
+        sample->processes++;
+        sample->user_memory_kib += p->mem_used / 1024;
+
+        if (cpu > best_cpu)
+        {
+            best_cpu = cpu;
+            sample->top_cpu_pid = p->pid;
+            copy_telemetry_name(sample->top_cpu_name, p->name);
+        }
+
+        if (sys > best_sys)
+        {
+            best_sys = sys;
+            sample->top_sys_pid = p->pid;
+            copy_telemetry_name(sample->top_sys_name, p->name);
+        }
+
+        if (spawned > best_spawn)
+        {
+            best_spawn = spawned;
+            sample->top_spawn_pid = p->pid;
+            copy_telemetry_name(sample->top_spawn_name, p->name);
+        }
+
+        if (p->mem_used > best_mem)
+        {
+            best_mem = p->mem_used;
+            sample->top_mem_pid = p->pid;
+            copy_telemetry_name(sample->top_mem_name, p->name);
+        }
+    }
+
+    interrupts_restore(enabled);
+
+    sample->cpu_busy = idle >= elapsed ? 0 : (uint32_t)((elapsed - idle) * 100 / elapsed);
+    sample->top_cpu = (uint32_t)(best_cpu * 100 / elapsed);
+    sample->top_sys = (uint32_t)(best_sys * 100 / elapsed);
+    sample->top_mem_kib = (uint32_t)(best_mem / 1024);
+    sample->top_spawn = (uint32_t)best_spawn;
+}
+
 int process_info(uint32_t index, process_info_t *info)
 {
     uint64_t enabled = interrupts_disable();
@@ -1173,6 +1355,7 @@ void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
 {
     interrupts_disable();
 
+    count_crashes++;
     current->state = PROCESS_CRASHED;
     current->fault_reported = 0;
 

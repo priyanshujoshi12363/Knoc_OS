@@ -109,6 +109,11 @@ int rename(const char *from, const char *to)
     return (int)syscall(SYS_RENAME, (long)from, (long)to, 0);
 }
 
+int telemetry(unsigned long index, telemetry_sample_t *sample)
+{
+    return (int)syscall(SYS_TELEMETRY, (long)index, (long)sample, 0);
+}
+
 int graph(graph_request_t *request, void *out)
 {
     return (int)syscall(SYS_GRAPH, (long)request, (long)out, 0);

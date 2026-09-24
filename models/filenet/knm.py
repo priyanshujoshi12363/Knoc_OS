@@ -14,6 +14,7 @@ def quantize_layers(layers, activation_scales):
     for index, (weights, bias) in enumerate(layers):
         last = index == len(layers) - 1
         w_scale = np.maximum(np.abs(weights).max(axis=0), 1e-8) / 127
+        w_scale = np.maximum(w_scale, np.abs(bias) / (in_scale * 2.0 ** 30))
         wq = np.clip(np.round(weights / w_scale), -127, 127).astype(np.int8)
         bq = np.round(bias / (in_scale * w_scale)).astype(np.int32)
         out_scale = 0.0 if last else float(activation_scales[index]) / 127
@@ -25,11 +26,13 @@ def quantize_layers(layers, activation_scales):
     return quantized
 
 
-def save(path, quantized, heads):
+def save(path, quantized, heads, config=None):
+    if config is None:
+        config = (F.HIST, F.PAIRS, F.MAGIC, F.NAME, F.EXT, F.SHAPE)
     with open(path, "wb") as file:
         file.write(MAGIC)
         file.write(struct.pack("<I", VERSION))
-        file.write(struct.pack("<6I", F.HIST, F.PAIRS, F.MAGIC, F.NAME, F.EXT, F.SHAPE))
+        file.write(struct.pack("<6I", *config))
         file.write(struct.pack("<I", len(heads)))
         for names in heads:
             file.write(struct.pack("<I", len(names)))

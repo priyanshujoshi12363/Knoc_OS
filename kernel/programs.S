@@ -20,3 +20,12 @@ PROGRAM modelcheck
 PROGRAM knocsh
 PROGRAM counter
 PROGRAM organize
+PROGRAM leak
+PROGRAM spin
+PROGRAM diskload
+PROGRAM quiet
+PROGRAM spawner
+PROGRAM filler
+PROGRAM recorder
+PROGRAM healthd
+PROGRAM ask

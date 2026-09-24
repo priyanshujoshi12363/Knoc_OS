@@ -37,6 +37,14 @@ if [ -f models/filenet/filenet.knm ]; then
     $KNOCFS put "$DISK" models/filenet/filenet.knm /models/filenet.knm
 fi
 
+if [ -f models/health/health.knm ]; then
+    $KNOCFS put "$DISK" models/health/health.knm /models/health.knm
+fi
+
+if [ -f models/llm/qwen.kllm ] && [ "$SIZE_MB" -ge 1024 ]; then
+    $KNOCFS put "$DISK" models/llm/qwen.kllm /models/qwen.kllm
+fi
+
 SAMPLES=$(mktemp -d)
 python3 scripts/sample_downloads.py "$SAMPLES"
 $KNOCFS mkdir "$DISK" /home/Downloads

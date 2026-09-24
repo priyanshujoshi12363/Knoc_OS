@@ -2,6 +2,26 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.16.0] - 2026-09-24
+
+The anomaly detector, and the first LLM inside KnocOS.
+
+### Added
+- Kernel telemetry (`kernel/telemetry.c`): a background process takes one sample per second (CPU busy, process switches, system calls, denied calls, processes, programs started, crashes, disk reads, writes and wait, free RAM, user memory, free disk, and the top program for CPU, memory, system calls and starts), keeping the last 600; `telemetry` system call with the `SYSTEM` capability
+- The anomaly detector: `models/health/` (labeled data collection in QEMU, 48 window features over 10 seconds, a 48→64→32→6 int8 MLP, leave-one-run-out tests) and `/bin/healthd`, a background daemon that finds memory leaks, CPU hogs, disk thrashing, spawn storms and a filling disk, names the program, says when a problem is over and writes it to the memory graph (`anomaly` links)
+- A memory leak must grow in at least 6 of the last 10 seconds, so loading a big model is not a leak
+- Load programs to train and test it: `leak`, `spin`, `diskload`, `quiet`, `spawner`, `filler`, `recorder`
+- Shell: `health`, `sleep N`, `kill NAME`, `ask QUESTION`
+- The LLM: `models/llm/export.py` turns Qwen2.5-0.5B-Instruct into `qwen.kllm` (int8, groups of 64, with its byte-level BPE tokenizer, 528 MB); `models/llm/reference.py` is the numpy reference; `/bin/ask` is our own C inference engine (BPE tokenizer, int8 matmul, RMSNorm, RoPE, grouped-query attention with a KV cache, SwiGLU, ChatML prompt, streaming answers)
+- `make reset-disk DISK_MB=1024` (or larger) puts the LLM on the disk
+- `make test`: Run 5 checks the anomaly detector on a memory leak and a CPU hog, and Boot 1 checks there are no false alarms
+
+### Changed
+- Sleep locks are fair: a released lock goes to the process that has waited longest, so the telemetry thread is never starved by a disk-heavy program
+- Free disk space is a counter, read without the filesystem lock
+- Faster disk: requests of up to 128 KiB, file reads in runs of contiguous blocks and pages
+- `knm.save` takes a `config`; the weight scale grows when a bias would not fit in int32
+
 ## [0.15.0] - 2026-09-24
 
 The memory graph: one shared memory for every AI model.

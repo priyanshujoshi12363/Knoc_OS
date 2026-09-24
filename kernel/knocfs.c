@@ -10,6 +10,7 @@
 #define BITS_PER_BLOCK (KNOCFS_BLOCK_SIZE * 8)
 #define BLACKBOX_RESERVED_SECTORS 8
 #define NO_BLOCK 0xFFFFFFFFU
+#define RUN_BLOCKS_MAX 32
 
 _Static_assert(sizeof(knocfs_inode_t) == 128, "inodes are 128 bytes");
 _Static_assert(sizeof(knocfs_dirent_t) == 64, "directory entries are 64 bytes");
@@ -26,6 +27,7 @@ static uint8_t inode_buffer[KNOCFS_BLOCK_SIZE] __attribute__((aligned(16)));
 static uint8_t bitmap_buffer[KNOCFS_BLOCK_SIZE] __attribute__((aligned(16)));
 static uint8_t zero_block[KNOCFS_BLOCK_SIZE];
 static uint32_t bitmap_cached = NO_BLOCK;
+static volatile uint32_t free_blocks;
 static int bitmap_dirty;
 
 /* ---- Blocks ---- */
@@ -101,6 +103,12 @@ static void block_mark(uint32_t block, int used)
     }
 
     uint32_t bit = block % BITS_PER_BLOCK;
+    int was_used = (bitmap_buffer[bit / 8] >> (bit % 8)) & 1;
+
+    if (was_used != (used != 0))
+    {
+        free_blocks += used ? -1 : 1;
+    }
 
     if (used)
     {
@@ -344,10 +352,25 @@ static int64_t read_locked(uint32_t number, uint64_t offset, void *buffer, uint6
 
         if (within == 0 && chunk == KNOCFS_BLOCK_SIZE)
         {
-            if (read_block(block, to + done) != 0)
+            uint32_t run = 1;
+            uint32_t index = (uint32_t)(position / KNOCFS_BLOCK_SIZE);
+
+            while (run < RUN_BLOCKS_MAX &&
+                   (uint64_t)(run + 1) * KNOCFS_BLOCK_SIZE <= length - done &&
+                   file_block(&inode, index + run) == block + run)
+            {
+                run++;
+            }
+
+            if (device_read_blocks(fs_disk,
+                                   super.start_sector + (uint64_t)block * SECTORS_PER_BLOCK,
+                                   (uint64_t)run * SECTORS_PER_BLOCK,
+                                   to + done) != 0)
             {
                 return E_IO;
             }
+
+            chunk = (uint64_t)run * KNOCFS_BLOCK_SIZE;
         }
         else
         {
@@ -641,8 +664,22 @@ int knocfs_mount(device_t *disk)
         return -1;
     }
 
+    uint32_t count = 0;
+
+    for (uint32_t block = super.data_start; block < super.total_blocks; block++)
+    {
+        count += !block_used(block);
+    }
+
+    free_blocks = count;
     mounted = 1;
     return 0;
+}
+
+void knocfs_space(uint64_t *total_bytes, uint64_t *free_bytes)
+{
+    *total_bytes = mounted ? (uint64_t)(super.total_blocks - super.data_start) * KNOCFS_BLOCK_SIZE : 0;
+    *free_bytes = mounted ? (uint64_t)free_blocks * KNOCFS_BLOCK_SIZE : 0;
 }
 
 int knocfs_mounted(void)

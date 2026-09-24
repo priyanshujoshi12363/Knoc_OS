@@ -12,11 +12,13 @@
 #include "tty.h"
 #include "guardian.h"
 #include "memgraph.h"
+#include "telemetry.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
 #define SYSCALL_SLEEP_MAX 6000
 #define SYSCALL_FILE_IO_MAX (16UL * 1024 * 1024)
+#define FILE_RUN_MAX (1024UL * 1024)
 
 static const char *syscall_names[SYS_COUNT] = {
     [SYS_EXIT] = "exit",
@@ -44,6 +46,7 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_GETARGS] = "getargs",
     [SYS_RENAME] = "rename",
     [SYS_GRAPH] = "graph",
+    [SYS_TELEMETRY] = "telemetry",
 };
 
 const char *syscall_name(uint64_t number)
@@ -270,6 +273,20 @@ static int64_t file_io(open_file_t *file, uintptr_t buffer, uint64_t length, int
         if (vm_user_translate(process_user_root(), address, writing ? PTE_R : PTE_W, &physical) != 0)
         {
             return done > 0 ? (int64_t)done : E_FAULT;
+        }
+
+        while (chunk < length - done && chunk < FILE_RUN_MAX)
+        {
+            uintptr_t next;
+            uint64_t more = length - done - chunk < PAGE_SIZE ? length - done - chunk : PAGE_SIZE;
+
+            if (vm_user_translate(process_user_root(), address + chunk, writing ? PTE_R : PTE_W, &next) != 0 ||
+                next != physical + chunk)
+            {
+                break;
+            }
+
+            chunk += more;
         }
 
         int64_t result = writing
@@ -828,6 +845,23 @@ int64_t syscall_handle(trap_frame_t *frame)
 
     case SYS_GRAPH:
         return sys_graph(frame->a0, frame->a1);
+
+    case SYS_TELEMETRY:
+    {
+        telemetry_sample_t sample;
+
+        if (!allowed(SYS_TELEMETRY, CAP_SYSTEM))
+        {
+            return E_PERM;
+        }
+
+        if (telemetry_get((uint32_t)frame->a0, &sample) != 0)
+        {
+            return E_NOTFOUND;
+        }
+
+        return copy_to_user(frame->a1, &sample, sizeof(sample)) == 0 ? 0 : E_FAULT;
+    }
 
     case SYS_PS:
     case SYS_KILL:

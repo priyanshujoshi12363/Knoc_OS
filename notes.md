@@ -1492,6 +1492,12 @@ How to investigate:
 
 Tensors and int8 math inside the AI space, loading its weights from `/models`, to replace the rule brain with a trained crash classifier (v0.15).
 
+## 8.2 The anomaly detector and the LLM (v0.16.0)
+
+The kernel keeps one telemetry sample per second. `healthd` turns the last 10 seconds into 48 numbers (mean, peak and trend of 15 measurements) and a small int8 network picks one of six labels. A problem is reported after 3 sure seconds and closed after 5 calm ones. The data came from QEMU runs where a script starts and stops the load programs and marks what is happening.
+
+`ask` is a complete transformer in one C file: the file is read into big memory blocks, the tokenizer merges byte pairs by rank exactly like Qwen's, and each token goes through 24 layers of attention and a gated MLP with int8 weights. Under QEMU the slow part is memory loads, so the matmul reads 8 weights at a time with one 64-bit load.
+
 ## 8.3 Toward the AI-OS
 
 After the kernel foundation: filesystem, shell, the small neural network runtime, the LLM runtime, the agent, KnocNet and app compatibility. See `goal.md`. Every one of those depends on what's in these notes: memory for models, the scheduler for AI workloads, drivers for disk/network/GPU, and traps for security and self-diagnosis.
@@ -1554,6 +1560,7 @@ make clean      # delete build files
 make size       # kernel size
 make pages      # page layout
 make reset-disk # recreate disk.img
+make reset-disk DISK_MB=1024 # a disk with room for the LLM (ask)
 xxd disk.img | head                                 # look at the disk from Linux
 riscv64-unknown-elf-objdump -d knocos.elf | less    # disassembly
 riscv64-unknown-elf-nm -n knocos.elf                # symbols

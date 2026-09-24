@@ -1,6 +1,7 @@
 #include "virtio_blk.h"
 #include "process.h"
 #include "spinlock.h"
+#include "timer.h"
 #include "virtio.h"
 #include "device.h"
 #include "page.h"
@@ -52,6 +53,9 @@ static uint8_t sector_buffer[VIRTIO_BLK_SECTOR_SIZE * VIRTIO_BLK_MAX_SECTORS]
 /* One request at a time: the descriptors and the buffer are shared */
 static sleeplock_t disk_lock = SLEEPLOCK_INIT;
 static char done_channel;
+static uint64_t count_reads;
+static uint64_t count_writes;
+static uint64_t count_wait;
 static volatile uint8_t request_status;
 
 static uint32_t virtio_read(uint32_t reg)
@@ -268,9 +272,22 @@ static int virtio_blk_request(uint32_t type, uint64_t sector, uint64_t count)
 
     __sync_synchronize();
 
+    uint64_t started = timer_ticks();
+
     virtio_write(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
     wait_done();
+
+    count_wait += timer_ticks() - started;
+
+    if (type == VIRTIO_BLK_T_IN)
+    {
+        count_reads++;
+    }
+    else
+    {
+        count_writes++;
+    }
 
     __sync_synchronize();
 
@@ -326,6 +343,13 @@ static int virtio_blk_read_block(device_t *dev, uint64_t block, void *buffer)
 static int virtio_blk_write_block(device_t *dev, uint64_t block, const void *buffer)
 {
     return virtio_blk_write_blocks(dev, block, 1, buffer);
+}
+
+void virtio_blk_stats(uint64_t *reads, uint64_t *writes, uint64_t *wait_ticks)
+{
+    *reads = count_reads;
+    *writes = count_writes;
+    *wait_ticks = count_wait;
 }
 
 static device_t virtio_blk_device = {

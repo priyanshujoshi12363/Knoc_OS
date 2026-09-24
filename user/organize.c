@@ -1,14 +1,11 @@
 #include "ulib.h"
+#include "nn.h"
 
 #define MODEL_PATH "/models/filenet.knm"
 #define DEFAULT_DIR "/home/Downloads"
 #define LOG_NAME ".organize-log"
 #define HEAD_BYTES 512
 #define FILES_MAX 128
-#define LAYERS_MAX 4
-#define HEADS_MAX 2
-#define CLASSES_MAX 16
-#define WIDTH_MAX 512
 #define MIN_CONFIDENCE 0.9
 
 #define HIST 256
@@ -18,27 +15,6 @@
 #define EXT 64
 #define SHAPE 8
 #define FEATURES (HIST + PAIRS + MAGIC + NAME + EXT + SHAPE)
-
-typedef struct layer
-{
-    unsigned int inputs;
-    unsigned int outputs;
-    unsigned int relu;
-    double in_scale;
-    double out_scale;
-    float *w_scale;
-    int *bias;
-    const signed char *weights;
-} layer_t;
-
-typedef struct model
-{
-    unsigned int head_count;
-    unsigned int classes[HEADS_MAX];
-    char names[HEADS_MAX][CLASSES_MAX][24];
-    unsigned int layer_count;
-    layer_t layers[LAYERS_MAX];
-} model_t;
 
 typedef struct result
 {
@@ -54,11 +30,8 @@ typedef struct rule_folder
     const char *extensions;
 } rule_folder_t;
 
-static model_t model;
+static nn_model_t model;
 static double features[FEATURES];
-static int xq[WIDTH_MAX * 4];
-static int next_xq[WIDTH_MAX * 4];
-static double logits[CLASSES_MAX * HEADS_MAX];
 static unsigned char head[HEAD_BYTES];
 static char files[FILES_MAX][FILE_NAME_MAX];
 static char log_text[FILES_MAX * PATH_MAX * 2];
@@ -116,94 +89,6 @@ static unsigned int fnv1a(const unsigned char *data, unsigned long length)
     }
 
     return value;
-}
-
-static double round_even(double value)
-{
-    long whole = (long)value;
-
-    if (value < 0 && (double)whole != value)
-    {
-        whole--;
-    }
-
-    double fraction = value - (double)whole;
-
-    if (fraction > 0.5 || (fraction == 0.5 && (whole & 1)))
-    {
-        whole++;
-    }
-
-    return (double)whole;
-}
-
-static int quantize(double value)
-{
-    double scaled = round_even(value * 127.0);
-
-    return scaled < 0 ? 0 : scaled > 127 ? 127 : (int)scaled;
-}
-
-static double log2_of(double value)
-{
-    int exponent = 0;
-
-    while (value >= 2.0)
-    {
-        value /= 2.0;
-        exponent++;
-    }
-
-    while (value < 1.0)
-    {
-        value *= 2.0;
-        exponent--;
-    }
-
-    double t = (value - 1.0) / (value + 1.0);
-    double t2 = t * t;
-    double sum = 0.0;
-    double power = t;
-
-    for (int k = 1; k < 30; k += 2)
-    {
-        sum += power / k;
-        power *= t2;
-    }
-
-    return exponent + 2.0 * sum / 0.69314718055994530942;
-}
-
-static double exp_of(double value)
-{
-    if (value < -700)
-    {
-        return 0.0;
-    }
-
-    int halvings = 0;
-
-    while (value < -0.5)
-    {
-        value /= 2.0;
-        halvings++;
-    }
-
-    double term = 1.0;
-    double sum = 1.0;
-
-    for (int k = 1; k < 20; k++)
-    {
-        term *= value / k;
-        sum += term;
-    }
-
-    while (halvings-- > 0)
-    {
-        sum *= sum;
-    }
-
-    return sum;
 }
 
 static char lower(char c)
@@ -338,7 +223,7 @@ static void compute_features(const char *name, unsigned long size, unsigned long
         printable += (b >= 32 && b < 127) || b == 9 || b == 10 || b == 13 || b >= 0xC2;
     }
 
-    double size_log = log2_of((double)size + 1.0);
+    double size_log = nn_log2((double)size + 1.0);
 
     shape[0] = extension[0] ? 1.0 : 0.0;
     shape[1] = (letters < 64 ? letters : 64) / 64.0;
@@ -352,215 +237,27 @@ static void compute_features(const char *name, unsigned long size, unsigned long
 
 static void infer(result_t *result)
 {
-    unsigned int width = FEATURES;
+    int best[NN_HEADS_MAX];
+    double confidence[NN_HEADS_MAX];
 
-    for (unsigned int i = 0; i < FEATURES; i++)
-    {
-        xq[i] = quantize(features[i]);
-    }
-
-    for (unsigned int l = 0; l < model.layer_count; l++)
-    {
-        layer_t *layer = &model.layers[l];
-
-        for (unsigned int o = 0; o < layer->outputs; o++)
-        {
-            const signed char *row = layer->weights + (unsigned long)o * layer->inputs;
-            long acc = layer->bias[o];
-
-            for (unsigned int i = 0; i < width; i++)
-            {
-                acc += (long)row[i] * xq[i];
-            }
-
-            double real = (double)acc * (layer->in_scale * (double)layer->w_scale[o]);
-
-            if (layer->relu)
-            {
-                double scaled = round_even((real > 0 ? real : 0) / layer->out_scale);
-                next_xq[o] = scaled > 127 ? 127 : (int)scaled;
-            }
-            else
-            {
-                logits[o] = real;
-            }
-        }
-
-        if (layer->relu)
-        {
-            memcpy(xq, next_xq, layer->outputs * sizeof(int));
-        }
-
-        width = layer->outputs;
-    }
-
-    unsigned int start = 0;
-
-    for (unsigned int h = 0; h < model.head_count; h++)
-    {
-        double highest = logits[start];
-        int best = 0;
-
-        for (unsigned int c = 1; c < model.classes[h]; c++)
-        {
-            if (logits[start + c] > highest)
-            {
-                highest = logits[start + c];
-                best = (int)c;
-            }
-        }
-
-        double total = 0.0;
-
-        for (unsigned int c = 0; c < model.classes[h]; c++)
-        {
-            total += exp_of(logits[start + c] - highest);
-        }
-
-        if (h == 0)
-        {
-            result->type = best;
-            result->type_confidence = 1.0 / total;
-        }
-        else
-        {
-            result->source = best;
-            result->source_confidence = 1.0 / total;
-        }
-
-        start += model.classes[h];
-    }
-}
-
-static unsigned int read_u32(const unsigned char **p)
-{
-    unsigned int value;
-
-    memcpy(&value, *p, 4);
-    *p += 4;
-    return value;
-}
-
-static float read_f32(const unsigned char **p)
-{
-    float value;
-
-    memcpy(&value, *p, 4);
-    *p += 4;
-    return value;
+    nn_infer(&model, features, best, confidence);
+    result->type = best[0];
+    result->type_confidence = confidence[0];
+    result->source = best[1];
+    result->source_confidence = confidence[1];
 }
 
 static int load_model(void)
 {
-    file_stat_t info;
-
-    if (stat(MODEL_PATH, &info) != 0)
+    if (nn_load(&model, MODEL_PATH) != 0 || model.head_count != 2 || model.inputs != FEATURES)
     {
         return -1;
     }
 
-    unsigned char *data = mem_alloc(info.size);
-    int fd = open(MODEL_PATH, O_READ);
-
-    if (data == 0 || fd < 0 || read(fd, data, info.size) != (long)info.size)
-    {
-        return -1;
-    }
-
-    close(fd);
-
-    if (memcmp_bytes(data, "KNOCNN01", 8) != 0)
-    {
-        return -1;
-    }
-
-    const unsigned char *p = data + 8;
-
-    read_u32(&p);
-
-    unsigned int config[6];
-
-    for (int i = 0; i < 6; i++)
-    {
-        config[i] = read_u32(&p);
-    }
-
-    if (config[0] != HIST || config[1] != PAIRS || config[2] != MAGIC ||
-        config[3] != NAME || config[4] != EXT || config[5] != SHAPE)
-    {
-        return -1;
-    }
-
-    model.head_count = read_u32(&p);
-
-    if (model.head_count != HEADS_MAX)
-    {
-        return -1;
-    }
-
-    for (unsigned int h = 0; h < model.head_count; h++)
-    {
-        model.classes[h] = read_u32(&p);
-
-        if (model.classes[h] > CLASSES_MAX)
-        {
-            return -1;
-        }
-
-        for (unsigned int c = 0; c < model.classes[h]; c++)
-        {
-            unsigned int length = *p++;
-
-            for (unsigned int i = 0; i < length && i < 23; i++)
-            {
-                model.names[h][c][i] = (char)p[i];
-            }
-
-            model.names[h][c][length < 23 ? length : 23] = 0;
-            p += length;
-        }
-    }
-
-    model.layer_count = read_u32(&p);
-
-    if (model.layer_count > LAYERS_MAX)
-    {
-        return -1;
-    }
-
-    for (unsigned int l = 0; l < model.layer_count; l++)
-    {
-        layer_t *layer = &model.layers[l];
-
-        layer->inputs = read_u32(&p);
-        layer->outputs = read_u32(&p);
-        layer->relu = read_u32(&p);
-        layer->in_scale = read_f32(&p);
-        layer->out_scale = read_f32(&p);
-
-        if (layer->outputs > WIDTH_MAX * 4 || layer->inputs > FEATURES)
-        {
-            return -1;
-        }
-
-        layer->w_scale = mem_alloc(layer->outputs * sizeof(float));
-        layer->bias = mem_alloc(layer->outputs * sizeof(int));
-
-        for (unsigned int o = 0; o < layer->outputs; o++)
-        {
-            layer->w_scale[o] = read_f32(&p);
-        }
-
-        for (unsigned int o = 0; o < layer->outputs; o++)
-        {
-            layer->bias[o] = (int)read_u32(&p);
-        }
-
-        layer->weights = (const signed char *)p;
-        p += (unsigned long)layer->outputs * layer->inputs;
-    }
-
-    return p <= data + info.size ? 0 : -1;
+    return model.config[0] == HIST && model.config[1] == PAIRS && model.config[2] == MAGIC &&
+                   model.config[3] == NAME && model.config[4] == EXT && model.config[5] == SHAPE
+               ? 0
+               : -1;
 }
 
 static int starts_with_ci(const char *text, const char *prefix)
@@ -969,7 +666,7 @@ static void free_target(char *target)
 
 static void print_percent(double value)
 {
-    unsigned long percent = (unsigned long)round_even(value * 100);
+    unsigned long percent = (unsigned long)nn_round_even(value * 100);
 
     print(percent < 10 ? "  " : percent < 100 ? " " : "");
     print_uint(percent);
@@ -1034,9 +731,9 @@ static void organize(const char *directory, int apply)
         const char *layer = choose(path, files[f], (unsigned long)length, &result, folder);
 
         graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CLASSIFIED_AS, GRAPH_KIND_TYPE,
-                     model.names[0][result.type], (unsigned int)round_even(result.type_confidence * 100));
+                     model.names[0][result.type], (unsigned int)nn_round_even(result.type_confidence * 100));
         graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CAME_FROM, GRAPH_KIND_SOURCE,
-                     model.names[1][result.source], (unsigned int)round_even(result.source_confidence * 100));
+                     model.names[1][result.source], (unsigned int)nn_round_even(result.source_confidence * 100));
 
         layers[layer[0] == 'a' ? 0 : layer[0] == 'r' && layer[1] == 'u' ? 1 : 2]++;
 

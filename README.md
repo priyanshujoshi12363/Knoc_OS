@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.15.0-blue)
+![Version](https://img.shields.io/badge/version-v0.16.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.15.0 starting
+[INFO] KnocOS v0.16.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,31 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: The Memory Graph, KnocGraph (v0.15.0)
+## ✅ Just Completed: The Anomaly Detector and the First LLM (v0.16.0)
+
+**KnocOS notices its own problems.** The kernel samples CPU, memory, disk and processes every second, and `healthd`, a small neural network running in the background, reads the last 10 seconds and says what is wrong and which program is doing it:
+
+```text
+knoc:/$ leak 2048 &
+knoc:/$ [HEALTH] memory leak in leak (+2044 KiB/s, now 18 MiB, 100% sure)
+knoc:/$ spin &
+knoc:/$ [HEALTH] CPU hog in spin (100% CPU, 100% sure)
+[HEALTH] memory leak in leak is over
+```
+
+It finds memory leaks, CPU hogs, disk thrashing, spawn storms and a disk filling up (99–100% on test runs it never saw), and every problem goes into the memory graph.
+
+**And an LLM lives inside KnocOS.** `ask` runs Qwen2.5-0.5B-Instruct (int8, 528 MB) with our own C inference engine, no libraries:
+
+```text
+knoc:/$ ask What is an operating system? Answer in one sentence.
+[ask] Qwen2.5-0.5B loaded in 11 s, reading 46 prompt tokens...
+An operating system is a software program that manages and controls the hardware resources of a computer system, providing services such as file management, system calls, and device drivers.
+```
+
+It needs a disk of at least 1 GiB: `make reset-disk DISK_MB=1024`. Under QEMU it writes about one token every 1.4 seconds (QEMU emulates the CPU; real hardware is much faster).
+
+## The Memory Graph, KnocGraph (v0.15.0)
 
 **KnocOS remembers.** Every AI model and the AI space write what they learn and decide into one **knowledge graph** in the kernel. It survives reboots, and later the LLM will read it to understand the system (GraphRAG).
 
@@ -159,7 +183,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-Before this: **v0.14.0**, the file organizer AI running inside KnocOS. **Next up: v0.16.0, the anomaly detector**, which watches CPU, memory and disk, and writes what it notices into the graph.
+**Next up:** the LLM reads the memory graph and the health reports (GraphRAG), so `ask` can answer questions about this machine.
 
 Recent progress:
 
@@ -181,7 +205,8 @@ Recent progress:
 | `5f6f06b` | Wait queues, sleep locks, multi-sector disk requests, KnocFS (extents), file system calls, programs from `/bin`, host tool, version `v0.12.0` |
 | `2b9471a` | The shell `knocsh`, terminal layer, Ctrl-C, 6 system calls (`wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo`), version `v0.13.0` |
 | `ed5d0bd` | File organizer AI (type + source classifier, rules layer, `Random/`), `/bin/organize`, FPU for programs, program arguments, `rename`, version `v0.14.0` |
-| *(uncommitted)* | Memory graph KnocGraph in the kernel, `graph` system call, `memory` shell commands, all AI models write to it, version `v0.15.0` |
+| `9448bee` | Memory graph KnocGraph in the kernel, `graph` system call, `memory` shell commands, all AI models write to it, version `v0.15.0` |
+| *(uncommitted)* | Kernel telemetry, the anomaly detector `healthd`, fair sleep locks, faster disk, the Qwen LLM with our own engine (`ask`), version `v0.16.0` |
 
 What works right now:
 

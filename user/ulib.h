@@ -31,6 +31,7 @@ int spawn_args(const char *name, const char *args);
 long getargs(char *buffer, unsigned long length);
 int rename(const char *from, const char *to);
 int graph(graph_request_t *request, void *out);
+int telemetry(unsigned long index, telemetry_sample_t *sample);
 int graph_record(unsigned int kind_a, const char *a, unsigned int relation,
                  unsigned int kind_b, const char *b, unsigned int confidence);
 void *mem_alloc(unsigned long bytes);

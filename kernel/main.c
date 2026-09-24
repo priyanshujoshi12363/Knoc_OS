@@ -21,6 +21,7 @@
 #include "knocfs.h"
 #include "tty.h"
 #include "memgraph.h"
+#include "telemetry.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_C 0x03
@@ -79,6 +80,7 @@ static sched_worker_t sched_workers[SCHED_TEST_WORKERS] = {
 };
 
 static uint32_t boot_number;
+static int health_started;
 
 static void disk_self_test(device_t *disk)
 {
@@ -451,6 +453,12 @@ static void console_process(void *arg)
     log_info("Program keys: Ctrl-U run the crash program, Ctrl-E run the spy program");
 
     /* After a crash the AI restarts the console: the shell may still be running */
+    if (!health_started)
+    {
+        health_started = 1;
+        process_spawn(program_find("healthd"));
+    }
+
     if (!tty_has_owner() && process_spawn(program_find("knocsh")) < 0)
     {
         log_warn("No shell: the console only echoes keys");
@@ -1017,6 +1025,11 @@ void kernel_main(uintptr_t dtb)
     else if (process_create("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0) < 0)
     {
         panic("Could not create scheduler test process");
+    }
+
+    if (process_create("telemetry", PROCESS_CLASS_BACKGROUND, telemetry_process, 0) < 0)
+    {
+        panic("Could not create telemetry process");
     }
 
     if (process_create("guardian", PROCESS_CLASS_BACKGROUND, guardian_process, 0) < 0)

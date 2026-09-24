@@ -78,6 +78,7 @@ typedef struct knocfs_stat
 int knocfs_mount(device_t *disk);
 int knocfs_mounted(void);
 void knocfs_usage(uint64_t *total_bytes, uint64_t *free_bytes, uint32_t *files);
+void knocfs_space(uint64_t *total_bytes, uint64_t *free_bytes);
 
 int knocfs_lookup(const char *path, uint32_t *inode);
 int knocfs_create(const char *path, uint16_t type, uint32_t *inode);

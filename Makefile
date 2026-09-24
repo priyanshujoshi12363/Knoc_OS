@@ -50,12 +50,13 @@ KERNEL_OBJS = boot/boot.o \
               kernel/knocfs.o \
               kernel/tty.o \
               kernel/memgraph.o \
+              kernel/telemetry.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize
-USER_LIB_OBJS = user/crt0.o user/ulib.o
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask
+USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) $(USER_PROGRAMS:%=user/%.o)
 
@@ -83,6 +84,8 @@ timer.elf: $(TIMER_OBJS) timer/linker.ld
 	$(AS) $(CFLAGS) -c -o $@ $<
 
 kernel/main.o: VERSION
+
+user/ask.o: CFLAGS += -O3 -funroll-loops
 
 -include $(DEPS)
 

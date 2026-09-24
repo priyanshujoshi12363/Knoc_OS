@@ -30,7 +30,8 @@
 #define SYS_GETARGS 22
 #define SYS_RENAME 23
 #define SYS_GRAPH 24
-#define SYS_COUNT 25
+#define SYS_TELEMETRY 25
+#define SYS_COUNT 26
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -195,11 +196,13 @@ typedef struct crash_info
 #define GRAPH_REL_RESTARTED 12
 #define GRAPH_REL_STOPPED 13
 #define GRAPH_REL_IN_PROCESS 14
-#define GRAPH_REL_COUNT 15
+#define GRAPH_REL_ANOMALY 15
+#define GRAPH_REL_COUNT 16
 
 #define GRAPH_REL_NAMES \
     {"?", "classified_as", "came_from", "moved_to", "restored_to", "started", "crashed", \
-     "crashed_in", "diagnosed_as", "action", "disabled", "denied", "restarted", "stopped", "in_process"}
+     "crashed_in", "diagnosed_as", "action", "disabled", "denied", "restarted", "stopped", "in_process", \
+     "anomaly"}
 
 #define GRAPH_OP_RECORD 1
 #define GRAPH_OP_STATS 2
@@ -255,6 +258,41 @@ typedef struct graph_stats
     uint32_t reserved;
     uint32_t by_kind[GRAPH_KIND_COUNT];
 } graph_stats_t;
+
+#define TELEMETRY_NAME_MAX 16
+
+typedef struct telemetry_sample
+{
+    uint32_t seq;
+    uint32_t uptime;
+    uint32_t cpu_busy;
+    uint32_t switches;
+    uint32_t syscalls;
+    uint32_t denied;
+    uint32_t processes;
+    uint32_t spawns;
+    uint32_t crashes;
+    uint32_t disk_reads;
+    uint32_t disk_writes;
+    uint32_t disk_wait;
+    uint64_t ram_free_kib;
+    uint64_t ram_total_kib;
+    uint64_t user_memory_kib;
+    uint64_t disk_free_kib;
+    uint64_t disk_total_kib;
+    int32_t top_cpu_pid;
+    uint32_t top_cpu;
+    int32_t top_mem_pid;
+    uint32_t top_mem_kib;
+    int32_t top_sys_pid;
+    uint32_t top_sys;
+    int32_t top_spawn_pid;
+    uint32_t top_spawn;
+    char top_cpu_name[TELEMETRY_NAME_MAX];
+    char top_mem_name[TELEMETRY_NAME_MAX];
+    char top_sys_name[TELEMETRY_NAME_MAX];
+    char top_spawn_name[TELEMETRY_NAME_MAX];
+} telemetry_sample_t;
 
 #endif
 

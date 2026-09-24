@@ -5,6 +5,7 @@ KERNEL=${KERNEL:-knocos.elf}
 TIMEOUT=${TIMEOUT:-50}
 GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
 HALT_TIMEOUT=${HALT_TIMEOUT:-12}
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-80}
 LOG=$(mktemp)
 DISK=$(mktemp)
 trap 'rm -f "$LOG" "$DISK"' EXIT
@@ -78,6 +79,17 @@ check() {
     done
 }
 
+check_absent() {
+    for line in "$@"; do
+        if grep -qF -- "$line" "$LOG"; then
+            echo "  FAIL unexpected: $(grep -F -- "$line" "$LOG" | head -1)"
+            FAILED=1
+        else
+            echo "  ok   no $line"
+        fi
+    done
+}
+
 show_log_on_failure() {
     if [ "$FAILED" -ne 0 ]; then
         echo
@@ -134,7 +146,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: badcall bigmem counter crash files hello hog knocsh modelcheck noperm organize spy" \
+    "[files] /bin: ask badcall bigmem counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -169,7 +181,9 @@ check \
     "organize: file /home/Downloads/335505283.pdf --classified_as--> type document" \
     "organize: file /home/Downloads/335505283.pdf --came_from--> source other" \
     "--restored_to--> file /home/Downloads/335505283.pdf" \
+    "[HEALTH] anomaly detector running" \
     "Powering off"
+check_absent " sure)"
 show_log_on_failure
 
 echo "Boot 2: disk data and files survive a reboot"
@@ -296,6 +310,29 @@ check \
     "[AI] Black box saved (crash #4, 4 in a row)" \
     "[AI] Action: halt the kernel (crash loop detected)" \
     "[AI] The AI space stays online"
+show_log_on_failure
+
+echo "Run 5: the anomaly detector finds a memory leak and a CPU hog"
+new_disk
+(
+    sleep 8;  printf 'leak 2048 &\r'
+    sleep 16; printf 'kill leak\r'
+    sleep 1;  printf 'spin &\r'
+    sleep 16; printf 'kill spin\r'
+    sleep 14; printf 'health\r'
+    sleep 1;  printf '\004'
+    sleep 3
+) | qemu "$HEALTH_TIMEOUT"
+STATUS=$?
+check_status "$HEALTH_TIMEOUT" no-panic
+check \
+    "[HEALTH] memory leak in leak (+" \
+    "[HEALTH] memory leak in leak is over" \
+    "[HEALTH] CPU hog in spin (100% CPU" \
+    "[HEALTH] CPU hog in spin is over" \
+    "healthd: program leak --anomaly--> diagnosis memory leak" \
+    "healthd: program spin --anomaly--> diagnosis CPU hog"
+check_absent "disk thrashing in" "spawn storm in" "disk filling up in"
 show_log_on_failure
 
 echo "RESULT: PASS"

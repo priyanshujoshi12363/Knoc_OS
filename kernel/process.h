@@ -150,6 +150,9 @@ uint64_t process_disk_loads(void);
 
 struct process_info;
 int process_info(uint32_t index, struct process_info *info);
+
+struct telemetry_sample;
+void process_telemetry(struct telemetry_sample *sample);
 uint64_t process_cpu_ticks(int pid);
 void process_list(void);
 

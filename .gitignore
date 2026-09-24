@@ -12,3 +12,6 @@ models/.venv/
 models/data/files/
 models/filenet/cache/
 __pycache__/
+models/llm/qwen/
+models/llm/*.kllm
+models/health/data/
