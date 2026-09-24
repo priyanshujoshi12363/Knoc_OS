@@ -184,14 +184,8 @@ static const char *top_of(const telemetry_sample_t *s, int label, int *pid)
         return s->top_spawn_name;
     }
 
-    if (s->top_disk_name[0])
-    {
-        *pid = s->top_disk_pid;
-        return s->top_disk_name;
-    }
-
-    *pid = s->top_sys_pid;
-    return s->top_sys_name;
+    *pid = s->top_disk_pid;
+    return s->top_disk_name;
 }
 
 static const char *blame(int label, int *pid)

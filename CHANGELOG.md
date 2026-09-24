@@ -2,6 +2,12 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [Unreleased]
+
+### Fixed
+- CI: the shell tests typed commands on a timer and powered off at a fixed time, so on a slower machine (GitHub Actions) commands ran into each other and the output after `organize --undo` was lost. `scripts/drive.py` now types each command only when the shell prompt is back
+- `healthd` blamed the shell for disk activity that was the kernel's own work (memory graph writes, loading programs); disk problems are now only blamed on a program that read or wrote files
+
 ## [0.17.0] - 2026-09-24
 
 Self-healing, and an LLM that knows this computer.

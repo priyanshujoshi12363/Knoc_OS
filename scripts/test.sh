@@ -2,7 +2,7 @@
 set -u
 
 KERNEL=${KERNEL:-knocos.elf}
-TIMEOUT=${TIMEOUT:-50}
+TIMEOUT=${TIMEOUT:-180}
 GUARDIAN_TIMEOUT=${GUARDIAN_TIMEOUT:-60}
 HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-80}
@@ -27,23 +27,8 @@ qemu() {
 
 new_disk
 
-# Types each argument into the shell as a command line ("^C" sends Ctrl-C),
-# then powers off with Ctrl-D
 boot() {
-    (
-        sleep 7
-        for command in "$@"; do
-            if [ "$command" = "^C" ]; then
-                printf '\003'
-            else
-                printf '%s\r' "$command"
-            fi
-            sleep 0.6
-        done
-        sleep 1
-        printf '\004'
-        sleep 2
-    ) | qemu "$TIMEOUT"
+    python3 scripts/drive.py "$TIMEOUT" "$LOG" "$DISK" "$KERNEL" "$@"
     STATUS=$?
     check_status "$TIMEOUT" no-panic
 }
