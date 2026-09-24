@@ -29,7 +29,8 @@
 #define SYS_CRASHINFO 21
 #define SYS_GETARGS 22
 #define SYS_RENAME 23
-#define SYS_COUNT 24
+#define SYS_GRAPH 24
+#define SYS_COUNT 25
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -71,6 +72,7 @@
 #define CAP_FILES_READ 0x8
 #define CAP_FILES_WRITE 0x10
 #define CAP_SYSTEM 0x20
+#define CAP_KNOWLEDGE 0x40
 
 /* User address space (Sv39 root slots 64-127, never used by the kernel) */
 #define USER_BASE 0x1000000000UL
@@ -159,6 +161,100 @@ typedef struct crash_info
     char message[64];
     char diagnosis[160];
 } crash_info_t;
+
+#define GRAPH_NAME_MAX 96
+
+#define GRAPH_KIND_FILE 1
+#define GRAPH_KIND_FOLDER 2
+#define GRAPH_KIND_PROGRAM 3
+#define GRAPH_KIND_DRIVER 4
+#define GRAPH_KIND_CRASH 5
+#define GRAPH_KIND_TYPE 6
+#define GRAPH_KIND_SOURCE 7
+#define GRAPH_KIND_ACTOR 8
+#define GRAPH_KIND_DIAGNOSIS 9
+#define GRAPH_KIND_ACTION 10
+#define GRAPH_KIND_CAPABILITY 11
+#define GRAPH_KIND_COUNT 12
+
+#define GRAPH_KIND_NAMES \
+    {"any", "file", "folder", "program", "driver", "crash", "type", "source", \
+     "actor", "diagnosis", "action", "capability"}
+
+#define GRAPH_REL_CLASSIFIED_AS 1
+#define GRAPH_REL_CAME_FROM 2
+#define GRAPH_REL_MOVED_TO 3
+#define GRAPH_REL_RESTORED_TO 4
+#define GRAPH_REL_STARTED 5
+#define GRAPH_REL_CRASHED 6
+#define GRAPH_REL_CRASHED_IN 7
+#define GRAPH_REL_DIAGNOSED_AS 8
+#define GRAPH_REL_ACTION 9
+#define GRAPH_REL_DISABLED 10
+#define GRAPH_REL_DENIED 11
+#define GRAPH_REL_RESTARTED 12
+#define GRAPH_REL_STOPPED 13
+#define GRAPH_REL_IN_PROCESS 14
+#define GRAPH_REL_COUNT 15
+
+#define GRAPH_REL_NAMES \
+    {"?", "classified_as", "came_from", "moved_to", "restored_to", "started", "crashed", \
+     "crashed_in", "diagnosed_as", "action", "disabled", "denied", "restarted", "stopped", "in_process"}
+
+#define GRAPH_OP_RECORD 1
+#define GRAPH_OP_STATS 2
+#define GRAPH_OP_RECENT 3
+#define GRAPH_OP_EDGES 4
+#define GRAPH_OP_FIND 5
+#define GRAPH_OP_FORGET 6
+
+typedef struct graph_request
+{
+    uint32_t op;
+    uint32_t index;
+    uint32_t kind_a;
+    uint32_t relation;
+    uint32_t kind_b;
+    uint32_t confidence;
+    char a[GRAPH_NAME_MAX];
+    char b[GRAPH_NAME_MAX];
+} graph_request_t;
+
+typedef struct graph_node_info
+{
+    uint32_t kind;
+    uint32_t hits;
+    uint32_t edges;
+    uint32_t first_boot;
+    uint32_t last_boot;
+    uint32_t reserved;
+    char name[GRAPH_NAME_MAX];
+} graph_node_info_t;
+
+typedef struct graph_edge_info
+{
+    uint32_t seq;
+    uint32_t boot;
+    uint64_t uptime;
+    uint32_t relation;
+    uint32_t confidence;
+    uint32_t from_kind;
+    uint32_t to_kind;
+    char from[GRAPH_NAME_MAX];
+    char to[GRAPH_NAME_MAX];
+    char actor[GRAPH_NAME_MAX];
+} graph_edge_info_t;
+
+typedef struct graph_stats
+{
+    uint32_t nodes;
+    uint32_t edges;
+    uint32_t node_capacity;
+    uint32_t edge_capacity;
+    uint32_t boot;
+    uint32_t reserved;
+    uint32_t by_kind[GRAPH_KIND_COUNT];
+} graph_stats_t;
 
 #endif
 

@@ -1033,6 +1033,11 @@ static void organize(const char *directory, int apply)
 
         const char *layer = choose(path, files[f], (unsigned long)length, &result, folder);
 
+        graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CLASSIFIED_AS, GRAPH_KIND_TYPE,
+                     model.names[0][result.type], (unsigned int)round_even(result.type_confidence * 100));
+        graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CAME_FROM, GRAPH_KIND_SOURCE,
+                     model.names[1][result.source], (unsigned int)round_even(result.source_confidence * 100));
+
         layers[layer[0] == 'a' ? 0 : layer[0] == 'r' && layer[1] == 'u' ? 1 : 2]++;
 
         char folder_path[PATH_MAX];
@@ -1068,6 +1073,7 @@ static void organize(const char *directory, int apply)
 
             if (rename(path, target) == 0)
             {
+                graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_MOVED_TO, GRAPH_KIND_FILE, target, 100);
                 strcpy(log_end, path);
                 log_end += strlen(log_end);
                 *log_end++ = '\t';
@@ -1209,6 +1215,7 @@ static void undo(const char *directory)
 
         if (rename(to, from) == 0)
         {
+            graph_record(GRAPH_KIND_FILE, to, GRAPH_REL_RESTORED_TO, GRAPH_KIND_FILE, from, 100);
             restored++;
             remove_empty_parents(to, directory);
         }

@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "process.h"
 #include "syscall_abi.h"
+#include "memgraph.h"
 
 #define GUARDIAN_ONLINE_TIMEOUT TIMER_FREQ_HZ
 
@@ -227,6 +228,41 @@ static const char *action_name(uint32_t action)
     return "halt";
 }
 
+static void remember_crash(blackbox_record_t *record)
+{
+    char name[24] = "crash #";
+    uint64_t value = record->sequence;
+    char digits[20];
+    int count = 0;
+    int length = 7;
+
+    do
+    {
+        digits[count++] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value);
+
+    while (count)
+    {
+        name[length++] = digits[--count];
+    }
+
+    name[length] = 0;
+
+    memgraph_record(GRAPH_KIND_CRASH, name, GRAPH_REL_IN_PROCESS, GRAPH_KIND_PROGRAM,
+                    record->process_name[0] ? record->process_name : "kernel", "ai-space", 100);
+    memgraph_record(GRAPH_KIND_CRASH, name, GRAPH_REL_DIAGNOSED_AS, GRAPH_KIND_DIAGNOSIS,
+                    record->diagnosis, "ai-space", 100);
+    memgraph_record(GRAPH_KIND_CRASH, name, GRAPH_REL_ACTION, GRAPH_KIND_ACTION,
+                    action_name(record->action), "ai-space", 100);
+
+    if (record->driver[0])
+    {
+        memgraph_record(GRAPH_KIND_CRASH, name, GRAPH_REL_CRASHED_IN, GRAPH_KIND_DRIVER,
+                        record->driver, "ai-space", 100);
+    }
+}
+
 static void print_record(blackbox_record_t *record)
 {
     uart_puts("[WARN] Previous crash detected: #");
@@ -348,6 +384,7 @@ uint64_t guardian_boot_report(device_t *disk)
         if (record.magic == BLACKBOX_MAGIC && record.sequence == sequence)
         {
             print_record(&record);
+            remember_crash(&record);
         }
     }
 
@@ -421,11 +458,45 @@ static uint32_t default_verdict(process_fault_t *fault)
     return action;
 }
 
+static const char *fault_name(uint64_t scause)
+{
+    switch (scause & 0xFF)
+    {
+    case 2:
+        return "illegal instruction";
+    case 5:
+        return "load access fault";
+    case 7:
+        return "store access fault";
+    case 12:
+        return "instruction page fault";
+    case 13:
+        return "load page fault";
+    case 15:
+        return "store page fault";
+    default:
+        return "exception";
+    }
+}
+
 static void apply_verdict(process_fault_t *fault, uint32_t action, const char *source)
 {
+    const char *actor = source[0] == 'A' ? "ai-space" : "kernel";
+
+    memgraph_record(GRAPH_KIND_PROGRAM, fault->name, GRAPH_REL_CRASHED, GRAPH_KIND_DIAGNOSIS,
+                    fault_name(fault->scause), actor, 100);
+
+    if (fault->driver[0])
+    {
+        memgraph_record(GRAPH_KIND_PROGRAM, fault->name, GRAPH_REL_CRASHED_IN, GRAPH_KIND_DRIVER,
+                        fault->driver, actor, 100);
+    }
+
     if ((action & VERDICT_DISABLE_DRIVER) && fault->driver[0])
     {
         device_disable(device_find(fault->driver));
+        memgraph_record(GRAPH_KIND_ACTOR, actor, GRAPH_REL_DISABLED, GRAPH_KIND_DRIVER,
+                        fault->driver, actor, 100);
 
         uart_puts("[INFO] Driver ");
         uart_puts(fault->driver);
@@ -437,6 +508,9 @@ static void apply_verdict(process_fault_t *fault, uint32_t action, const char *s
     if (action & VERDICT_RESTART_PROCESS)
     {
         int pid = process_restart(fault->pid);
+
+        memgraph_record(GRAPH_KIND_ACTOR, actor, GRAPH_REL_RESTARTED, GRAPH_KIND_PROGRAM,
+                        fault->name, actor, 100);
 
         uart_puts("[INFO] Process ");
         uart_puts(fault->name);
@@ -451,6 +525,8 @@ static void apply_verdict(process_fault_t *fault, uint32_t action, const char *s
     else
     {
         process_discard(fault->pid);
+        memgraph_record(GRAPH_KIND_ACTOR, actor, GRAPH_REL_STOPPED, GRAPH_KIND_PROGRAM,
+                        fault->name, actor, 100);
 
         uart_puts("[WARN] Process ");
         uart_puts(fault->name);

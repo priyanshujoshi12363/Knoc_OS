@@ -11,6 +11,7 @@
 #include "knocfs.h"
 #include "tty.h"
 #include "guardian.h"
+#include "memgraph.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -42,6 +43,7 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_CRASHINFO] = "crashinfo",
     [SYS_GETARGS] = "getargs",
     [SYS_RENAME] = "rename",
+    [SYS_GRAPH] = "graph",
 };
 
 const char *syscall_name(uint64_t number)
@@ -156,6 +158,11 @@ static const char *capability_name(uint32_t capability)
         return "SYSTEM";
     }
 
+    if (capability == CAP_KNOWLEDGE)
+    {
+        return "KNOWLEDGE";
+    }
+
     return "MEMORY";
 }
 
@@ -177,6 +184,9 @@ static int allowed(uint64_t number, uint32_t capability)
     uart_puts(" without the ");
     uart_puts(capability_name(capability));
     uart_puts(" capability: denied\n");
+
+    memgraph_record(GRAPH_KIND_PROGRAM, process_current_name(), GRAPH_REL_DENIED,
+                    GRAPH_KIND_CAPABILITY, capability_name(capability), "security", 100);
 
     return 0;
 }
@@ -578,6 +588,68 @@ static int64_t sys_crashinfo(uint64_t index, uintptr_t out)
     return copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
 }
 
+static int64_t sys_graph(uintptr_t request_address, uintptr_t out)
+{
+    graph_request_t request;
+
+    if (!allowed(SYS_GRAPH, CAP_KNOWLEDGE))
+    {
+        return E_PERM;
+    }
+
+    if (copy_from_user(&request, request_address, sizeof(request)) != 0)
+    {
+        return E_FAULT;
+    }
+
+    request.a[GRAPH_NAME_MAX - 1] = 0;
+    request.b[GRAPH_NAME_MAX - 1] = 0;
+
+    if (request.op == GRAPH_OP_RECORD)
+    {
+        return memgraph_record(request.kind_a, request.a, request.relation, request.kind_b,
+                               request.b, process_current_name(), request.confidence);
+    }
+
+    if (request.op == GRAPH_OP_STATS)
+    {
+        graph_stats_t stats;
+        int result = memgraph_stats(&stats);
+
+        return result != 0 ? result : copy_to_user(out, &stats, sizeof(stats)) == 0 ? 0 : E_FAULT;
+    }
+
+    if (request.op == GRAPH_OP_RECENT || request.op == GRAPH_OP_EDGES)
+    {
+        graph_edge_info_t info;
+        int result = request.op == GRAPH_OP_RECENT
+                         ? memgraph_recent(request.index, &info)
+                         : memgraph_edges(request.kind_a, request.a, request.index, &info);
+
+        return result != 0 ? result : copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+    }
+
+    if (request.op == GRAPH_OP_FIND)
+    {
+        graph_node_info_t info;
+        int result = memgraph_find(request.a, request.index, &info);
+
+        return result != 0 ? result : copy_to_user(out, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+    }
+
+    if (request.op == GRAPH_OP_FORGET)
+    {
+        if (!allowed(SYS_GRAPH, CAP_SYSTEM))
+        {
+            return E_PERM;
+        }
+
+        return memgraph_forget(request.kind_a, request.a);
+    }
+
+    return E_INVAL;
+}
+
 static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
 {
     char path[PATH_MAX];
@@ -753,6 +825,9 @@ int64_t syscall_handle(trap_frame_t *frame)
 
     case SYS_RENAME:
         return sys_rename(frame->a0, frame->a1);
+
+    case SYS_GRAPH:
+        return sys_graph(frame->a0, frame->a1);
 
     case SYS_PS:
     case SYS_KILL:

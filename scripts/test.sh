@@ -69,7 +69,7 @@ check_status() {
 
 check() {
     for line in "$@"; do
-        if grep -qF "$line" "$LOG"; then
+        if grep -qF -- "$line" "$LOG"; then
             echo "  ok   $line"
         else
             echo "  MISS $line"
@@ -93,7 +93,8 @@ boot "knocos-echo-test" "ls /bin" "cat /hello.txt" \
     "echo saved by the shell > /home/shell.txt" "cd /home" "pwd" "cat shell.txt" \
     "ps" "mem" "devices" "ai" "crashes" "counter" "^C" "kill 2" \
     "organize" "organize /home/Downloads --apply" "ls /home/Downloads/WhatsApp/Images" \
-    "ls /home/Downloads/Random" "organize /home/Downloads --undo" "ls /home/Downloads"
+    "ls /home/Downloads/Random" "organize /home/Downloads --undo" "ls /home/Downloads" \
+    "memory" "memory why /home/Downloads/Documents/335505283.pdf" "memory recent 3"
 check \
     "Supervisor interrupts enabled" \
     "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
@@ -163,15 +164,23 @@ check \
     "Files moved. Undo with: organize /home/Downloads --undo" \
     "       700  mystery.xyz" \
     "Restored 14 files and removed the empty folders" \
+    "Memory graph ready: 0 nodes, 0 links (boot 1)" \
+    "was moved here by organize from /home/Downloads/335505283.pdf, because:" \
+    "organize: file /home/Downloads/335505283.pdf --classified_as--> type document" \
+    "organize: file /home/Downloads/335505283.pdf --came_from--> source other" \
+    "--restored_to--> file /home/Downloads/335505283.pdf" \
     "Powering off"
 show_log_on_failure
 
 echo "Boot 2: disk data and files survive a reboot"
-boot "cat /home/shell.txt"
+boot "cat /home/shell.txt" "memory find WhatsApp" "memory show organize"
 check \
     "Disk boot count: 2" \
     "[files] found my note from the last boot: KnocOS remembers this" \
     "knoc:/$ cat /home/shell.txt" \
+    "links (boot 2)" \
+    "file       /home/Downloads/WhatsApp/Images/WhatsApp Image 2025-12-13 at 2.46.41 PM.jpeg" \
+    "actor knocsh --started--> program organize" \
     "Powering off"
 show_log_on_failure
 
@@ -188,6 +197,8 @@ new_disk
     sleep 6;  printf '\013'
     sleep 7;  printf 'crashes\r'
     sleep 1;  printf 'ai\r'
+    sleep 1;  printf 'memory show faulty0\r'
+    sleep 1;  printf 'memory find crash\r'
     sleep 1;  printf '\004'
     sleep 3
 ) | qemu "$GUARDIAN_TIMEOUT"
@@ -247,6 +258,8 @@ check \
     "Warm kernel restarts: 3" \
     "Drivers disabled by the AI: faulty0" \
     "Safe mode: on" \
+    "ai-space: actor ai-space --disabled--> driver faulty0" \
+    "crash      crash #3" \
     "Powering off"
 
 if grep -q "\[spy\] read kernel memory!" "$LOG"; then

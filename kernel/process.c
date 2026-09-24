@@ -14,6 +14,7 @@
 #include "spinlock.h"
 #include "knocfs.h"
 #include "tty.h"
+#include "memgraph.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -634,6 +635,9 @@ int process_spawn_args(const program_t *program, const char *args)
     }
 
     interrupts_restore(enabled);
+
+    memgraph_record(GRAPH_KIND_ACTOR, current != 0 && current->user ? current->name : "kernel",
+                    GRAPH_REL_STARTED, GRAPH_KIND_PROGRAM, program->name, "kernel", 100);
     return pid;
 }
 

@@ -109,6 +109,40 @@ int rename(const char *from, const char *to)
     return (int)syscall(SYS_RENAME, (long)from, (long)to, 0);
 }
 
+int graph(graph_request_t *request, void *out)
+{
+    return (int)syscall(SYS_GRAPH, (long)request, (long)out, 0);
+}
+
+static void copy_limited(char *to, const char *from)
+{
+    unsigned long i = 0;
+
+    while (from[i] && i < GRAPH_NAME_MAX - 1)
+    {
+        to[i] = from[i];
+        i++;
+    }
+
+    to[i] = 0;
+}
+
+int graph_record(unsigned int kind_a, const char *a, unsigned int relation,
+                 unsigned int kind_b, const char *b, unsigned int confidence)
+{
+    graph_request_t request;
+
+    memset(&request, 0, sizeof(request));
+    request.op = GRAPH_OP_RECORD;
+    request.kind_a = kind_a;
+    request.relation = relation;
+    request.kind_b = kind_b;
+    request.confidence = confidence;
+    copy_limited(request.a, a);
+    copy_limited(request.b, b);
+    return graph(&request, 0);
+}
+
 void *mem_alloc(unsigned long bytes)
 {
     long result = syscall(SYS_MEM_ALLOC, (long)bytes, 0, 0);

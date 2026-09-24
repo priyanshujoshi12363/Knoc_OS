@@ -20,6 +20,7 @@
 #include "program.h"
 #include "knocfs.h"
 #include "tty.h"
+#include "memgraph.h"
 
 #define TIMER_TEST_TICKS 5
 #define KEY_CTRL_C 0x03
@@ -76,6 +77,8 @@ static sched_worker_t sched_workers[SCHED_TEST_WORKERS] = {
     {"normal-task", PROCESS_CLASS_NORMAL, SCHED_WEIGHT_NORMAL, 0, 0},
     {"nn-sorter", PROCESS_CLASS_BACKGROUND, SCHED_WEIGHT_BACKGROUND, 0, 0},
 };
+
+static uint32_t boot_number;
 
 static void disk_self_test(device_t *disk)
 {
@@ -151,6 +154,7 @@ static void disk_self_test(device_t *disk)
     }
 
     log_info_uint("Disk boot count: ", record->count);
+    boot_number = (uint32_t)record->count;
 }
 
 static void print_mib(const char *label, uint64_t bytes)
@@ -969,6 +973,23 @@ void kernel_main(uintptr_t dtb)
         uart_put_uint(files);
         print_mib(" files, ", free_bytes);
         uart_puts(" free\n");
+
+        graph_stats_t graph;
+
+        if (memgraph_init(boot_number) == 0 && memgraph_stats(&graph) == 0)
+        {
+            uart_puts("[INFO] Memory graph ready: ");
+            uart_put_uint(graph.nodes);
+            uart_puts(" nodes, ");
+            uart_put_uint(graph.edges);
+            uart_puts(" links (boot ");
+            uart_put_uint(boot_number);
+            uart_puts(")\n");
+        }
+        else
+        {
+            log_warn("Memory graph unavailable");
+        }
     }
     else
     {

@@ -1345,6 +1345,47 @@ Everything moved is written to `.organize-log`, and `organize --undo` moves it a
 
 Generated data is never the whole story. `realcheck.py` compares the model with Linux's `file` tool on real folders. That's how three real problems were found and fixed: numbered PDFs mistaken for system files, text tokens mistaken for code, and `.tar.bz2` mistaken for audio. Each fix was better training data, not a bigger model.
 
+## 5.19 The memory graph: KnocGraph (v0.15.0)
+
+### Why a graph
+
+Every AI model learns something: the organizer knows what a file is and where it went, the AI space knows why a program crashed and which driver it disabled. Kept separately, that knowledge is lost or can't be combined. A **knowledge graph** stores it all in one shape:
+
+```text
+node --relation--> node          plus: who said it, how sure, which boot, when
+file /home/Downloads/x.pdf --classified_as--> type document     (organize, 100%)
+program console --crashed_in--> driver faulty0                  (ai-space)
+actor ai-space --disabled--> driver faulty0                     (ai-space)
+```
+
+Questions become **walks** along the links: "why is this file here?" follows `moved_to` backwards and then reads that node's `classified_as` / `came_from` links. That's what `memory why` does, and it's exactly what the LLM will do later (GraphRAG: *retrieve facts from the graph, then answer*), which keeps it from inventing things about your system.
+
+### Storage
+
+Three files in `/memory` on KnocFS:
+
+| File | Contents |
+|---|---|
+| `header` | Magic, version, counts, the next link slot, a sequence number |
+| `nodes` | 4,096 × 128 bytes: kind, name (up to 95 characters), how often and in which boots it was seen |
+| `edges` | 16,384 × 32 bytes: from, to, actor, relation, confidence, boot, sequence, time |
+
+At boot everything is read into RAM (about 1 MiB), and a **hash table** finds a node by kind + name in one step. Every change is written through to the disk at once, so nothing is lost in a crash. The link table is a **ring**: when it's full, the oldest link is overwritten, a simple form of the "decay of unused memories" from goal.md. Recording the same fact again **refreshes** it instead of adding a duplicate.
+
+### Who can write, and as whom
+
+Programs use one system call, `graph`, with an operation code (record, stats, recent, links of a node, find, forget). It needs the new `KNOWLEDGE` capability, and forgetting also needs `SYSTEM`. The important detail: **the kernel fills in the actor** from the calling process's name. A program can't claim that the AI space or the kernel said something, so the graph can be trusted as a record of who decided what.
+
+The kernel writes directly (started programs, denied capabilities, crash verdicts, disabled drivers). The AI space can't call kernel code, so its black box reports are **imported at the next boot**: each report becomes a `crash #N` node linked to its process, diagnosis, action and driver.
+
+### Time without a clock
+
+KnocOS has no date or time yet, so a link records the **boot number** (the counter the disk self-test keeps in sector 1) and the **uptime** in ticks. "boot 3 +12s" is enough to order events and to say "in the previous boot".
+
+### Later
+
+When the C library exists (v0.21), the graph moves to SQLite with sqlite-vec, so nodes get **embeddings** and can be found by meaning (v0.24), and the LLM reads it through a tool (v0.25).
+
 ---
 
 # Part 6: Engineering
@@ -1390,8 +1431,9 @@ Generated data is never the whole story. `realcheck.py` compares the model with 
 | 0.12.0 | Wait queues, KnocFS filesystem, programs and models on disk |
 | 0.13.0 | The shell knocsh, the terminal layer, Ctrl-C, system information calls |
 | 0.14.0 | The first AI model inside KnocOS: the file organizer |
+| 0.15.0 | The memory graph (KnocGraph): one memory for every AI model |
 
-To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.14.0 && git push --tags`.
+To release: update `VERSION` and `CHANGELOG.md`, commit, then `git tag v0.15.0 && git push --tags`.
 
 ---
 
@@ -1522,6 +1564,8 @@ riscv64-unknown-elf-nm -n knocos.elf                # symbols
 | Term | Meaning |
 |---|---|
 | **Bare metal** | Running with no OS underneath |
+| **Knowledge graph** | Things (nodes) connected by typed facts (links), like KnocGraph |
+| **GraphRAG** | An LLM answering from facts it retrieves from a graph, instead of guessing |
 | **Foreground process** | The program the shell is waiting for; Ctrl-C stops it |
 | **Shell** | The program you type commands into (`knocsh`, `bash`, `cmd`) |
 | **Terminal (tty)** | The layer that hands keyboard input to the program that owns it |

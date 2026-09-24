@@ -161,6 +161,7 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
 | Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
 | Shell (v0.13.0) | ✅ Done | `knocsh`: files, programs, `ps`/`kill`/Ctrl-C, and the AI's view (`crashes`, `ai`) |
+| Memory graph (v0.15.0) | ✅ Done | Every AI model records what it learns and decides; `memory` in the shell; survives reboots |
 | First AI model in KnocOS (v0.14.0) | ✅ Done | File organizer: an int8 type + source classifier with a rules layer and a `Random/` fallback, running as `/bin/organize` |
 
 README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
@@ -187,38 +188,58 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | 5 | **v0.12.0** ✅ | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
 | 6 | **v0.13.0** ✅ | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
 
-### Phase C: The first real AI inside KnocOS
+### Phase C: The small AI layer
 
 | # | Version | Milestone | What we build | Result |
 |---|---|---|---|---|
-| 7 | v0.14.0 | Small NN runtime | Tensors, int8 quantized math, MLP → tiny transformer inference inside the AI space, Python training scripts that export weights | A neural network running on KnocOS |
-| 8 | v0.15.0 | First trained NNs | Fault injection to produce labeled crash data, a crash classifier NN replacing the rule brain (rules stay as backup), a first intent classifier (Tier 1 router) | Real AI detects crashes and picks the fix |
+| 7 | **v0.14.0** ✅ | First AI model in KnocOS | File organizer: int8 type + source classifier, rules layer, `Random/` fallback, `/bin/organize` | A neural network sorts Downloads inside KnocOS |
+| 8 | **v0.15.0** ✅ | Memory graph (KnocGraph) | Nodes, links and events on disk, the `graph` system call, `memory` shell commands, every AI model and the AI space write to it | One shared memory the LLM will read later |
+| 9 | v0.16.0 | Anomaly detector | Kernel telemetry (CPU, memory, disk, processes), a small model, `health` | The OS notices problems itself |
+| 10 | v0.17.0 | Auto-organize + learning | Watch Downloads, user corrections become training data | The organizer works by itself and learns your files |
+| 11 | v0.18.0 | Crash classifier NN | Trained on real crash records from the memory graph, in the AI space | Real AI replaces the rule brain |
+| 12 | v0.19.0 | Context + intent | What you're working on; suspicious program behaviour from system call traces | Context and security models |
 
-### Phase D: The LLM agent
+### Phase D: A kernel ready for big software
 
-| # | Version | Milestone | What we build | Result |
-|---|---|---|---|---|
-| 9 | v0.16.0 | C library + porting layer | stdio, malloc, math, threads, mmap; port SQLite first | Existing C/C++ software runs on KnocOS |
-| 10 | v0.17.0 | LLM runtime | llama.cpp port (GGUF), a small Qwen (0.5B–1.5B) loaded from the filesystem, an `ask` shell command | A local LLM answers questions |
-| 11 | v0.18.0 | AI memory layer | `knoc-memory` (SQLite + sqlite-vec), embeddings, working/episodic/semantic/procedural memory, crash reports as memories | The AI remembers |
-| 12 | v0.19.0 | Agent + tools + intent security | The Tier 0→3 router pipeline, permission-checked tool API, the agent in the AI_AGENT class | The agent does tasks safely |
-
-### Phase E: Connected
-
-| # | Version | Milestone | What we build | Result |
-|---|---|---|---|---|
-| 13 | v0.20.0 | Networking + KnocNet | virtio-net, TCP/IP (lwIP port), model download, a first KnocNet link between two KnocOS machines | Machines talk directly, models download |
-
-### Phase F: Smooth GUI (last)
-
-The GUI comes **after** the kernel, the AI, processes and the agent are complete. Its foundations (memory, user mode, filesystem, drivers) are built by then, so it isn't rewritten later.
-
-| # | Milestone | What we build | Result |
+| # | Version | Milestone | What we build |
 |---|---|---|---|
-| 14 | Framebuffer | virtio-gpu driver, pixels, fonts, the console on screen | A real screen |
-| 15 | Input | virtio keyboard + mouse drivers | Pointer and clicks |
-| 16 | Window system | A user-mode compositor, windows, basic widgets | Several apps on screen |
-| 17 | KnocOS desktop | Taskbar, file manager, AI panel (AI space status, crash reports, LLM chat) | A smooth, complete OS experience |
+| 13 | v0.20.0 | Kernel on several cores | e.g. 3 kernel cores + 1 AI core, locks everywhere |
+| 14 | v0.21.0 | C library + porting layer | stdio, malloc, math, time, `mmap`, threads, disk cache, SQLite (the memory graph moves to it) |
+| 15 | v0.22.0 | Fast model loading | Large disk requests straight into program memory |
+
+### Phase E: The LLM "main brain"
+
+| # | Version | Milestone | What we build |
+|---|---|---|---|
+| 16 | v0.23.0 | LLM runtime | llama.cpp port, a small Qwen (0.5B–1.5B, GGUF), `ask` |
+| 17 | v0.24.0 | Embeddings | Vectors on graph nodes, search by meaning |
+| 18 | v0.25.0 | LLM ↔ memory graph | GraphRAG: the LLM answers from facts in the graph |
+| 19 | v0.26.0 | Agent + tools + intent security | Tier 0→3 router, permission-checked tool API, undo |
+
+### Phase F: Connected
+
+| # | Version | Milestone |
+|---|---|---|
+| 20 | v0.27.0 | virtio-net, TCP/IP, model download |
+| 21 | v0.28.0 | KnocNet: direct links between KnocOS machines |
+
+### Phase G: Other systems' apps
+
+| # | Version | Milestone |
+|---|---|---|
+| 22 | v0.29.0 | Linux ELF compatibility |
+| | later | Windows `.exe` (Wine-style), partial macOS |
+
+### Phase H: Smooth GUI (last)
+
+The GUI comes after the kernel, the AI layer, the LLM and the agent.
+
+| # | Version | Milestone |
+|---|---|---|
+| 23 | v0.30.0 | Framebuffer: virtio-gpu, pixels, fonts |
+| 24 | v0.31.0 | Input: mouse + keyboard |
+| 25 | v0.32.0 | Window system |
+| 26 | v0.33.0 | Desktop + AI panel (LLM chat, memory graph viewer, organizer, health) |
 
 ### Road to v1.0
 Real RISC-V hardware (with OpenSBI), x86-64 / ARM64 ports, RISC-V vector math, GPU/NPU drivers, Linux ABI → Windows `.exe` → partial macOS compatibility, and the full feature list above (semantic file system, auto-organization, OS-wide context, self-healing with rollback).
@@ -309,6 +330,7 @@ The Personal Knowledge Layer, built on ideas from open-source AI memory projects
 - **Storage:** **SQLite** (a single portable C file) + **sqlite-vec** for search by meaning, inside a `knoc-memory` service running as its own protected process
 - **Privacy:** local only, encrypted, only authorized data, and the user can view, edit and delete everything
 - **Connected to the Guardian:** black box crash reports become memories, so the AI remembers past failures when diagnosing
+- **Built in v0.15.0 (first form):** KnocGraph, a knowledge graph in the kernel (4,096 nodes, 16,384 links on KnocFS). The organizer, the AI space (crash reports, verdicts, disabled drivers), the security checks and the kernel (started programs) all write to it; `memory` shows, explains (`memory why FILE`) and forgets. It moves to SQLite + vectors once the C library exists
 - **When:** after the filesystem, user mode and a C library exist (goal.md Stage 6)
 
 ---

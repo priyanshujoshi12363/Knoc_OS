@@ -2,6 +2,22 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.15.0] - 2026-09-24
+
+The memory graph: one shared memory for every AI model.
+
+### Added
+- KnocGraph (`kernel/memgraph.c`): a knowledge graph in the kernel, stored in `/memory` on KnocFS (header, 4,096 nodes of 128 bytes, 16,384 links of 32 bytes as a ring), loaded into RAM with a hash index. Nodes are unique by kind and name (file, folder, program, driver, crash, type, source, actor, diagnosis, action, capability); links carry the relation, the actor that recorded them, a confidence, the boot number and the time. Repeating a fact refreshes it
+- `graph` system call (record, stats, recent, links of a node, find, forget) with a `KNOWLEDGE` capability; the kernel fills in the actor from the calling program; forget also needs `SYSTEM`
+- Producers: `organize` (classified_as, came_from, moved_to, restored_to), the kernel (started programs), security checks (denied capabilities), the guardian (crashed, crashed_in, restarted, stopped, disabled) and black box crash reports imported at boot (in_process, diagnosed_as, action)
+- Shell: `memory`, `memory recent [N]`, `memory find TEXT`, `memory show NAME`, `memory why FILE`, `memory forget NAME`
+- The disk boot counter is the graph's boot number
+- `make test`: `memory why` after organize, the graph after a reboot, crash reports and the disabled driver after Run 3
+- Roadmap to the GUI in `goal.md`
+
+### Fixed
+- The test script's `check` passed patterns starting with `--` to grep as options
+
 ## [0.14.0] - 2026-09-24
 
 The first AI model inside KnocOS: the file organizer.

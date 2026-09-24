@@ -594,6 +594,7 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_CRASHINFO] = "crashinfo",
         [SYS_GETARGS] = "getargs",
         [SYS_RENAME] = "rename",
+        [SYS_GRAPH] = "graph",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

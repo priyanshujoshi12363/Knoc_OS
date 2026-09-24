@@ -726,6 +726,313 @@ static void cmd_ai(void)
     print(any ? "\n" : " none\n");
 }
 
+static const char *graph_kinds[] = GRAPH_KIND_NAMES;
+static const char *graph_relations[] = GRAPH_REL_NAMES;
+
+static void graph_request_init(graph_request_t *request, unsigned int op, unsigned long index)
+{
+    memset(request, 0, sizeof(*request));
+    request->op = op;
+    request->index = (unsigned int)index;
+}
+
+static void copy_name(char *to, const char *from)
+{
+    unsigned long i = 0;
+
+    while (from[i] && i < GRAPH_NAME_MAX - 1)
+    {
+        to[i] = from[i];
+        i++;
+    }
+
+    to[i] = 0;
+}
+
+static void print_edge(const graph_edge_info_t *edge)
+{
+    print("  boot ");
+    print_uint(edge->boot);
+    print(" +");
+    print_uint(edge->uptime / 100);
+    print("s  ");
+    print(edge->actor);
+    print(": ");
+    print(graph_kinds[edge->from_kind < GRAPH_KIND_COUNT ? edge->from_kind : 0]);
+    print(" ");
+    print(edge->from);
+    print(" --");
+    print(graph_relations[edge->relation < GRAPH_REL_COUNT ? edge->relation : 0]);
+    print("--> ");
+    print(graph_kinds[edge->to_kind < GRAPH_KIND_COUNT ? edge->to_kind : 0]);
+    print(" ");
+    print(edge->to);
+
+    if (edge->confidence < 100)
+    {
+        print(" (");
+        print_uint(edge->confidence);
+        print("%)");
+    }
+
+    print("\n");
+}
+
+static int print_node_edges(unsigned int kind, const char *name, unsigned long limit)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+    unsigned long shown = 0;
+
+    for (unsigned long i = 0; i < limit; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_EDGES, i);
+        request.kind_a = kind;
+        copy_name(request.a, name);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        print_edge(&edge);
+        shown++;
+    }
+
+    return (int)shown;
+}
+
+static void memory_stats(void)
+{
+    graph_request_t request;
+    graph_stats_t stats;
+
+    graph_request_init(&request, GRAPH_OP_STATS, 0);
+
+    long result = graph(&request, &stats);
+
+    if (result != 0)
+    {
+        fail("memory", result);
+        return;
+    }
+
+    print("Memory graph: ");
+    print_uint(stats.nodes);
+    print(" nodes, ");
+    print_uint(stats.edges);
+    print(" links (room for ");
+    print_uint(stats.node_capacity);
+    print(" / ");
+    print_uint(stats.edge_capacity);
+    print("), boot ");
+    print_uint(stats.boot);
+    print("\n ");
+
+    for (unsigned int kind = 1; kind < GRAPH_KIND_COUNT; kind++)
+    {
+        if (stats.by_kind[kind])
+        {
+            print(" ");
+            print(graph_kinds[kind]);
+            print(" ");
+            print_uint(stats.by_kind[kind]);
+        }
+    }
+
+    print("\n");
+}
+
+static void memory_recent(unsigned long count)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+
+    for (unsigned long i = 0; i < count; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_RECENT, i);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        print_edge(&edge);
+    }
+}
+
+static void memory_find(const char *text)
+{
+    graph_request_t request;
+    graph_node_info_t node;
+    unsigned long found = 0;
+
+    for (unsigned long i = 0; i < 40; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_FIND, i);
+        copy_name(request.a, text);
+
+        if (graph(&request, &node) != 0)
+        {
+            break;
+        }
+
+        print("  ");
+        print_padded(graph_kinds[node.kind < GRAPH_KIND_COUNT ? node.kind : 0], 11);
+        print(node.name);
+        print("  (");
+        print_uint(node.edges);
+        print(" links, seen ");
+        print_uint(node.hits);
+        print(" times)\n");
+        found++;
+    }
+
+    if (!found)
+    {
+        print("Nothing in memory matches that\n");
+    }
+}
+
+static void memory_show(const char *name, int forget)
+{
+    unsigned long found = 0;
+
+    for (unsigned int kind = 1; kind < GRAPH_KIND_COUNT; kind++)
+    {
+        graph_request_t request;
+
+        if (forget)
+        {
+            graph_request_init(&request, GRAPH_OP_FORGET, 0);
+            request.kind_a = kind;
+            copy_name(request.a, name);
+
+            if (graph(&request, 0) == 0)
+            {
+                print("Forgot ");
+                print(graph_kinds[kind]);
+                print(" ");
+                print(name);
+                print("\n");
+                found++;
+            }
+
+            continue;
+        }
+
+        graph_edge_info_t edge;
+
+        graph_request_init(&request, GRAPH_OP_EDGES, 0);
+        request.kind_a = kind;
+        copy_name(request.a, name);
+
+        if (graph(&request, &edge) != 0)
+        {
+            continue;
+        }
+
+        print(graph_kinds[kind]);
+        print(" ");
+        print(name);
+        print(":\n");
+        print_node_edges(kind, name, 30);
+        found++;
+    }
+
+    if (!found)
+    {
+        print("Nothing in memory is called ");
+        print(name);
+        print(" (try: memory find TEXT)\n");
+    }
+}
+
+static void memory_why(const char *path)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+    int explained = 0;
+
+    for (unsigned long i = 0; i < 30; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_EDGES, i);
+        request.kind_a = GRAPH_KIND_FILE;
+        copy_name(request.a, path);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        if (edge.relation == GRAPH_REL_MOVED_TO && strcmp(edge.to, path) == 0)
+        {
+            print(path);
+            print(" was moved here by ");
+            print(edge.actor);
+            print(" from ");
+            print(edge.from);
+            print(", because:\n");
+            print_node_edges(GRAPH_KIND_FILE, edge.from, 10);
+            explained = 1;
+            break;
+        }
+    }
+
+    if (!explained)
+    {
+        print("What KnocOS knows about ");
+        print(path);
+        print(":\n");
+
+        if (print_node_edges(GRAPH_KIND_FILE, path, 20) == 0)
+        {
+            print("  nothing yet\n");
+        }
+    }
+}
+
+static void cmd_memory(int argc, char **args)
+{
+    char path[PATH_MAX];
+
+    if (argc < 2)
+    {
+        memory_stats();
+    }
+    else if (strcmp(args[1], "recent") == 0)
+    {
+        long count = argc > 2 ? parse_number(args[2]) : 10;
+
+        memory_recent(count > 0 ? (unsigned long)count : 10);
+    }
+    else if (strcmp(args[1], "find") == 0 && argc > 2)
+    {
+        memory_find(args[2]);
+    }
+    else if ((strcmp(args[1], "show") == 0 || strcmp(args[1], "forget") == 0) && argc > 2)
+    {
+        const char *name = args[2];
+
+        if (name[0] == '/' || name[0] == '.')
+        {
+            resolve(name, path);
+            name = path;
+        }
+
+        memory_show(name, strcmp(args[1], "forget") == 0);
+    }
+    else if (strcmp(args[1], "why") == 0 && argc > 2)
+    {
+        resolve(args[2], path);
+        memory_why(path);
+    }
+    else
+    {
+        print("usage: memory [recent [N] | find TEXT | show NAME | why FILE | forget NAME]\n");
+    }
+}
+
 static void cmd_uptime(void)
 {
     unsigned long ticks = uptime();
@@ -742,6 +1049,7 @@ static void cmd_help(void)
     print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT [> FILE]  mkdir DIR  rm PATH\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
     print("System:    mem  devices  crashes  ai  uptime  clear  exit\n");
+    print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 
@@ -816,6 +1124,10 @@ static int execute(int argc, char **args)
     else if (strcmp(command, "ai") == 0)
     {
         cmd_ai();
+    }
+    else if (strcmp(command, "memory") == 0)
+    {
+        cmd_memory(argc, args);
     }
     else if (strcmp(command, "uptime") == 0)
     {

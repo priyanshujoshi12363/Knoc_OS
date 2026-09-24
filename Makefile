@@ -49,6 +49,7 @@ KERNEL_OBJS = boot/boot.o \
               kernel/programs.o \
               kernel/knocfs.o \
               kernel/tty.o \
+              kernel/memgraph.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
