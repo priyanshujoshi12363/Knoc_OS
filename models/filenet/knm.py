@@ -90,7 +90,7 @@ def load(path):
             "bytes": len(data)}
 
 
-def infer(model, x):
+def raw_logits(model, x):
     xq = np.clip(np.round(np.asarray(x, dtype=np.float64) * 127), 0, 127).astype(np.int32)
     logits = None
     for layer in model["layers"]:
@@ -100,6 +100,11 @@ def infer(model, x):
             xq = np.clip(np.round(np.maximum(real, 0) / layer["out_scale"]), 0, 127).astype(np.int32)
         else:
             logits = real
+    return logits
+
+
+def infer(model, x):
+    logits = raw_logits(model, x)
     results = []
     start = 0
     for names in model["heads"]:

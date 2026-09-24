@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.16.0-blue)
+![Version](https://img.shields.io/badge/version-v0.17.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.16.0 starting
+[INFO] KnocOS v0.17.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,40 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: The Anomaly Detector and the First LLM (v0.16.0)
+## ✅ Just Completed: Self-Healing and GraphRAG (v0.17.0)
+
+**KnocOS fixes itself.** `healthd` finds the problem, names the program, and fixes it, even when two problems happen at once:
+
+```text
+knoc:/$ spin &
+knoc:/$ spawner &
+[HEALTH] CPU hog in spin (100% CPU, 100% sure)
+[HEALTH] recovered: moved to background priority: spin (pid 19) because of the CPU hog
+[HEALTH] spawn storm in spawner (2 programs started/s, 100% sure)
+[HEALTH] recovered: stopped spawner (pid 20) because of the spawn storm
+```
+
+| Problem | Fix |
+|---|---|
+| CPU hog, disk thrashing | Move the program to background priority (it keeps running) |
+| Memory leak | Stop the program after 10 s of steady growth |
+| Spawn storm | Stop the program |
+| Disk filling up | Stop the program when the disk is 90% full or would be full within 60 s |
+
+`health watch` only reports, `health recover` (the default) reports and fixes. The shell and `healthd` are never touched, and the program you are waiting for is never called a CPU hog.
+
+**The LLM knows this computer.** Before Qwen answers, `ask` looks up what the question needs in the memory graph, the health telemetry and the crash reports, and gives those facts to the model:
+
+```text
+knoc:/$ ask why was 335505283.pdf moved?
+[ask] facts from the memory graph and the system:
+  - organize moved 335505283.pdf from /home/Downloads to /home/Downloads/Documents because it is a document file (100% sure).
+The computer moved the file 335505283.pdf from the Downloads folder to the Documents folder because it is a document file.
+```
+
+General questions (`ask What is an operating system?`) get no facts and stay fast. The fixed start of the prompt is cached on disk, so every question after the first skips about 40 prompt tokens.
+
+## The Anomaly Detector and the First LLM (v0.16.0)
 
 **KnocOS notices its own problems.** The kernel samples CPU, memory, disk and processes every second, and `healthd`, a small neural network running in the background, reads the last 10 seconds and says what is wrong and which program is doing it:
 
@@ -183,7 +216,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** the LLM reads the memory graph and the health reports (GraphRAG), so `ask` can answer questions about this machine.
+**Next up:** a chat mode for `ask`, and the LLM explaining crashes and health problems on its own.
 
 Recent progress:
 
@@ -206,7 +239,8 @@ Recent progress:
 | `2b9471a` | The shell `knocsh`, terminal layer, Ctrl-C, 6 system calls (`wait`, `ps`, `kill`, `sysinfo`, `devinfo`, `crashinfo`), version `v0.13.0` |
 | `ed5d0bd` | File organizer AI (type + source classifier, rules layer, `Random/`), `/bin/organize`, FPU for programs, program arguments, `rename`, version `v0.14.0` |
 | `9448bee` | Memory graph KnocGraph in the kernel, `graph` system call, `memory` shell commands, all AI models write to it, version `v0.15.0` |
-| *(uncommitted)* | Kernel telemetry, the anomaly detector `healthd`, fair sleep locks, faster disk, the Qwen LLM with our own engine (`ask`), version `v0.16.0` |
+| `a3adfcf` | Kernel telemetry, the anomaly detector `healthd`, fair sleep locks, faster disk, the Qwen LLM with our own engine (`ask`), version `v0.16.0` |
+| *(uncommitted)* | Self-healing `healthd` (recover/watch, `setclass`), multi-label health model, GraphRAG for `ask`, prompt prefix cache, version `v0.17.0` |
 
 What works right now:
 

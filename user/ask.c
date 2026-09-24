@@ -1,4 +1,5 @@
 #include "ulib.h"
+#include "rag.h"
 
 #define MODEL_PATH "/models/qwen.kllm"
 #define HEADER_BYTES 128
@@ -8,7 +9,11 @@
 #define HASH_BITS 19
 #define HASH_SIZE (1u << HASH_BITS)
 #define READ_CHUNK (8UL * 1024 * 1024)
-#define SYSTEM_PROMPT "You are the KnocOS assistant, built into the KnocOS operating system. Answer briefly and clearly."
+#define SYSTEM_PROMPT                                                                                     \
+    "You are the KnocOS assistant, built into the KnocOS operating system. Answer briefly and clearly. " \
+    "When facts about this computer are given, answer from them."
+#define PREFIX_PATH "/tmp/ask-prefix.kv"
+#define PREFIX_MAGIC "KNOCKV01"
 
 typedef struct header
 {
@@ -53,6 +58,7 @@ static float *x, *xb, *xb2, *hb, *hb2, *q, *att, *logits, *key_cache, *value_cac
 static signed char *xq;
 static float *xs;
 static int prompt[MAX_PROMPT];
+static rag_facts_t facts;
 
 static double exp_fast(double v)
 {
@@ -498,7 +504,7 @@ static const float *take_floats(unsigned char **p, unsigned int count)
     return values;
 }
 
-static void quantize_vector(const float *v, unsigned int n)
+static void quantize_vector(const float *v, unsigned int n, signed char *q_out, float *s_out)
 {
     for (unsigned int g = 0; g < n / group; g++)
     {
@@ -514,22 +520,24 @@ static void quantize_vector(const float *v, unsigned int n)
 
         float scale = highest / 127.0f;
 
-        xs[g] = scale;
+        s_out[g] = scale;
 
         for (unsigned int k = 0; k < group; k++)
         {
             float r = scale > 0 ? v[g * group + k] / scale : 0;
 
-            xq[g * group + k] = (signed char)(int)(r + (r >= 0 ? 0.5f : -0.5f));
+            q_out[g * group + k] = (signed char)(int)(r + (r >= 0 ? 0.5f : -0.5f));
         }
     }
 }
 
-static void matmul(float *out, const qmatrix_t *m, const float *v)
+#define LANE(w, n) (((w) << (56 - 8 * (n))) >> 56)
+
+static void matmul(float *out, const qmatrix_t *m, const float *in)
 {
     unsigned int groups = m->cols / group;
 
-    quantize_vector(v, m->cols);
+    quantize_vector(in, m->cols, xq, xs);
 
     for (unsigned int i = 0; i < m->rows; i++)
     {
@@ -548,14 +556,9 @@ static void matmul(float *out, const qmatrix_t *m, const float *v)
                 long wa = a[k];
                 long wb = b[k];
 
-                dot += ((wa << 56) >> 56) * ((wb << 56) >> 56) +
-                       ((wa << 48) >> 56) * ((wb << 48) >> 56) +
-                       ((wa << 40) >> 56) * ((wb << 40) >> 56) +
-                       ((wa << 32) >> 56) * ((wb << 32) >> 56) +
-                       ((wa << 24) >> 56) * ((wb << 24) >> 56) +
-                       ((wa << 16) >> 56) * ((wb << 16) >> 56) +
-                       ((wa << 8) >> 56) * ((wb << 8) >> 56) +
-                       (wa >> 56) * (wb >> 56);
+                dot += LANE(wa, 0) * LANE(wb, 0) + LANE(wa, 1) * LANE(wb, 1) + LANE(wa, 2) * LANE(wb, 2) +
+                       LANE(wa, 3) * LANE(wb, 3) + LANE(wa, 4) * LANE(wb, 4) + LANE(wa, 5) * LANE(wb, 5) +
+                       LANE(wa, 6) * LANE(wb, 6) + (wa >> 56) * (wb >> 56);
             }
 
             sum += (float)dot * scales[g] * xs[g];
@@ -603,10 +606,63 @@ static void rope(float *v, unsigned int count, unsigned int position)
     }
 }
 
+static void attend(const float *qt, float *out, const float *keys, const float *values, unsigned int position)
+{
+    unsigned int per_kv = h.heads / h.kv_heads;
+    float scale = (float)(1.0 / sqrt_of(head_dim));
+
+    for (unsigned int head = 0; head < h.heads; head++)
+    {
+        const float *qh = qt + head * head_dim;
+        unsigned int kv = head / per_kv;
+        float highest = -1e30f;
+
+        for (unsigned int t = 0; t <= position; t++)
+        {
+            const float *kt = keys + (unsigned long)t * kv_dim + kv * head_dim;
+            float score = 0;
+
+            for (unsigned int i = 0; i < head_dim; i++)
+            {
+                score += qh[i] * kt[i];
+            }
+
+            score *= scale;
+            att[t] = score;
+            highest = score > highest ? score : highest;
+        }
+
+        float total = 0;
+
+        for (unsigned int t = 0; t <= position; t++)
+        {
+            att[t] = (float)exp_fast(att[t] - highest);
+            total += att[t];
+        }
+
+        float *oh = out + head * head_dim;
+
+        for (unsigned int i = 0; i < head_dim; i++)
+        {
+            oh[i] = 0;
+        }
+
+        for (unsigned int t = 0; t <= position; t++)
+        {
+            const float *vt = values + (unsigned long)t * kv_dim + kv * head_dim;
+            float weight = att[t] / total;
+
+            for (unsigned int i = 0; i < head_dim; i++)
+            {
+                oh[i] += weight * vt[i];
+            }
+        }
+    }
+}
+
 static void forward(int token, unsigned int position, int want_logits)
 {
     unsigned int dim = h.dim;
-    unsigned int per_kv = h.heads / h.kv_heads;
     const signed char *row = embedding.q + (unsigned long)token * dim;
     const float *scales = embedding.s + (unsigned long)token * (dim / group);
 
@@ -641,57 +697,7 @@ static void forward(int token, unsigned int position, int want_logits)
 
         rope(q, h.heads, position);
         rope(k, h.kv_heads, position);
-
-        float scale = (float)(1.0 / sqrt_of(head_dim));
-
-        for (unsigned int head = 0; head < h.heads; head++)
-        {
-            const float *qh = q + head * head_dim;
-            unsigned int kv = head / per_kv;
-            float highest = -1e30f;
-
-            for (unsigned int t = 0; t <= position; t++)
-            {
-                const float *kt = keys + (unsigned long)t * kv_dim + kv * head_dim;
-                float score = 0;
-
-                for (unsigned int i = 0; i < head_dim; i++)
-                {
-                    score += qh[i] * kt[i];
-                }
-
-                score *= scale;
-                att[t] = score;
-                highest = score > highest ? score : highest;
-            }
-
-            float total = 0;
-
-            for (unsigned int t = 0; t <= position; t++)
-            {
-                att[t] = (float)exp_fast(att[t] - highest);
-                total += att[t];
-            }
-
-            float *out = xb2 + head * head_dim;
-
-            for (unsigned int i = 0; i < head_dim; i++)
-            {
-                out[i] = 0;
-            }
-
-            for (unsigned int t = 0; t <= position; t++)
-            {
-                const float *vt = values + (unsigned long)t * kv_dim + kv * head_dim;
-                float weight = att[t] / total;
-
-                for (unsigned int i = 0; i < head_dim; i++)
-                {
-                    out[i] += weight * vt[i];
-                }
-            }
-        }
-
+        attend(q, xb2, keys, values, position);
         matmul(xb, &b->wo, xb2);
 
         for (unsigned int i = 0; i < dim; i++)
@@ -850,6 +856,61 @@ static int add(int *ids, int count, const char *text)
     return count + encode(text, ids + count, MAX_PROMPT - count);
 }
 
+static int prefix_cached(const int *ids, int count)
+{
+    char magic[8];
+    unsigned int stored;
+    static int stored_ids[MAX_PROMPT];
+    int fd = open(PREFIX_PATH, O_READ);
+
+    if (fd < 0)
+    {
+        return 0;
+    }
+
+    int ok = read(fd, magic, 8) == 8 && memcmp_bytes(magic, PREFIX_MAGIC, 8) == 0 &&
+             read(fd, &stored, 4) == 4 && stored == (unsigned int)count &&
+             read(fd, stored_ids, (unsigned long)count * 4) == (long)count * 4 &&
+             memcmp_bytes(stored_ids, ids, (unsigned long)count * 4) == 0;
+    unsigned long bytes = (unsigned long)count * kv_dim * 4;
+
+    for (unsigned int l = 0; ok && l < h.layers; l++)
+    {
+        unsigned long offset = (unsigned long)l * h.max_seq * kv_dim;
+
+        ok = read(fd, key_cache + offset, bytes) == (long)bytes && read(fd, value_cache + offset, bytes) == (long)bytes;
+    }
+
+    close(fd);
+    return ok;
+}
+
+static void save_prefix(const int *ids, int count)
+{
+    unsigned int stored = (unsigned int)count;
+    unsigned long bytes = (unsigned long)count * kv_dim * 4;
+    int fd = open(PREFIX_PATH, O_WRITE | O_CREATE | O_TRUNC);
+
+    if (fd < 0)
+    {
+        return;
+    }
+
+    write(fd, PREFIX_MAGIC, 8);
+    write(fd, &stored, 4);
+    write(fd, ids, (unsigned long)count * 4);
+
+    for (unsigned int l = 0; l < h.layers; l++)
+    {
+        unsigned long offset = (unsigned long)l * h.max_seq * kv_dim;
+
+        write(fd, key_cache + offset, bytes);
+        write(fd, value_cache + offset, bytes);
+    }
+
+    close(fd);
+}
+
 int main(void)
 {
     char question[ARGS_MAX];
@@ -861,6 +922,20 @@ int main(void)
     {
         print("usage: ask QUESTION\n");
         return 1;
+    }
+
+    rag_collect(question, &facts);
+
+    if (facts.count)
+    {
+        print("[ask] facts from the memory graph and the system:\n");
+
+        for (int i = 0; i < facts.count; i++)
+        {
+            print("  - ");
+            print(facts.text[i]);
+            print("\n");
+        }
     }
 
     if (load_model() != 0)
@@ -877,6 +952,23 @@ int main(void)
     count = add(prompt, count, "\n");
     prompt[count++] = (int)h.im_start;
     count = add(prompt, count, "user\n");
+
+    int prefix = count;
+
+    if (facts.count)
+    {
+        count = add(prompt, count, "Facts about this computer:\n");
+
+        for (int i = 0; i < facts.count; i++)
+        {
+            count = add(prompt, count, "- ");
+            count = add(prompt, count, facts.text[i]);
+            count = add(prompt, count, "\n");
+        }
+
+        count = add(prompt, count, "\nQuestion: ");
+    }
+
     count = add(prompt, count, question);
     prompt[count++] = (int)h.im_end;
     count = add(prompt, count, "\n");
@@ -891,9 +983,21 @@ int main(void)
     print_uint((unsigned long)count);
     print(" prompt tokens...\n");
 
-    for (int i = 0; i < count; i++)
+    int first = 0;
+
+    if (prefix_cached(prompt, prefix))
+    {
+        first = prefix;
+    }
+
+    for (int i = first; i < count; i++)
     {
         forward(prompt[i], (unsigned int)i, i == count - 1);
+
+        if (first == 0 && i == prefix - 1)
+        {
+            save_prefix(prompt, prefix);
+        }
     }
 
     unsigned long thought = uptime();

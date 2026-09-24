@@ -1060,6 +1060,46 @@ static void cmd_memory(int argc, char **args)
     }
 }
 
+static int health_recovers(void)
+{
+    char text[16];
+    int fd = open("/etc/health.mode", O_READ);
+
+    if (fd < 0)
+    {
+        return 1;
+    }
+
+    long got = read(fd, text, sizeof(text) - 1);
+
+    close(fd);
+    return !(got >= 5 && memcmp_bytes(text, "watch", 5) == 0);
+}
+
+static void cmd_health_mode(const char *mode)
+{
+    if (strcmp(mode, "watch") != 0 && strcmp(mode, "recover") != 0)
+    {
+        print("usage: health [watch | recover]\n");
+        return;
+    }
+
+    mkdir("/etc");
+
+    int fd = open("/etc/health.mode", O_WRITE | O_CREATE | O_TRUNC);
+
+    if (fd < 0)
+    {
+        print("health: cannot write /etc/health.mode\n");
+        return;
+    }
+
+    write(fd, mode, strlen(mode));
+    close(fd);
+    print(strcmp(mode, "watch") == 0 ? "healthd will only report problems\n"
+                                     : "healthd will report problems and fix them\n");
+}
+
 static void cmd_health(void)
 {
     telemetry_sample_t s;
@@ -1102,6 +1142,8 @@ static void cmd_health(void)
     print_uint(s.top_mem_kib / 1024);
     print(" MiB   most system calls: ");
     print(s.top_sys_name[0] ? s.top_sys_name : "-");
+    print("   most disk: ");
+    print(s.top_disk_name[0] ? s.top_disk_name : "-");
     print("\n");
 
     process_info_t info;
@@ -1112,13 +1154,14 @@ static void cmd_health(void)
         running |= strcmp(info.name, "healthd") == 0;
     }
 
-    print(running ? "Anomaly detector: running\n" : "Anomaly detector: not running\n");
+    print(running ? "Anomaly detector: running, " : "Anomaly detector: not running, ");
+    print(health_recovers() ? "recover mode (fixes problems itself)\n" : "watch mode (only reports)\n");
 
     graph_request_t request;
     graph_edge_info_t edge;
     int shown = 0;
 
-    for (unsigned long i = 0; i < 400 && shown < 5; i++)
+    for (unsigned long i = 0; i < 400 && shown < 8; i++)
     {
         graph_request_init(&request, GRAPH_OP_RECENT, i);
 
@@ -1127,11 +1170,13 @@ static void cmd_health(void)
             break;
         }
 
-        if (edge.relation == GRAPH_REL_ANOMALY)
+        if (edge.relation == GRAPH_REL_ANOMALY ||
+            (strcmp(edge.actor, "healthd") == 0 &&
+             (edge.relation == GRAPH_REL_STOPPED || edge.relation == GRAPH_REL_LOWERED)))
         {
             if (!shown)
             {
-                print("Recent problems:\n");
+                print("Recent problems and fixes:\n");
             }
 
             print_edge(&edge);
@@ -1160,7 +1205,7 @@ static void cmd_help(void)
 {
     print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT [> FILE]  mkdir DIR  rm PATH\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
-    print("System:    mem  devices  crashes  ai  health  uptime  sleep N  clear  exit\n");
+    print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("AI:        ask QUESTION (the Qwen LLM)  organize DIR\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
@@ -1257,7 +1302,14 @@ static int execute(int argc, char **args)
     }
     else if (strcmp(command, "health") == 0)
     {
-        cmd_health();
+        if (argc > 1)
+        {
+            cmd_health_mode(args[1]);
+        }
+        else
+        {
+            cmd_health();
+        }
     }
     else if (strcmp(command, "uptime") == 0)
     {

@@ -40,29 +40,41 @@ def problem(label, rng):
     return f"filler {rng.randint(24, 40)} &", ["kill filler", "rm /tmp/filler.bin"]
 
 
+def busy(rng, low, high):
+    steps = []
+    end = rng.uniform(low, high)
+    elapsed = 0.0
+    while elapsed < end:
+        pause = rng.uniform(4, 9)
+        steps.append((pause, rng.choice(NORMAL_COMMANDS[:10])))
+        elapsed += pause
+    return steps
+
+
 def script(seed, cycles):
     rng = random.Random(seed)
     steps = [(8.0, "recorder &")]
+    problems = LABELS[1:]
+    phases = [[label] for label in problems]
+    phases += [[a, b] for i, a in enumerate(problems) for b in problems[i + 1:]]
     for _ in range(cycles):
-        order = LABELS[1:]
-        rng.shuffle(order)
-        for label in order:
+        rng.shuffle(phases)
+        for phase in phases:
             steps.append((1.0, "echo MARK normal"))
-            end = rng.uniform(20, 32)
-            elapsed = 0.0
-            while elapsed < end:
-                pause = rng.uniform(2, 5)
-                steps.append((pause, rng.choice(NORMAL_COMMANDS)))
-                elapsed += pause
-            start, stop = problem(label, rng)
-            steps.append((1.0, f"echo MARK {label}"))
-            steps.append((0.5, start))
-            end = rng.uniform(25, 35)
-            elapsed = 0.0
-            while elapsed < end:
-                pause = rng.uniform(4, 9)
-                steps.append((pause, rng.choice(NORMAL_COMMANDS[:10])))
-                elapsed += pause
+            steps.extend(busy(rng, 20, 32))
+            if len(phase) == 2 and rng.random() < 0.5:
+                phase = phase[::-1]
+            first_start, stop = problem(phase[0], rng)
+            steps.append((1.0, f"echo MARK {phase[0]}"))
+            steps.append((0.5, first_start))
+            steps.extend(busy(rng, 20, 30))
+            if len(phase) == 2:
+                other_start, other_stop = problem(phase[1], rng)
+                both = "+".join(sorted(phase, key=LABELS.index))
+                steps.append((1.0, f"echo MARK {both}"))
+                steps.append((0.5, other_start))
+                steps.extend(busy(rng, 20, 28))
+                stop = stop + other_stop
             for command in stop:
                 steps.append((0.5, command))
     steps.append((1.0, "echo MARK normal"))
@@ -74,6 +86,10 @@ def run(job):
     disk = tempfile.mktemp(suffix=".img")
     log_path = os.path.join(DATA, f"raw-{seed}.log")
     subprocess.run(["./scripts/mkdisk.sh", disk], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["python3", "tools/knocfs.py", "mkdir", disk, "/etc"], cwd=ROOT, check=True,
+                   stdout=subprocess.DEVNULL)
+    subprocess.run(["python3", "tools/knocfs.py", "put-text", disk, "/etc/health.mode", "watch"], cwd=ROOT,
+                   check=True, stdout=subprocess.DEVNULL)
     command = ["env", "-i", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "qemu-system-riscv64",
                "-machine", "virt", "-smp", "2", "-m", "2G", "-bios", "none", "-nographic",
                "-global", "virtio-mmio.force-legacy=false",
@@ -103,8 +119,8 @@ def parse(log_path, seed):
     since_change = 0
     sample = re.compile(r"\[T\] ((?:\d+,){" + str(NUMERIC) + r"}[^,\s]*,[^,\s]*,[^,\s]*,[^,\s]*)")
     for line in open(log_path, errors="replace"):
-        mark = re.search(r"MARK (\w+)", line)
-        if mark and mark.group(1) in LABELS and not line.startswith("knoc:"):
+        mark = re.search(r"MARK ([\w+]+)", line)
+        if mark and all(part in LABELS for part in mark.group(1).split("+")) and not line.startswith("knoc:"):
             if mark.group(1) != label:
                 label = mark.group(1)
                 since_change = 0
@@ -123,8 +139,8 @@ def parse(log_path, seed):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--cycles", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=300)
     args = parser.parse_args()
 
     os.makedirs(DATA, exist_ok=True)
@@ -137,15 +153,17 @@ def main():
     for (seed, _), log_path in zip(jobs, logs):
         rows.extend(parse(log_path, seed))
 
-    with open(os.path.join(DATA, "samples.csv"), "w", newline="") as file:
+    with open(os.path.join(DATA, f"samples-{args.seed}.csv"), "w", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(["run", "label"] + FIELDS)
         writer.writerows(rows)
 
-    counts = {label: sum(1 for row in rows if row[1] == label) for label in LABELS}
+    counts = {}
+    for row in rows:
+        counts[row[1]] = counts.get(row[1], 0) + 1
     print(f"{len(rows)} samples in {time.time() - started:.0f} s")
-    for label, count in counts.items():
-        print(f"  {label:<13} {count}")
+    for label, count in sorted(counts.items()):
+        print(f"  {label:<26} {count}")
 
 
 if __name__ == "__main__":

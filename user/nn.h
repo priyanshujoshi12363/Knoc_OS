@@ -30,6 +30,7 @@ typedef struct nn_model
 } nn_model_t;
 
 int nn_load(nn_model_t *model, const char *path);
+void nn_logits(const nn_model_t *model, const double *inputs, double *out);
 void nn_infer(const nn_model_t *model, const double *inputs, int *best_class, double *confidence);
 double nn_round_even(double value);
 double nn_log2(double value);

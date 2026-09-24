@@ -2,6 +2,31 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.17.0] - 2026-09-24
+
+Self-healing, and an LLM that knows this computer.
+
+### Added
+- `healthd` fixes what it finds (recover mode, the default): a CPU hog or disk thrashing program is moved to background priority; a memory leak is stopped after 10 seconds of steady growth; a spawn storm is stopped; a program filling the disk is stopped when the disk is 90% full or would be full within 60 seconds. `knocsh` and `healthd` are never touched. Every fix goes into the memory graph (`stopped`, and the new `lowered` link)
+- `health watch` (only report) and `health recover` (report and fix), stored in `/etc/health.mode`; `health` shows the mode and the recent problems and fixes
+- `setclass` system call (`SYSTEM` capability): lowers the priority class of a user program; it can never raise one
+- `ps` marks the foreground program (the one the shell is waiting for)
+- Per-program disk counter: telemetry names the program that read and wrote the most file data (`top_disk`), shown by `health` as "most disk"; disk problems blame it
+- GraphRAG for `ask` (`user/rag.c`): the question decides what is needed. Names in the question (files, programs, drivers, apps) are looked up in the memory graph and their links become facts; health words bring the current telemetry and recent problems and fixes; crash words bring the AI space status and the black box reports; file words bring recent moves. Facts are plain sentences (a move and the file's type become "moved X from A to B because it is a document file"), shown to the user and given to Qwen before the question. General questions get no facts
+- `ask` saves the attention cache of the fixed system prompt in `/tmp/ask-prefix.kv` and reuses it, so each question skips about 40 prompt tokens
+- The health model is multi-label: 5 outputs, one per problem (sigmoid), so two problems at the same time are both found. The collector covers every pair of problems
+- `make test`: `ask` retrieval on Boot 1; Run 5 checks recovery (leak stopped, CPU hog lowered, spawn storm stopped at the same time as the hog)
+
+### Changed
+- Health features use the change of RAM and disk use inside the 10 second window instead of how full they are, so a big or full disk is not a problem by itself
+- The blamed program is the one that was on top for that problem in most of the 10 seconds, not only the last second, and it must still be running
+- No alert without a program to blame, the foreground program is never a CPU hog (the user asked for that work), and the same problem in the same program waits 60 seconds before it can be reported again
+- "Disk filling up" needs free space that really goes down (at least 512 KiB in 10 seconds, falling in 5 of them); a program that is already in the background is not lowered again
+- Health facts for `ask` join each problem with its fix ("The program spin was hogging the CPU; healthd fixed it by moving it to background priority."), which a small model reads more reliably
+- Scheduler: a woken process runs right away when its class is higher than the running one (wake-up preemption). With a background CPU hog running, loading the LLM took 54 s; now 6 s
+- `memory find` ignores upper and lower case
+- `knm.py`: `raw_logits`; `nn.c`: `nn_logits`
+
 ## [0.16.0] - 2026-09-24
 
 The anomaly detector, and the first LLM inside KnocOS.

@@ -596,6 +596,7 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_RENAME] = "rename",
         [SYS_GRAPH] = "graph",
         [SYS_TELEMETRY] = "telemetry",
+        [SYS_SETCLASS] = "setclass",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

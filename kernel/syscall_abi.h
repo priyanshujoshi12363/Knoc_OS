@@ -31,7 +31,8 @@
 #define SYS_RENAME 23
 #define SYS_GRAPH 24
 #define SYS_TELEMETRY 25
-#define SYS_COUNT 26
+#define SYS_SETCLASS 26
+#define SYS_COUNT 27
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -105,6 +106,8 @@ typedef struct dir_entry
 /* System information for the shell (CAP_SYSTEM) */
 
 #define INFO_NAME_MAX 16
+#define CLASS_BACKGROUND 3
+#define PROCESS_FLAG_FOREGROUND 0x1
 #define INFO_DISABLED_MAX 4
 
 typedef struct process_info
@@ -114,7 +117,7 @@ typedef struct process_info
     uint32_t state;
     uint32_t user;
     uint32_t restarts;
-    uint32_t reserved;
+    uint32_t flags;
     uint64_t cpu_ticks;
     uint64_t memory;
     char name[INFO_NAME_MAX];
@@ -197,12 +200,13 @@ typedef struct crash_info
 #define GRAPH_REL_STOPPED 13
 #define GRAPH_REL_IN_PROCESS 14
 #define GRAPH_REL_ANOMALY 15
-#define GRAPH_REL_COUNT 16
+#define GRAPH_REL_LOWERED 16
+#define GRAPH_REL_COUNT 17
 
 #define GRAPH_REL_NAMES \
     {"?", "classified_as", "came_from", "moved_to", "restored_to", "started", "crashed", \
      "crashed_in", "diagnosed_as", "action", "disabled", "denied", "restarted", "stopped", "in_process", \
-     "anomaly"}
+     "anomaly", "lowered"}
 
 #define GRAPH_OP_RECORD 1
 #define GRAPH_OP_STATS 2
@@ -292,6 +296,9 @@ typedef struct telemetry_sample
     char top_mem_name[TELEMETRY_NAME_MAX];
     char top_sys_name[TELEMETRY_NAME_MAX];
     char top_spawn_name[TELEMETRY_NAME_MAX];
+    int32_t top_disk_pid;
+    uint32_t top_disk_kib;
+    char top_disk_name[TELEMETRY_NAME_MAX];
 } telemetry_sample_t;
 
 #endif

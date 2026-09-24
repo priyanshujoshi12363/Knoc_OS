@@ -4,7 +4,7 @@ WINDOW = 10
 LABELS = ["normal", "memory_leak", "cpu_hog", "disk_thrash", "spawn_storm", "disk_filling"]
 CULPRITS = {"memory_leak": "top_mem_name", "cpu_hog": "top_cpu_name", "disk_thrash": "top_sys_name",
             "spawn_storm": "top_spawn_name", "disk_filling": "top_sys_name"}
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2
 
 
 def clip(value):
@@ -19,9 +19,13 @@ def squash(value, scale):
     return 0.5 + 0.5 * math.tanh(value / scale)
 
 
-def metrics(s):
-    ram_used = 1 - s["ram_free_kib"] / s["ram_total_kib"] if s["ram_total_kib"] else 0.0
-    disk_used = 1 - s["disk_free_kib"] / s["disk_total_kib"] if s["disk_total_kib"] else 0.0
+def used(s, total, free):
+    return s[total] - s[free]
+
+
+def metrics(s, base):
+    ram_change = used(s, "ram_total_kib", "ram_free_kib") - used(base, "ram_total_kib", "ram_free_kib")
+    disk_change = used(s, "disk_total_kib", "disk_free_kib") - used(base, "disk_total_kib", "disk_free_kib")
     return [
         clip(s["cpu_busy"] / 100),
         clip(s["top_cpu"] / 100),
@@ -32,9 +36,9 @@ def metrics(s):
         scaled_log(s["disk_reads"], 14),
         scaled_log(s["disk_writes"], 14),
         scaled_log(s["disk_wait"], 8),
-        clip(ram_used),
+        squash(ram_change, 16384),
         scaled_log(s["user_memory_kib"], 21),
-        clip(disk_used),
+        squash(disk_change, 4096),
         scaled_log(s["top_mem_kib"], 21),
         scaled_log(s["top_sys"], 14),
         scaled_log(s["top_spawn"], 6),
@@ -46,7 +50,7 @@ FEATURES = METRICS * 3 + 3
 
 
 def window_features(window):
-    rows = [metrics(s) for s in window]
+    rows = [metrics(s, window[0]) for s in window]
     vector = []
     for m in range(METRICS):
         values = [row[m] for row in rows]

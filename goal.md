@@ -161,6 +161,7 @@ Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel he
 | User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
 | Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
 | Shell (v0.13.0) | ✅ Done | `knocsh`: files, programs, `ps`/`kill`/Ctrl-C, and the AI's view (`crashes`, `ai`) |
+| Self-healing + GraphRAG (v0.17.0) | ✅ Done | `healthd` fixes what it finds (lower priority or stop the program); `ask` answers from the memory graph, health and crash facts |
 | Anomaly detector + first LLM (v0.16.0) | ✅ Done | `healthd` finds leaks, CPU hogs, disk thrashing, spawn storms and a filling disk; `ask` runs Qwen2.5-0.5B with our own engine |
 | Memory graph (v0.15.0) | ✅ Done | Every AI model records what it learns and decides; `memory` in the shell; survives reboots |
 | First AI model in KnocOS (v0.14.0) | ✅ Done | File organizer: an int8 type + source classifier with a rules layer and a `Random/` fallback, running as `/bin/organize` |
@@ -196,8 +197,9 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 | 7 | **v0.14.0** ✅ | First AI model in KnocOS | File organizer: int8 type + source classifier, rules layer, `Random/` fallback, `/bin/organize` | A neural network sorts Downloads inside KnocOS |
 | 8 | **v0.15.0** ✅ | Memory graph (KnocGraph) | Nodes, links and events on disk, the `graph` system call, `memory` shell commands, every AI model and the AI space write to it | One shared memory the LLM will read later |
 | 9 | **v0.16.0** ✅ | Anomaly detector + first LLM | Kernel telemetry, `healthd` and `health`; Qwen2.5-0.5B int8 with our own C engine, `ask` | The OS notices problems itself, and an LLM runs inside it |
-| 10 | v0.17.0 | Auto-organize + learning | Watch Downloads, user corrections become training data | The organizer works by itself and learns your files |
-| 11 | v0.18.0 | Crash classifier NN | Trained on real crash records from the memory graph, in the AI space | Real AI replaces the rule brain |
+| 10 | **v0.17.0** ✅ | Self-healing + GraphRAG | `healthd` recover mode, `setclass`, multi-label health model; `ask` retrieves facts from the graph, health and crash reports | The OS fixes itself, and the LLM knows this computer |
+| 10b | v0.18.0 | Auto-organize + learning | Watch Downloads, user corrections become training data | The organizer works by itself and learns your files |
+| 11 | v0.18.x | Crash classifier NN | Trained on real crash records from the memory graph, in the AI space | Real AI replaces the rule brain |
 | 12 | v0.19.0 | Context + intent | What you're working on; suspicious program behaviour from system call traces | Context and security models |
 
 ### Phase D: A kernel ready for big software
@@ -214,7 +216,7 @@ Each milestone builds on the ones before it. Big milestones are split into sub-s
 |---|---|---|---|
 | 16 | v0.23.0 | LLM runtime | First form done early in v0.16.0 (our own engine instead of a llama.cpp port); next: both cores, speed, bigger Qwen models |
 | 17 | v0.24.0 | Embeddings | Vectors on graph nodes, search by meaning |
-| 18 | v0.25.0 | LLM ↔ memory graph | GraphRAG: the LLM answers from facts in the graph |
+| 18 | v0.25.0 | LLM ↔ memory graph | First form done in v0.17.0 (keyword + name retrieval); next: embeddings and graph walks |
 | 19 | v0.26.0 | Agent + tools + intent security | Tier 0→3 router, permission-checked tool API, undo |
 
 ### Phase F: Connected

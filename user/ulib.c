@@ -114,6 +114,11 @@ int telemetry(unsigned long index, telemetry_sample_t *sample)
     return (int)syscall(SYS_TELEMETRY, (long)index, (long)sample, 0);
 }
 
+int setclass(int pid, unsigned int process_class)
+{
+    return (int)syscall(SYS_SETCLASS, (long)pid, (long)process_class, 0);
+}
+
 int graph(graph_request_t *request, void *out)
 {
     return (int)syscall(SYS_GRAPH, (long)request, (long)out, 0);

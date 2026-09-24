@@ -495,6 +495,11 @@ int memgraph_edges(uint32_t kind, const char *name, uint32_t index, graph_edge_i
     return result;
 }
 
+static char lower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
 static int contains(const char *text, const char *part)
 {
     if (part[0] == 0)
@@ -506,7 +511,7 @@ static int contains(const char *text, const char *part)
     {
         int j = 0;
 
-        while (part[j] && text[i + j] == part[j])
+        while (part[j] && lower(text[i + j]) == lower(part[j]))
         {
             j++;
         }

@@ -47,6 +47,7 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_RENAME] = "rename",
     [SYS_GRAPH] = "graph",
     [SYS_TELEMETRY] = "telemetry",
+    [SYS_SETCLASS] = "setclass",
 };
 
 const char *syscall_name(uint64_t number)
@@ -300,6 +301,7 @@ static int64_t file_io(open_file_t *file, uintptr_t buffer, uint64_t length, int
 
         file->offset += (uint64_t)result;
         done += (uint64_t)result;
+        process_note_disk((uint64_t)result);
 
         if ((uint64_t)result < chunk)
         {
@@ -862,6 +864,14 @@ int64_t syscall_handle(trap_frame_t *frame)
 
         return copy_to_user(frame->a1, &sample, sizeof(sample)) == 0 ? 0 : E_FAULT;
     }
+
+    case SYS_SETCLASS:
+        if (!allowed(SYS_SETCLASS, CAP_SYSTEM))
+        {
+            return E_PERM;
+        }
+
+        return process_lower_class_user((int)frame->a0, (uint32_t)frame->a1);
 
     case SYS_PS:
     case SYS_KILL:

@@ -71,6 +71,8 @@ typedef struct process
     uint64_t seen_syscalls;
     uint64_t spawned;
     uint64_t seen_spawned;
+    uint64_t disk_bytes;
+    uint64_t seen_disk_bytes;
     uint64_t block_seq;
 } process_t;
 
@@ -387,6 +389,8 @@ static process_t *create_locked(const char *name,
     p->seen_syscalls = 0;
     p->spawned = 0;
     p->seen_spawned = 0;
+    p->disk_bytes = 0;
+    p->seen_disk_bytes = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -767,6 +771,11 @@ void process_record_syscall(uint64_t number)
     current->trace_count++;
 }
 
+void process_note_disk(uint64_t bytes)
+{
+    current->disk_bytes += bytes;
+}
+
 void process_note_denied(void)
 {
     count_denied++;
@@ -911,10 +920,8 @@ void process_wake(void *channel)
         p->state = PROCESS_READY;
         place_vruntime(p);
 
-        /* Run it right away if it's interactive, or if the CPU is idle */
-        if (current == &processes[0] ||
-            (p->process_class == PROCESS_CLASS_INTERACTIVE &&
-             current->process_class != PROCESS_CLASS_INTERACTIVE))
+        /* Run it right away if the CPU is idle or it has a higher class than the running process */
+        if (current == &processes[0] || p->process_class < current->process_class)
         {
             resched_pending = 1;
         }
@@ -1187,6 +1194,34 @@ int process_kill_user(int pid)
     return result;
 }
 
+int process_lower_class_user(int pid, uint32_t process_class)
+{
+    if (process_class > PROCESS_CLASS_BACKGROUND)
+    {
+        return E_INVAL;
+    }
+
+    uint64_t enabled = interrupts_disable();
+    process_t *p = find_live(pid);
+    int result = E_NOTFOUND;
+
+    if (p != 0)
+    {
+        if (!p->user || process_class < (uint32_t)p->process_class)
+        {
+            result = E_PERM;
+        }
+        else
+        {
+            p->process_class = (process_class_t)process_class;
+            result = 0;
+        }
+    }
+
+    interrupts_restore(enabled);
+    return result;
+}
+
 int process_alive(int pid)
 {
     uint64_t enabled = interrupts_disable();
@@ -1231,6 +1266,7 @@ void process_telemetry(telemetry_sample_t *sample)
     uint64_t best_sys = 0;
     uint64_t best_mem = 0;
     uint64_t best_spawn = 0;
+    uint64_t best_disk = 0;
     uint64_t idle = 0;
 
     if (elapsed == 0)
@@ -1248,6 +1284,8 @@ void process_telemetry(telemetry_sample_t *sample)
     sample->top_cpu_pid = sample->top_mem_pid = sample->top_sys_pid = sample->top_spawn_pid = -1;
     sample->top_cpu_name[0] = sample->top_mem_name[0] = sample->top_sys_name[0] = 0;
     sample->top_spawn_name[0] = 0;
+    sample->top_disk_pid = -1;
+    sample->top_disk_name[0] = 0;
 
     for (int i = 0; i < PROCESS_MAX; i++)
     {
@@ -1255,6 +1293,7 @@ void process_telemetry(telemetry_sample_t *sample)
         uint64_t cpu = since(&p->seen_cpu, p->cpu_ticks);
         uint64_t sys = since(&p->seen_syscalls, p->syscalls);
         uint64_t spawned = since(&p->seen_spawned, p->spawned);
+        uint64_t disk = since(&p->seen_disk_bytes, p->disk_bytes);
 
         if (p->state == PROCESS_UNUSED || p->state == PROCESS_EXITED)
         {
@@ -1284,6 +1323,13 @@ void process_telemetry(telemetry_sample_t *sample)
             copy_telemetry_name(sample->top_sys_name, p->name);
         }
 
+        if (disk > best_disk)
+        {
+            best_disk = disk;
+            sample->top_disk_pid = p->pid;
+            copy_telemetry_name(sample->top_disk_name, p->name);
+        }
+
         if (spawned > best_spawn)
         {
             best_spawn = spawned;
@@ -1306,10 +1352,12 @@ void process_telemetry(telemetry_sample_t *sample)
     sample->top_sys = (uint32_t)(best_sys * 100 / elapsed);
     sample->top_mem_kib = (uint32_t)(best_mem / 1024);
     sample->top_spawn = (uint32_t)best_spawn;
+    sample->top_disk_kib = (uint32_t)(best_disk / 1024);
 }
 
 int process_info(uint32_t index, process_info_t *info)
 {
+    int foreground = tty_foreground();
     uint64_t enabled = interrupts_disable();
     uint32_t seen = 0;
 
@@ -1332,7 +1380,7 @@ int process_info(uint32_t index, process_info_t *info)
         info->state = p->state;
         info->user = (uint32_t)p->user;
         info->restarts = p->restarts;
-        info->reserved = 0;
+        info->flags = p->pid == foreground ? PROCESS_FLAG_FOREGROUND : 0;
         info->cpu_ticks = p->cpu_ticks;
         info->memory = p->mem_used;
         memset(info->name, 0, sizeof(info->name));

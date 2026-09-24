@@ -1498,6 +1498,14 @@ The kernel keeps one telemetry sample per second. `healthd` turns the last 10 se
 
 `ask` is a complete transformer in one C file: the file is read into big memory blocks, the tokenizer merges byte pairs by rank exactly like Qwen's, and each token goes through 24 layers of attention and a gated MLP with int8 weights. Under QEMU the slow part is memory loads, so the matmul reads 8 weights at a time with one 64-bit load.
 
+## 8.2b Self-healing and GraphRAG (v0.17.0)
+
+Detection is a classifier; recovery is a small, readable policy on top of it. Gentle fixes come first (background priority keeps the program running), stopping a program needs more evidence (10 s of steady leaking, or a disk that is really about to fill), and a few programs are never touched. The kernel only lets `setclass` lower a priority, so even a buggy `healthd` can't make a program more important.
+
+The health model has one yes/no output per problem instead of one softmax over all of them, so it can say "CPU hog *and* spawn storm". The training data has every pair of problems.
+
+GraphRAG in `ask` is retrieval without embeddings: names in the question are looked up in the graph (case-insensitive), words like "slow", "crash" or "moved" decide which live data to add, and every link becomes one plain sentence. A 0.5B model reads sentences much better than `a --rel--> b`. Every fact costs prompt time under QEMU (about 0.7 s per token), so facts are few and short.
+
 ## 8.3 Toward the AI-OS
 
 After the kernel foundation: filesystem, shell, the small neural network runtime, the LLM runtime, the agent, KnocNet and app compatibility. See `goal.md`. Every one of those depends on what's in these notes: memory for models, the scheduler for AI workloads, drivers for disk/network/GPU, and traps for security and self-diagnosis.

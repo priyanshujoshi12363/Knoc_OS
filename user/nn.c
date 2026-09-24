@@ -93,7 +93,7 @@ static int xq[NN_WIDTH_MAX];
 static int next_xq[NN_WIDTH_MAX];
 static double logits[NN_CLASSES_MAX * NN_HEADS_MAX];
 
-void nn_infer(const nn_model_t *model, const double *inputs, int *best_class, double *confidence)
+static void forward(const nn_model_t *model, const double *inputs)
 {
     unsigned int width = model->inputs;
 
@@ -136,6 +136,21 @@ void nn_infer(const nn_model_t *model, const double *inputs, int *best_class, do
 
         width = layer->outputs;
     }
+}
+
+void nn_logits(const nn_model_t *model, const double *inputs, double *out)
+{
+    forward(model, inputs);
+
+    for (unsigned int i = 0; i < model->layers[model->layer_count - 1].outputs; i++)
+    {
+        out[i] = logits[i];
+    }
+}
+
+void nn_infer(const nn_model_t *model, const double *inputs, int *best_class, double *confidence)
+{
+    forward(model, inputs);
 
     unsigned int start = 0;
 

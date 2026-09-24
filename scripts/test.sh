@@ -106,7 +106,8 @@ boot "knocos-echo-test" "ls /bin" "cat /hello.txt" \
     "ps" "mem" "devices" "ai" "crashes" "counter" "^C" "kill 2" \
     "organize" "organize /home/Downloads --apply" "ls /home/Downloads/WhatsApp/Images" \
     "ls /home/Downloads/Random" "organize /home/Downloads --undo" "ls /home/Downloads" \
-    "memory" "memory why /home/Downloads/Documents/335505283.pdf" "memory recent 3"
+    "memory" "memory why /home/Downloads/Documents/335505283.pdf" "memory recent 3" \
+    "ask why was 335505283.pdf moved?"
 check \
     "Supervisor interrupts enabled" \
     "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
@@ -182,8 +183,12 @@ check \
     "organize: file /home/Downloads/335505283.pdf --came_from--> source other" \
     "--restored_to--> file /home/Downloads/335505283.pdf" \
     "[HEALTH] anomaly detector running" \
+    "[ask] facts from the memory graph and the system:" \
+    "organize moved 335505283.pdf from /home/Downloads to /home/Downloads/Documents because it is a document file" \
+    "ask: cannot load /models/qwen.kllm" \
     "Powering off"
-check_absent " sure)"
+check_absent "[HEALTH] memory leak in" "[HEALTH] CPU hog in" "[HEALTH] disk thrashing in" \
+    "[HEALTH] spawn storm in" "[HEALTH] disk filling up in"
 show_log_on_failure
 
 echo "Boot 2: disk data and files survive a reboot"
@@ -312,12 +317,12 @@ check \
     "[AI] The AI space stays online"
 show_log_on_failure
 
-echo "Run 5: the anomaly detector finds a memory leak and a CPU hog"
+echo "Run 5: the anomaly detector finds problems, also two at once, and fixes them"
 new_disk
 (
     sleep 8;  printf 'leak 2048 &\r'
-    sleep 16; printf 'kill leak\r'
-    sleep 1;  printf 'spin &\r'
+    sleep 18; printf 'spin &\r'
+    sleep 1;  printf 'spawner &\r'
     sleep 16; printf 'kill spin\r'
     sleep 14; printf 'health\r'
     sleep 1;  printf '\004'
@@ -327,12 +332,16 @@ STATUS=$?
 check_status "$HEALTH_TIMEOUT" no-panic
 check \
     "[HEALTH] memory leak in leak (+" \
-    "[HEALTH] memory leak in leak is over" \
+    "[HEALTH] recovered: stopped leak" \
     "[HEALTH] CPU hog in spin (100% CPU" \
+    "[HEALTH] recovered: moved to background priority: spin" \
+    "[HEALTH] spawn storm in spawner" \
+    "[HEALTH] recovered: stopped spawner" \
     "[HEALTH] CPU hog in spin is over" \
-    "healthd: program leak --anomaly--> diagnosis memory leak" \
-    "healthd: program spin --anomaly--> diagnosis CPU hog"
-check_absent "disk thrashing in" "spawn storm in" "disk filling up in"
+    "healthd: actor healthd --stopped--> program leak" \
+    "healthd: actor healthd --lowered--> program spin" \
+    "healthd: program spawner --anomaly--> diagnosis spawn storm"
+check_absent "disk thrashing in" "disk filling up in" "CPU hog in unknown"
 show_log_on_failure
 
 echo "RESULT: PASS"

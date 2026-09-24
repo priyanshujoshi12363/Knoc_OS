@@ -121,6 +121,7 @@ const char *process_args(void);
 int process_wait(int pid, int *exit_code);
 int process_kill(int pid);
 int process_kill_user(int pid);
+int process_lower_class_user(int pid, uint32_t process_class);
 int process_alive(int pid);
 
 int process_can_contain_fault(void);
@@ -142,6 +143,7 @@ uintptr_t process_user_root(void);
 uint32_t process_capabilities(void);
 void process_record_syscall(uint64_t number);
 void process_note_denied(void);
+void process_note_disk(uint64_t bytes);
 int64_t process_mem_alloc(uint64_t bytes);
 
 open_file_t *process_file(int fd);
