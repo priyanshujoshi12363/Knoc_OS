@@ -28,6 +28,7 @@ PROGRAM(recorder)
 PROGRAM(healthd)
 PROGRAM(ask)
 PROGRAM(agent)
+PROGRAM(chat)
 
 #define ENTRY(name, class, caps, flags) \
     {#name, program_##name##_start, program_##name##_end, class, caps, flags}
@@ -57,6 +58,8 @@ static const program_t programs[] = {
     ENTRY(healthd, PROCESS_CLASS_BACKGROUND,
           CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_MEMORY, 0),
     ENTRY(agent, PROCESS_CLASS_AI_AGENT,
+          CAP_CONSOLE | CAP_SPAWN | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY, 0),
+    ENTRY(chat, PROCESS_CLASS_AI_AGENT,
           CAP_CONSOLE | CAP_SPAWN | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY, 0),
     ENTRY(ask, PROCESS_CLASS_AI_AGENT,
           CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY, 0),

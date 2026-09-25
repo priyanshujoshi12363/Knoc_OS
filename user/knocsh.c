@@ -1448,7 +1448,7 @@ static void cmd_help(void)
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
     print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
-    print("AI:        ask QUESTION  agent TASK  agent --tools  organize DIR\n");
+    print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 

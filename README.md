@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.19.0-blue)
+![Version](https://img.shields.io/badge/version-v0.20.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.19.0 starting
+[INFO] KnocOS v0.20.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,25 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Shell Scripts (v0.19.0)
+## ✅ Just Completed: Chat (v0.20.0)
+
+**Talk to KnocOS.** `chat` keeps Qwen loaded and remembers the whole conversation. It reads the memory graph when your message needs it and uses the agent's tools when you ask it to do something (always asking y/n before changing anything):
+
+```text
+knoc:/$ chat
+KnocOS chat. Type a message, /help for commands, /exit to leave.
+you: what files are in /home/Downloads?
+knocos: list_folder(path=/home/Downloads)
+...
+you: /save /home/chat.txt
+you: /exit
+```
+
+- **Fast follow-ups:** each new message only adds its own words to the model's memory; nothing is read twice
+- **One brain for everything:** `chat`, `agent` and `ask` share the same engine, tools, safety rules and prompt cache
+- `/new`, `/save FILE`, `/tools`, `/help`, `/exit`
+
+## Shell Scripts (v0.19.0)
 
 **knocsh can run scripts**, so you and the agent can automate tasks:
 
@@ -265,7 +283,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** `chat`, a conversation with the LLM that remembers what you said.
+**Next up:** auto-organize: Downloads sort themselves and learn from your corrections.
 
 Recent progress:
 
@@ -292,7 +310,8 @@ Recent progress:
 | `422d0ba` | Self-healing `healthd` (recover/watch, `setclass`), multi-label health model, GraphRAG for `ask`, prompt prefix cache, version `v0.17.0` |
 | `f2e6d5f` | CI: tests wait for the shell prompt |
 | `a6b2983` | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
-| *(uncommitted)* | Shell scripts, redirection for every command, `copy`/`move`, startup script, agent `run_script`, version `v0.19.0` |
+| `dd6f3a9` | Shell scripts, redirection for every command, `copy`/`move`, startup script, agent `run_script`, version `v0.19.0` |
+| *(uncommitted)* | `chat` with conversation memory, shared assistant core (`assist.c`), version `v0.20.0` |
 
 What works right now:
 
@@ -320,7 +339,7 @@ Next steps (full list in `goal.md`, section 4c):
 
 - [x] v0.14.0 – v0.18.0: file organizer AI, memory graph, anomaly detector, LLM inside KnocOS, self-healing, GraphRAG, the agent
 - [x] v0.19.0: shell scripts
-- [ ] v0.20.0: `chat`
+- [x] v0.20.0: `chat`
 - [ ] v0.21.0: auto-organize + learning
 - [ ] v0.22.0 – v0.26.0: crash classifier NN, context + intent security, C library, compiler inside KnocOS, kernel on several cores
 - [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps

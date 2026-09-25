@@ -7,7 +7,7 @@ import sys
 import time
 
 PROMPT = re.compile(rb"knoc:\S*\$ ")
-QUESTION = b"(y/n) "
+QUESTION = re.compile(rb"\(y/n\) |you: ")
 BOOT_WAIT = 60
 COMMAND_WAIT = int(os.environ.get("COMMAND_WAIT", "60"))
 RUNNING_WAIT = 2
@@ -52,9 +52,9 @@ def main():
         except BrokenPipeError:
             pass
 
-    def wait_for_text(text, count, seconds):
+    def wait_for_text(pattern, count, seconds):
         until = time.time() + seconds
-        while output.count(text) < count and time.time() < min(until, deadline):
+        while len(pattern.findall(output)) < count and time.time() < min(until, deadline):
             if not pump(time.time() + 0.2):
                 return
 
@@ -76,7 +76,7 @@ def main():
             if not following.startswith("?"):
                 wait_for_prompts(prompts + 1, COMMAND_WAIT)
             continue
-        questions_seen[0] = output.count(QUESTION)
+        questions_seen[0] = len(QUESTION.findall(output))
         send(command.encode() + b"\r")
         if following == "^C":
             pump(time.time() + RUNNING_WAIT)

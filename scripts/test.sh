@@ -132,7 +132,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
+    "[files] /bin: agent ask badcall bigmem chat counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -381,6 +381,23 @@ check \
     "error: path must be an existing .ksh script" \
     "[agent] skipped"
 check_absent "never runs: KnocOS" "script line"
+show_log_on_failure
+
+echo "Run 8: chat commands work, and without a model it says so and keeps running"
+new_disk
+boot "chat" "?/help" "?hello there" "?/tools" "?/bogus" "?/save /home/chat.txt" "?/exit" \
+    "agent stop nothing" "agent lower knocsh"
+check \
+    "KnocOS chat. Type a message, /help for commands, /exit to leave." \
+    "/new          start a new conversation" \
+    "knocos: no language model" \
+    "run_script(path,args)  asks first" \
+    "chat: unknown command, type /help" \
+    "chat: saved 0 bytes to /home/chat.txt" \
+    "chat: bye" \
+    "stop_program(name=nothing): error: no running program with that name" \
+    "lower_priority(name=knocsh): error: that program is protected"
+check_absent "name=nothing) Allow?" "name=knocsh) Allow?"
 show_log_on_failure
 
 echo "RESULT: PASS"

@@ -131,7 +131,7 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.19.0)
+## 4. Where KnocOS Is Today (v0.20.0)
 
 | Area | What works |
 |---|---|
@@ -139,9 +139,9 @@ People can move to KnocOS without losing their software.
 | **AI that survives crashes** | The AI space on core 1 (PMP-protected), black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
 | **User space** | U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | File organizer (type + source classifier), anomaly detector with self-healing (`healthd`), memory graph (KnocGraph) |
-| **LLM** | Qwen2.5-0.5B int8 with our own C engine (`ask`), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
+| **LLM** | Qwen2.5-0.5B int8 with our own C engine; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Quality** | `make test` (7 runs) in CI on every push |
+| **Quality** | `make test` (8 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -170,6 +170,7 @@ People can move to KnocOS without losing their software.
 | v0.17.0 | 2026-09-24 | Self-healing (`healthd` fixes problems) and GraphRAG (`ask` answers from the memory graph) |
 | v0.18.0 | 2026-09-25 | The agent: tools, app manifests, output capture, installed apps, shared LLM engine |
 | v0.19.0 | 2026-09-26 | Shell scripts: variables, if / for / while, `>` and `>>` for every command, `copy` / `move`, startup script, the agent's `run_script` |
+| v0.20.0 | 2026-09-26 | Chat: a conversation with the LLM that remembers, with memory-graph facts and the agent's tools |
 
 ---
 
@@ -182,7 +183,7 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 | Version | Milestone | What we build | Result |
 |---|---|---|---|
 | **v0.19.0** ✅ | Shell scripts | `.ksh` scripts in knocsh (variables, `$1`, `$?`, if / else / for / while, `exit`), `>` and `>>` for every command, `copy` / `move`, `/etc/startup.ksh`, the agent's `run_script` tool | You and the agent can automate tasks |
-| v0.20.0 | Chat | `chat`: a conversation with the LLM that remembers what you said; the agent's tools inside the chat | Talk to KnocOS like an assistant |
+| **v0.20.0** ✅ | Chat | `chat`: a conversation with the LLM that remembers what you said; the agent's tools inside the chat | Talk to KnocOS like an assistant |
 | v0.21.0 | Auto-organize + learning | Downloads sorted by themselves; files you move back become training data | The organizer works alone and learns your files |
 
 ### Phase 2: Smarter small AI

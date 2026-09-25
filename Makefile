@@ -55,10 +55,10 @@ KERNEL_OBJS = boot/boot.o \
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
-USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o $(USER_PROGRAMS:%=user/%.o)
+USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o $(USER_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
@@ -75,8 +75,11 @@ user/%.elf: user/%.o $(USER_LIB_OBJS) user/linker.ld
 user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/ask.o user/llm.o user/rag.o
 
-user/agent.elf: user/agent.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
-	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/llm.o user/rag.o
+user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o
+
+user/chat.elf: user/chat.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/chat.o user/assist.o user/llm.o user/rag.o
 
 kernel/programs.o: $(USER_ELFS)
 

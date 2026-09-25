@@ -2,6 +2,27 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.20.0] - 2026-09-26
+
+Chat: talk to KnocOS, and it remembers the conversation.
+
+### Added
+- `/bin/chat`: a conversation with the language model that stays loaded. Every new message only adds its own tokens to the model's memory (the KV cache), so earlier messages are never read again
+  - Each message gets facts from the memory graph and the system when it needs them (like `ask`)
+  - The agent's tools and apps work inside the chat, with the same y/n before every change
+  - `/help`, `/new` (a new conversation), `/save FILE` (the transcript), `/tools`, `/exit`
+  - When the 2048-token memory is full, the chat says so and starts a new conversation
+  - The model loads on the first message, so the commands work even without a model
+- `user/assist.c` (`assist.h`): the tool system, safety gate, rules and model loop shared by `agent` and `chat`; one system prompt and one prompt cache (`/tmp/assistant-prefix.kv`) for both
+- Agent rules: "lower NAME" / "slow down NAME" → `lower_priority`; a path anywhere in the message ("what files are in /home/Downloads?") → `list_folder` for a folder, `read_file` for a file
+- Grounding: before the model answers, chat (and the agent's model path) runs the read-only tools the rules find and gives the model their real results, so even a small model answers from real data instead of guessing
+- `make test` Run 8: chat commands, `/save`, the no-model message, and refusals before y/n
+
+### Changed
+- The agent refuses to stop or lower a program that isn't running or is protected before it asks y/n (like the path checks)
+- The agent also reads memory-graph facts when the model plans (it prints how many)
+- The test driver answers chat prompts (`you: `) the same way as y/n questions
+
 ## [0.19.0] - 2026-09-26
 
 Shell scripts: you and the agent can automate tasks.

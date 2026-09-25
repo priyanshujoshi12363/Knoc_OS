@@ -30,3 +30,4 @@ PROGRAM recorder
 PROGRAM healthd
 PROGRAM ask
 PROGRAM agent
+PROGRAM chat
