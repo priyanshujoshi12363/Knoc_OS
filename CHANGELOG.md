@@ -2,11 +2,32 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
-## [Unreleased]
+## [0.18.0] - 2026-09-25
+
+The agent: the LLM can use tools and apps, and asks before it changes anything.
+
+### Added
+- `/bin/agent` (`user/agent.c`), a model-independent agent pipeline:
+  - Tier 0 rules handle common requests without a model ("sort my downloads", "stop spin", "what is wrong", "list /home", "find todo")
+  - Otherwise the language model plans with Qwen's own tool-calling format (`<tools>` in the system prompt, `<tool_call>` answers, `<tool_response>` results) in a loop of up to 8 steps, then answers
+  - While the model writes a tool or app name, only real names can be chosen
+  - 12 tools: `list_folder`, `read_file`, `find_files`, `system_status`, `memory_search` (read, run at once) and `write_file`, `make_folder`, `move`, `copy`, `stop_program`, `lower_priority`, `run_app` (change, ask y/n first)
+  - Writes only inside `/home` and `/tmp`; `knocsh`, `healthd` and `agent` can't be stopped; no delete and no raw shell
+  - Every change is logged in the memory graph (`agent --action--> ...`, `stopped`, `lowered`)
+  - `agent --tools`, `agent --llm TASK` (skip the rules), `agent --call JSON` (run one tool call without a model)
+- App manifests: `/etc/apps/<name>.app` (from `apps/` in the source tree) describe an app (name, description, usage, risk). Every app with a manifest becomes usable by the agent through `run_app`; `organize`, `hello` and `modelcheck` have one
+- Installed apps: any program in `/bin` can run, even if the kernel doesn't know it, as a NORMAL program with console, file and memory rights only
+- Output capture: `spawn_capture` and `captured` system calls; the app's output still goes to the screen and a copy (up to 4 KiB) goes to the program that started it
+- `user/llm.c`: the LLM engine shared by `ask` and `agent`; the model is chosen by `/etc/llm.model` (default `/models/qwen.kllm`), the context is 2048 tokens, special tokens like `<tool_call>` are encoded as single tokens like Qwen's own tokenizer, and the prompt cache stores the model header so a different model never reuses it
+- `make test` Run 6: rules, y/n, apps, blocked writes, direct tool calls and graph logging, without a model
+
+### Changed
+- Shell lines are up to 256 characters and 32 words; program arguments up to 256 characters
 
 ### Fixed
 - CI: the shell tests typed commands on a timer and powered off at a fixed time, so on a slower machine (GitHub Actions) commands ran into each other and the output after `organize --undo` was lost. `scripts/drive.py` now types each command only when the shell prompt is back
 - `healthd` blamed the shell for disk activity that was the kernel's own work (memory graph writes, loading programs); disk problems are now only blamed on a program that read or wrote files
+
 
 ## [0.17.0] - 2026-09-24
 

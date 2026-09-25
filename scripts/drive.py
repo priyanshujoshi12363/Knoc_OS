@@ -7,8 +7,9 @@ import sys
 import time
 
 PROMPT = re.compile(rb"knoc:\S*\$ ")
+QUESTION = b"(y/n) "
 BOOT_WAIT = 60
-COMMAND_WAIT = 60
+COMMAND_WAIT = int(os.environ.get("COMMAND_WAIT", "60"))
 RUNNING_WAIT = 2
 
 
@@ -51,19 +52,35 @@ def main():
         except BrokenPipeError:
             pass
 
+    def wait_for_text(text, count, seconds):
+        until = time.time() + seconds
+        while output.count(text) < count and time.time() < min(until, deadline):
+            if not pump(time.time() + 0.2):
+                return
+
+    questions_seen = [0]
     open(log_path, "wb").close()
     wait_for_prompts(1, BOOT_WAIT)
 
     for index, command in enumerate(commands):
         prompts = len(PROMPT.findall(output))
+        following = commands[index + 1] if index + 1 < len(commands) else ""
         if command == "^C":
             send(b"\x03")
             wait_for_prompts(prompts + 1, COMMAND_WAIT)
             continue
+        if command.startswith("?"):
+            wait_for_text(QUESTION, questions_seen[0] + 1, COMMAND_WAIT)
+            questions_seen[0] += 1
+            send(command[1:].encode() + b"\r")
+            if not following.startswith("?"):
+                wait_for_prompts(prompts + 1, COMMAND_WAIT)
+            continue
+        questions_seen[0] = output.count(QUESTION)
         send(command.encode() + b"\r")
-        if index + 1 < len(commands) and commands[index + 1] == "^C":
+        if following == "^C":
             pump(time.time() + RUNNING_WAIT)
-        else:
+        elif not following.startswith("?"):
             wait_for_prompts(prompts + 1, COMMAND_WAIT)
 
     pump(time.time() + 1)

@@ -94,6 +94,16 @@ int spawn(const char *name)
     return (int)syscall(SYS_SPAWN, (long)name, 0, 0);
 }
 
+int spawn_capture(const char *name, const char *args)
+{
+    return (int)syscall(SYS_SPAWN_CAPTURE, (long)name, (long)args, 0);
+}
+
+long captured(char *buffer, unsigned long length)
+{
+    return syscall(SYS_CAPTURED, (long)buffer, (long)length, 0);
+}
+
 int spawn_args(const char *name, const char *args)
 {
     return (int)syscall(SYS_SPAWN, (long)name, (long)args, 0);

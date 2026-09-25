@@ -1,5 +1,6 @@
 #include "program.h"
 #include "syscall_abi.h"
+#include "knocfs.h"
 
 #define PROGRAM(name) \
     extern const uint8_t program_##name##_start[]; \
@@ -26,6 +27,7 @@ PROGRAM(filler)
 PROGRAM(recorder)
 PROGRAM(healthd)
 PROGRAM(ask)
+PROGRAM(agent)
 
 #define ENTRY(name, class, caps, flags) \
     {#name, program_##name##_start, program_##name##_end, class, caps, flags}
@@ -54,6 +56,8 @@ static const program_t programs[] = {
     ENTRY(recorder, PROCESS_CLASS_BACKGROUND, CAP_CONSOLE | CAP_SYSTEM, 0),
     ENTRY(healthd, PROCESS_CLASS_BACKGROUND,
           CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_MEMORY, 0),
+    ENTRY(agent, PROCESS_CLASS_AI_AGENT,
+          CAP_CONSOLE | CAP_SPAWN | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY, 0),
     ENTRY(ask, PROCESS_CLASS_AI_AGENT,
           CAP_CONSOLE | CAP_SYSTEM | CAP_KNOWLEDGE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY, 0),
 };
@@ -82,6 +86,82 @@ const program_t *program_find(const char *name)
     }
 
     return 0;
+}
+
+#define INSTALLED_MAX 32
+#define INSTALLED_CAPABILITIES (CAP_CONSOLE | CAP_FILES_READ | CAP_FILES_WRITE | CAP_MEMORY)
+
+static program_t installed[INSTALLED_MAX];
+static char installed_names[INSTALLED_MAX][PROCESS_NAME_MAX];
+static uint32_t installed_count;
+
+static int valid_name(const char *name)
+{
+    int length = 0;
+
+    for (; name[length]; length++)
+    {
+        char c = name[length];
+
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' ||
+              c == '_'))
+        {
+            return 0;
+        }
+    }
+
+    return length > 0 && length < PROCESS_NAME_MAX;
+}
+
+const program_t *program_installed(const char *name)
+{
+    char path[PROCESS_NAME_MAX + 8] = "/bin/";
+    uint32_t inode;
+
+    if (!valid_name(name))
+    {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < installed_count; i++)
+    {
+        if (names_equal(installed_names[i], name))
+        {
+            return &installed[i];
+        }
+    }
+
+    for (int i = 0; name[i]; i++)
+    {
+        path[5 + i] = name[i];
+        path[6 + i] = 0;
+    }
+
+    if (installed_count >= INSTALLED_MAX || !knocfs_mounted() || knocfs_lookup(path, &inode) != 0)
+    {
+        return 0;
+    }
+
+    program_t *program = &installed[installed_count];
+
+    for (int i = 0; i < PROCESS_NAME_MAX; i++)
+    {
+        installed_names[installed_count][i] = name[i];
+
+        if (name[i] == 0)
+        {
+            break;
+        }
+    }
+
+    program->name = installed_names[installed_count];
+    program->start = 0;
+    program->end = 0;
+    program->process_class = PROCESS_CLASS_NORMAL;
+    program->capabilities = INSTALLED_CAPABILITIES;
+    program->flags = 0;
+    installed_count++;
+    return program;
 }
 
 uint32_t program_count(void)

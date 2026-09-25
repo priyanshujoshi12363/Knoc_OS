@@ -73,6 +73,10 @@ typedef struct process
     uint64_t seen_spawned;
     uint64_t disk_bytes;
     uint64_t seen_disk_bytes;
+    int capture_owner;
+    int capture_pid;
+    uint32_t capture_length;
+    char capture[PROCESS_CAPTURE_MAX];
     uint64_t block_seq;
 } process_t;
 
@@ -391,6 +395,9 @@ static process_t *create_locked(const char *name,
     p->seen_spawned = 0;
     p->disk_bytes = 0;
     p->seen_disk_bytes = 0;
+    p->capture_owner = 0;
+    p->capture_pid = 0;
+    p->capture_length = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -597,7 +604,19 @@ const char *process_args(void)
     return current->args;
 }
 
+static int spawn(const program_t *program, const char *args, int capture);
+
 int process_spawn_args(const program_t *program, const char *args)
+{
+    return spawn(program, args, 0);
+}
+
+int process_spawn_capture(const program_t *program, const char *args)
+{
+    return spawn(program, args, 1);
+}
+
+static int spawn(const program_t *program, const char *args, int capture)
 {
     if (program == 0)
     {
@@ -628,6 +647,14 @@ int process_spawn_args(const program_t *program, const char *args)
 
     p->args[length] = 0;
     p->capabilities = program->capabilities;
+
+    if (capture && current != 0)
+    {
+        p->capture_owner = current->pid;
+        current->capture_pid = p->pid;
+        current->capture_length = 0;
+    }
+
     p->mem_limit = program->process_class == PROCESS_CLASS_AI_AGENT
                        ? PROCESS_QUOTA_AI_AGENT
                        : PROCESS_QUOTA_DEFAULT;
@@ -769,6 +796,37 @@ void process_record_syscall(uint64_t number)
     current->trace[current->trace_count % PROCESS_TRACE_MAX] =
         number < 255 ? (uint8_t)number : 255;
     current->trace_count++;
+}
+
+static process_t *find_live(int pid);
+
+void process_capture(const char *data, uint64_t length)
+{
+    if (current == 0 || current->capture_owner == 0)
+    {
+        return;
+    }
+
+    uint64_t enabled = interrupts_disable();
+    process_t *owner = find_live(current->capture_owner);
+
+    if (owner != 0 && owner->capture_pid == current->pid)
+    {
+        for (uint64_t i = 0; i < length && owner->capture_length < PROCESS_CAPTURE_MAX; i++)
+        {
+            owner->capture[owner->capture_length++] = data[i];
+        }
+    }
+
+    interrupts_restore(enabled);
+}
+
+uint64_t process_captured(char *out, uint64_t length)
+{
+    uint64_t count = current->capture_length < length ? current->capture_length : length;
+
+    memcpy(out, current->capture, count);
+    return count;
 }
 
 void process_note_disk(uint64_t bytes)

@@ -48,6 +48,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_GRAPH] = "graph",
     [SYS_TELEMETRY] = "telemetry",
     [SYS_SETCLASS] = "setclass",
+    [SYS_SPAWN_CAPTURE] = "spawn_capture",
+    [SYS_CAPTURED] = "captured",
 };
 
 const char *syscall_name(uint64_t number)
@@ -221,6 +223,7 @@ static int64_t console_write(uintptr_t buffer, uint64_t length)
         }
 
         device_write(console, chunk, size);
+        process_capture(chunk, size);
         written += size;
     }
 
@@ -692,7 +695,7 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
     return knocfs_remove(path);
 }
 
-static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address)
+static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int capture)
 {
     char name[PROCESS_NAME_MAX];
     char args[ARGS_MAX];
@@ -713,10 +716,15 @@ static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address)
 
     if (program == 0)
     {
+        program = program_installed(name);
+    }
+
+    if (program == 0)
+    {
         return E_NOTFOUND;
     }
 
-    int pid = process_spawn_args(program, args);
+    int pid = capture ? process_spawn_capture(program, args) : process_spawn_args(program, args);
 
     return pid < 0 ? E_NOMEM : pid;
 }
@@ -807,7 +815,23 @@ int64_t syscall_handle(trap_frame_t *frame)
             return E_PERM;
         }
 
-        return sys_spawn(frame->a0, frame->a1);
+        return sys_spawn(frame->a0, frame->a1, 0);
+
+    case SYS_SPAWN_CAPTURE:
+        if (!allowed(number, CAP_SPAWN))
+        {
+            return E_PERM;
+        }
+
+        return sys_spawn(frame->a0, frame->a1, 1);
+
+    case SYS_CAPTURED:
+    {
+        char chunk[PROCESS_CAPTURE_MAX];
+        uint64_t length = process_captured(chunk, frame->a1 < sizeof(chunk) ? frame->a1 : sizeof(chunk));
+
+        return copy_to_user(frame->a0, chunk, length) == 0 ? (int64_t)length : E_FAULT;
+    }
 
     case SYS_MEM_ALLOC:
         if (!allowed(number, CAP_MEMORY))

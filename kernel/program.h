@@ -21,6 +21,7 @@ typedef struct program
 #define PROGRAM_TERMINAL 0x1
 
 const program_t *program_find(const char *name);
+const program_t *program_installed(const char *name);
 uint32_t program_count(void);
 
 #endif

@@ -32,7 +32,9 @@
 #define SYS_GRAPH 24
 #define SYS_TELEMETRY 25
 #define SYS_SETCLASS 26
-#define SYS_COUNT 27
+#define SYS_SPAWN_CAPTURE 27
+#define SYS_CAPTURED 28
+#define SYS_COUNT 29
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -48,7 +50,7 @@
 #define FILE_TYPE_FILE 1
 #define FILE_TYPE_DIR 2
 #define PATH_MAX 128
-#define ARGS_MAX 128
+#define ARGS_MAX 256
 #define FILE_NAME_MAX 60
 
 #define E_BADCALL -1

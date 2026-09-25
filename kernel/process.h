@@ -5,6 +5,7 @@
 
 #define PROCESS_MAX 16
 #define PROCESS_NAME_MAX 16
+#define PROCESS_CAPTURE_MAX 4096
 #define PROCESS_STACK_SIZE (16 * 1024)
 #define PROCESS_TRACE_MAX 8
 #define PROCESS_BLOCKS_MAX 32
@@ -117,6 +118,7 @@ void process_exit(void);
 void process_exit_code(int code) __attribute__((noreturn));
 int process_spawn(const struct program *program);
 int process_spawn_args(const struct program *program, const char *args);
+int process_spawn_capture(const struct program *program, const char *args);
 const char *process_args(void);
 int process_wait(int pid, int *exit_code);
 int process_kill(int pid);
@@ -144,6 +146,8 @@ uint32_t process_capabilities(void);
 void process_record_syscall(uint64_t number);
 void process_note_denied(void);
 void process_note_disk(uint64_t bytes);
+void process_capture(const char *data, uint64_t length);
+uint64_t process_captured(char *out, uint64_t length);
 int64_t process_mem_alloc(uint64_t bytes);
 
 open_file_t *process_file(int fd);

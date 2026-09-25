@@ -28,6 +28,8 @@ void sleep(unsigned long ticks);
 unsigned long uptime(void);
 int spawn(const char *name);
 int spawn_args(const char *name, const char *args);
+int spawn_capture(const char *name, const char *args);
+long captured(char *buffer, unsigned long length);
 long getargs(char *buffer, unsigned long length);
 int rename(const char *from, const char *to);
 int graph(graph_request_t *request, void *out);

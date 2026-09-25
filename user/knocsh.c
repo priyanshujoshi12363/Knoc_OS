@@ -4,8 +4,8 @@
    program from /bin, and waits for it. Everything goes through system
    calls: the shell is an ordinary user program. */
 
-#define LINE_MAX 128
-#define WORDS_MAX 8
+#define LINE_MAX 256
+#define WORDS_MAX 32
 #define PARTS_MAX 32
 #define CAT_CHUNK 256
 #define MIB (1024UL * 1024)
@@ -1207,7 +1207,7 @@ static void cmd_help(void)
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
     print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
-    print("AI:        ask QUESTION (the Qwen LLM)  organize DIR\n");
+    print("AI:        ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 

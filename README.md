@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.17.0-blue)
+![Version](https://img.shields.io/badge/version-v0.18.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.17.0 starting
+[INFO] KnocOS v0.18.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,29 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Self-Healing and GraphRAG (v0.17.0)
+## ✅ Just Completed: The Agent (v0.18.0)
+
+**The LLM can do things, not only answer.** `agent` gets a task, uses tools and apps, asks you before changing anything, and logs what it did in the memory graph:
+
+```text
+knoc:/$ agent sort my downloads
+[agent] plan (rules, no model needed): run_app
+[agent] run_app(app=organize, args=/home/Downloads --apply) Allow? (y/n) y
+...
+14 files: 10 by the AI, 3 by the rules, 1 to Random/
+knoc:/$ agent stop spin
+[agent] stop_program(name=spin) Allow? (y/n) y
+stopped spin
+```
+
+- **Small before big:** common requests are handled by rules in under a second; anything else goes to the language model, which uses Qwen's own tool-calling format in a loop (call a tool, read the result, call the next, answer)
+- **Built to outlive the model:** the model is a setting (`/etc/llm.model`), tools are a table and apps describe themselves. A bigger Qwen (1.5B, 7B, Coder) only needs a new `.kllm` file
+- **Any app:** put a program in `/bin` and a manifest in `/etc/apps` (name, description, usage, risk) and the agent can run it and read its output
+- **Safe:** reading runs at once; writing, moving, stopping and running apps ask y/n; writes only in `/home` and `/tmp`; no delete and no raw shell
+
+`agent --tools` lists everything it can use. `agent --call '{"name": "list_folder", "arguments": {"path": "/home"}}'` runs one tool without a model.
+
+## Self-Healing and GraphRAG (v0.17.0)
 
 **KnocOS fixes itself.** `healthd` finds the problem, names the program, and fixes it, even when two problems happen at once:
 
@@ -216,7 +238,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** a chat mode for `ask`, and the LLM explaining crashes and health problems on its own.
+**Next up:** shell scripts the agent can write and run, then `chat`.
 
 Recent progress:
 
@@ -240,7 +262,9 @@ Recent progress:
 | `ed5d0bd` | File organizer AI (type + source classifier, rules layer, `Random/`), `/bin/organize`, FPU for programs, program arguments, `rename`, version `v0.14.0` |
 | `9448bee` | Memory graph KnocGraph in the kernel, `graph` system call, `memory` shell commands, all AI models write to it, version `v0.15.0` |
 | `a3adfcf` | Kernel telemetry, the anomaly detector `healthd`, fair sleep locks, faster disk, the Qwen LLM with our own engine (`ask`), version `v0.16.0` |
-| *(uncommitted)* | Self-healing `healthd` (recover/watch, `setclass`), multi-label health model, GraphRAG for `ask`, prompt prefix cache, version `v0.17.0` |
+| `422d0ba` | Self-healing `healthd` (recover/watch, `setclass`), multi-label health model, GraphRAG for `ask`, prompt prefix cache, version `v0.17.0` |
+| `f2e6d5f` | CI: tests wait for the shell prompt |
+| *(uncommitted)* | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
 
 What works right now:
 

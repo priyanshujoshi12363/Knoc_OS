@@ -132,7 +132,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: ask badcall bigmem counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
+    "[files] /bin: agent ask badcall bigmem counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -327,6 +327,31 @@ check \
     "healthd: actor healthd --lowered--> program spin" \
     "healthd: program spawner --anomaly--> diagnosis spawn storm"
 check_absent "disk thrashing in" "disk filling up in" "CPU hog in unknown"
+show_log_on_failure
+
+echo "Run 6: the agent uses tools and apps, and asks before it changes anything"
+new_disk
+boot "agent --tools" "agent sort my downloads" "?n" "agent sort my downloads" "?y" \
+    "spin &" "agent stop spin" "?y" "agent what is wrong" \
+    'agent --call {"name": "list_folder", "arguments": {"path": "/home"}}' \
+    'agent --call {"name": "write_file", "arguments": {"path": "/bin/evil", "text": "x"}}' \
+    'agent --call {"name": "write_file", "arguments": {"path": "/home/todo.txt", "text": "buy milk"}}' "?y" \
+    "cat /home/todo.txt" "agent find todo" "agent write me a poem" "memory recent 4"
+check \
+    "organize  asks first: Sorts the files of a folder" \
+    "[agent] skipped" \
+    "Files moved. Undo with: organize /home/Downloads --undo" \
+    "[agent] stop_program(name=spin) Allow? (y/n) y" \
+    "stopped spin" \
+    "Running programs:" \
+    "Downloads/" \
+    "write_file(path=/bin/evil, text=x): error: the agent may only change files inside /home and /tmp" \
+    "wrote 8 bytes to /home/todo.txt" \
+    "buy milk" \
+    "[agent] no language model" \
+    "agent: actor agent --stopped--> program spin" \
+    "agent: actor agent --action--> action write_file /home/todo.txt buy milk"
+check_absent "/bin/evil, text=x) Allow?"
 show_log_on_failure
 
 echo "RESULT: PASS"

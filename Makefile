@@ -55,7 +55,7 @@ KERNEL_OBJS = boot/boot.o \
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o $(USER_PROGRAMS:%=user/%.o)
@@ -74,6 +74,9 @@ user/%.elf: user/%.o $(USER_LIB_OBJS) user/linker.ld
 
 user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/ask.o user/llm.o user/rag.o
+
+user/agent.elf: user/agent.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/llm.o user/rag.o
 
 kernel/programs.o: $(USER_ELFS)
 
@@ -106,6 +109,10 @@ sync-programs: $(USER_ELFS) $(DISK)
 	@for program in $(USER_PROGRAMS); do \
 		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
 			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
+	done
+	@$(KNOCFS) mkdir $(DISK) /etc /etc/apps 2>/dev/null || true
+	@for manifest in apps/*.app; do \
+		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done
 
 # make put FILE=model.gguf DEST=/models/model.gguf

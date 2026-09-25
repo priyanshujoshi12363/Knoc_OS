@@ -361,7 +361,7 @@ static void describe_link(rag_facts_t *facts, const graph_edge_info_t *e)
         break;
     case GRAPH_REL_STOPPED:
         put(&b, e->from);
-        put(&b, strcmp(e->from, "healthd") == 0 ? " stopped the program " : " stopped the crashing program ");
+        put(&b, strcmp(e->from, "ai-space") == 0 ? " stopped the crashing program " : " stopped the program ");
         put(&b, e->to);
         put(&b, strcmp(e->from, "healthd") == 0 ? " to fix a problem it caused." : ".");
         break;

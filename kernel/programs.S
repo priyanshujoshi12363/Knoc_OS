@@ -29,3 +29,4 @@ PROGRAM filler
 PROGRAM recorder
 PROGRAM healthd
 PROGRAM ask
+PROGRAM agent

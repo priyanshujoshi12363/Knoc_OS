@@ -40,7 +40,9 @@ int main(void)
 
     if (llm_load() != 0)
     {
-        print("ask: cannot load " LLM_MODEL_PATH " (make reset-disk DISK_MB=1024 puts it on the disk)\n");
+        print("ask: cannot load ");
+        print(llm_model_path());
+        print(" (make reset-disk DISK_MB=1024 puts it on the disk)\n");
         return 1;
     }
 

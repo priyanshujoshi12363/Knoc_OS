@@ -1,13 +1,14 @@
 #include "ulib.h"
 #include "llm.h"
 
-#define MODEL_PATH "/models/qwen.kllm"
+#define MODEL_CHOICE "/etc/llm.model"
+#define CONTEXT 2048
 #define HEADER_BYTES 128
 #define PIECE_MAX 256
 #define HASH_BITS 19
 #define HASH_SIZE (1u << HASH_BITS)
 #define READ_CHUNK (8UL * 1024 * 1024)
-#define PREFIX_MAGIC "KNOCKV01"
+#define PREFIX_MAGIC "KNOCKV02"
 
 typedef struct header
 {
@@ -52,6 +53,8 @@ static float *x, *xb, *xb2, *hb, *hb2, *q, *att, *logits, *key_cache, *value_cac
 static signed char *xq;
 static float *xs;
 static unsigned int position;
+static unsigned char model_header[HEADER_BYTES];
+static char model_path[96];
 
 static double exp_fast(double v)
 {
@@ -369,10 +372,9 @@ static int contraction(const unsigned char *d, int i, int n)
     return 0;
 }
 
-static int encode(const char *text, int *out, int room)
+static int encode_plain(const char *text, int n, int *out, int room)
 {
     const unsigned char *d = (const unsigned char *)text;
-    int n = (int)strlen(text);
     int i = 0;
     int written = 0;
 
@@ -471,6 +473,52 @@ static int encode(const char *text, int *out, int room)
 
         written += encode_piece(d + i, j - i, out + written, room - written);
         i = j;
+    }
+
+    return written;
+}
+
+static int special_at(const char *text, int left, int *length)
+{
+    for (unsigned int id = h.endoftext; id < h.vocab; id++)
+    {
+        unsigned int size = tok_length[id];
+
+        if (size > 0 && (int)size <= left && memcmp_bytes(text, tok_data + tok_offset[id], size) == 0)
+        {
+            *length = (int)size;
+            return (int)id;
+        }
+    }
+
+    return -1;
+}
+
+static int encode(const char *text, int *out, int room)
+{
+    int n = (int)strlen(text);
+    int start = 0;
+    int written = 0;
+
+    for (int i = 0; i <= n && written < room; i++)
+    {
+        int length = 0;
+        int id = i < n && text[i] == '<' ? special_at(text + i, n - i, &length) : -1;
+
+        if (id < 0 && i < n)
+        {
+            continue;
+        }
+
+        written += encode_plain(text + start, i - start, out + written, room - written);
+
+        if (id >= 0 && written < room)
+        {
+            out[written++] = id;
+            i += length - 1;
+        }
+
+        start = i + 1;
     }
 
     return written;
@@ -737,10 +785,42 @@ static void *need(unsigned long bytes)
     return memory;
 }
 
+static void choose_model(void)
+{
+    int fd = open(MODEL_CHOICE, O_READ);
+    long got = fd < 0 ? 0 : read(fd, model_path, sizeof(model_path) - 1);
+
+    if (fd >= 0)
+    {
+        close(fd);
+    }
+
+    while (got > 0 && (model_path[got - 1] == '\n' || model_path[got - 1] == ' ' || model_path[got - 1] == '\r'))
+    {
+        got--;
+    }
+
+    if (got <= 0 || model_path[0] != '/')
+    {
+        strcpy(model_path, LLM_MODEL_PATH);
+        return;
+    }
+
+    model_path[got] = 0;
+}
+
+const char *llm_model_path(void)
+{
+    return model_path[0] ? model_path : LLM_MODEL_PATH;
+}
+
 int llm_load(void)
 {
-    unsigned char raw[HEADER_BYTES];
-    int fd = open(MODEL_PATH, O_READ);
+    unsigned char *raw = model_header;
+
+    choose_model();
+
+    int fd = open(model_path, O_READ);
 
     if (fd < 0 || read(fd, raw, HEADER_BYTES) != HEADER_BYTES || memcmp_bytes(raw, "KNOCLLM1", 8) != 0)
     {
@@ -749,6 +829,7 @@ int llm_load(void)
 
     memcpy(&h, raw + 8, 17 * 4);
     memcpy(&h.tok_off, raw + 8 + 17 * 4, 6 * 8);
+    h.max_seq = CONTEXT;
     head_dim = h.dim / h.heads;
     kv_dim = h.kv_heads * head_dim;
     group = h.group;
@@ -849,6 +930,7 @@ static int prefix_cached(const char *path, const int *ids, int count)
     char magic[8];
     unsigned int stored;
     static int stored_ids[LLM_MAX_PROMPT];
+    static unsigned char stored_header[HEADER_BYTES];
     int fd = open(path, O_READ);
 
     if (fd < 0)
@@ -857,6 +939,8 @@ static int prefix_cached(const char *path, const int *ids, int count)
     }
 
     int ok = read(fd, magic, 8) == 8 && memcmp_bytes(magic, PREFIX_MAGIC, 8) == 0 &&
+             read(fd, stored_header, HEADER_BYTES) == HEADER_BYTES &&
+             memcmp_bytes(stored_header, model_header, HEADER_BYTES) == 0 &&
              read(fd, &stored, 4) == 4 && stored == (unsigned int)count &&
              read(fd, stored_ids, (unsigned long)count * 4) == (long)count * 4 &&
              memcmp_bytes(stored_ids, ids, (unsigned long)count * 4) == 0;
@@ -885,6 +969,7 @@ static void save_prefix(const char *path, const int *ids, int count)
     }
 
     write(fd, PREFIX_MAGIC, 8);
+    write(fd, model_header, HEADER_BYTES);
     write(fd, &stored, 4);
     write(fd, ids, (unsigned long)count * 4);
 
@@ -992,4 +1077,34 @@ const unsigned char *llm_token_text(int token, unsigned int *length)
 {
     *length = tok_length[token];
     return tok_data + tok_offset[token];
+}
+
+static void feed(const int *ids, int count)
+{
+    for (int i = 0; i < count && position < h.max_seq; i++)
+    {
+        forward(ids[i], position++, i == count - 1);
+    }
+}
+
+int llm_feed_text(const char *text)
+{
+    static int ids[LLM_MAX_PROMPT];
+    int count = encode(text, ids, LLM_MAX_PROMPT);
+
+    feed(ids, count);
+    return position < h.max_seq ? 0 : -1;
+}
+
+int llm_feed_special(int which)
+{
+    int id = which == LLM_IM_START ? (int)h.im_start : (int)h.im_end;
+
+    feed(&id, 1);
+    return position < h.max_seq ? 0 : -1;
+}
+
+unsigned int llm_room(void)
+{
+    return position < h.max_seq ? h.max_seq - position : 0;
 }

@@ -30,6 +30,11 @@ for program in user/*.elf; do
     $KNOCFS put "$DISK" "$program" "/bin/$(basename "$program" .elf)"
 done
 
+$KNOCFS mkdir "$DISK" /etc /etc/apps
+for manifest in apps/*.app; do
+    $KNOCFS put "$DISK" "$manifest" "/etc/apps/$(basename "$manifest")"
+done
+
 $KNOCFS put-text "$DISK" /hello.txt "Hello from a file on KnocFS!"
 $KNOCFS make-test-model "$DISK" /models/test-model.bin 8
 
