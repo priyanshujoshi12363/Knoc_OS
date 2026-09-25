@@ -1,5 +1,6 @@
 #include "ulib.h"
 #include "nn.h"
+#include "learn.h"
 
 #define MODEL_PATH "/models/filenet.knm"
 #define DEFAULT_DIR "/home/Downloads"
@@ -7,6 +8,9 @@
 #define HEAD_BYTES 512
 #define FILES_MAX 128
 #define MIN_CONFIDENCE 0.9
+#define MODE_PATH "/etc/organize.mode"
+#define SEARCH_ROOT "/home"
+#define SEARCH_DEPTH 6
 
 #define HIST 256
 #define PAIRS 512
@@ -32,6 +36,8 @@ typedef struct rule_folder
 
 static nn_model_t model;
 static double features[FEATURES];
+static double personal_x[LEARN_DIM];
+static int model_loaded;
 static unsigned char head[HEAD_BYTES];
 static char files[FILES_MAX][FILE_NAME_MAX];
 static char log_text[FILES_MAX * PATH_MAX * 2];
@@ -249,6 +255,13 @@ static void infer(result_t *result)
 
 static int load_model(void)
 {
+    if (model_loaded)
+    {
+        return 0;
+    }
+
+    model_loaded = 1;
+
     if (nn_load(&model, MODEL_PATH) != 0 || model.head_count != 2 || model.inputs != FEATURES)
     {
         return -1;
@@ -555,6 +568,13 @@ static const char *choose(const char *path, const char *name, unsigned long leng
                           const result_t *result, char *folder)
 {
     char rule[PATH_MAX];
+    double personal_confidence;
+
+    if (learn_predict(personal_x, result->type, folder, &personal_confidence))
+    {
+        return "personal";
+    }
+
     int has_rule = rule_for(path, name, length, rule);
 
     if (has_rule && is_rule_only(rule))
@@ -664,6 +684,32 @@ static void free_target(char *target)
     }
 }
 
+static int classify(const char *path, const char *name, result_t *result, unsigned long *size,
+                    unsigned long *length)
+{
+    file_stat_t info;
+
+    if (stat(path, &info) != 0 || info.type != FILE_TYPE_FILE)
+    {
+        return -1;
+    }
+
+    int fd = open(path, O_READ);
+    long got = fd >= 0 ? read(fd, head, HEAD_BYTES) : 0;
+
+    if (fd >= 0)
+    {
+        close(fd);
+    }
+
+    *size = info.size;
+    *length = got > 0 ? (unsigned long)got : 0;
+    compute_features(name, info.size, *length);
+    infer(result);
+    learn_features(&model, name, personal_x);
+    return 0;
+}
+
 static void print_percent(double value)
 {
     unsigned long percent = (unsigned long)nn_round_even(value * 100);
@@ -673,13 +719,44 @@ static void print_percent(double value)
     print("%");
 }
 
-static void organize(const char *directory, int apply)
+static void append_log(const char *directory, const char *from, const char *to)
+{
+    char log_path[PATH_MAX];
+    file_stat_t info;
+
+    join(log_path, directory, LOG_NAME);
+
+    int fd = open(log_path, O_WRITE | O_CREATE);
+
+    if (fd < 0)
+    {
+        return;
+    }
+
+    if (stat(log_path, &info) == 0)
+    {
+        seek(fd, info.size);
+    }
+
+    write(fd, from, strlen(from));
+    write(fd, "\t", 1);
+    write(fd, to, strlen(to));
+    write(fd, "\n", 1);
+    close(fd);
+}
+
+static void organize(const char *directory, int apply, const char *only, int quiet)
 {
     dir_entry_t entry;
     unsigned long count = 0;
-    unsigned long layers[3] = {0, 0, 0};
+    unsigned long layers[4] = {0, 0, 0, 0};
 
-    for (unsigned long i = 0; readdir(directory, i, &entry) == 0 && count < FILES_MAX; i++)
+    if (only)
+    {
+        strcpy(files[count++], only);
+    }
+
+    for (unsigned long i = 0; !only && readdir(directory, i, &entry) == 0 && count < FILES_MAX; i++)
     {
         if (entry.type == FILE_TYPE_FILE && entry.name[0] != '.')
         {
@@ -693,76 +770,88 @@ static void organize(const char *directory, int apply)
         exit(1);
     }
 
-    char *log_end = log_text;
+    learn_load();
 
-    print("file                                     AI type          AI source             layer   destination\n");
+    if (!quiet)
+    {
+        print("file                                     AI type          AI source             layer     destination\n");
+    }
 
     for (unsigned long f = 0; f < count; f++)
     {
         char path[PATH_MAX];
         char folder[PATH_MAX];
+        char folder_path[PATH_MAX];
         char target[PATH_MAX];
-        file_stat_t info;
+        unsigned long size;
+        unsigned long length;
         result_t result;
 
         join(path, directory, files[f]);
 
-        if (stat(path, &info) != 0)
+        if (classify(path, files[f], &result, &size, &length) != 0)
         {
             continue;
         }
 
-        int fd = open(path, O_READ);
-        long length = fd >= 0 ? read(fd, head, HEAD_BYTES) : 0;
-
-        if (fd >= 0)
-        {
-            close(fd);
-        }
-
-        if (length < 0)
-        {
-            length = 0;
-        }
-
-        compute_features(files[f], info.size, (unsigned long)length);
-        infer(&result);
-
-        const char *layer = choose(path, files[f], (unsigned long)length, &result, folder);
+        const char *layer = choose(path, files[f], length, &result, folder);
 
         graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CLASSIFIED_AS, GRAPH_KIND_TYPE,
                      model.names[0][result.type], (unsigned int)nn_round_even(result.type_confidence * 100));
         graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_CAME_FROM, GRAPH_KIND_SOURCE,
                      model.names[1][result.source], (unsigned int)nn_round_even(result.source_confidence * 100));
 
-        layers[layer[0] == 'a' ? 0 : layer[0] == 'r' && layer[1] == 'u' ? 1 : 2]++;
+        layers[layer[0] == 'a' ? 0 : layer[0] == 'p' ? 3 : layer[0] == 'r' && layer[1] == 'u' ? 1 : 2]++;
 
-        char folder_path[PATH_MAX];
+        if (folder[0] == '/')
+        {
+            strcpy(folder_path, folder);
+        }
+        else
+        {
+            join(folder_path, directory, folder);
+        }
 
-        join(folder_path, directory, folder);
         join(target, folder_path, files[f]);
         free_target(target);
 
-        char shown[42];
-        unsigned long n = 0;
+        const char *shown_target = starts_with_ci(target, directory) && target[strlen(directory)] == '/'
+                                       ? target + strlen(directory) + 1
+                                       : target;
 
-        while (files[f][n] && n < 40)
+        if (quiet)
         {
-            shown[n] = files[f][n];
-            n++;
+            print("[ORGANIZE] ");
+            print(files[f]);
+            print(" -> ");
+            print(shown_target);
+            print(" (");
+            print(layer);
+            print(")\n");
         }
+        else
+        {
+            char shown[42];
+            unsigned long n = 0;
 
-        shown[n] = 0;
-        print_padded(shown, 41);
-        print_padded(model.names[0][result.type], 9);
-        print_percent(result.type_confidence);
-        print("     ");
-        print_padded(model.names[1][result.source], 17);
-        print_percent(result.source_confidence);
-        print("  ");
-        print_padded(layer, 8);
-        print(target + strlen(directory) + 1);
-        print("\n");
+            while (files[f][n] && n < 40)
+            {
+                shown[n] = files[f][n];
+                n++;
+            }
+
+            shown[n] = 0;
+            print_padded(shown, 41);
+            print_padded(model.names[0][result.type], 9);
+            print_percent(result.type_confidence);
+            print("     ");
+            print_padded(model.names[1][result.source], 17);
+            print_percent(result.source_confidence);
+            print("  ");
+            print_padded(layer, 10);
+            print(shown_target);
+            print("\n");
+        }
 
         if (apply)
         {
@@ -771,13 +860,7 @@ static void organize(const char *directory, int apply)
             if (rename(path, target) == 0)
             {
                 graph_record(GRAPH_KIND_FILE, path, GRAPH_REL_MOVED_TO, GRAPH_KIND_FILE, target, 100);
-                strcpy(log_end, path);
-                log_end += strlen(log_end);
-                *log_end++ = '\t';
-                strcpy(log_end, target);
-                log_end += strlen(log_end);
-                *log_end++ = '\n';
-                *log_end = 0;
+                append_log(directory, path, target);
             }
             else
             {
@@ -786,11 +869,23 @@ static void organize(const char *directory, int apply)
         }
     }
 
+    if (quiet)
+    {
+        return;
+    }
+
     print("\n");
     print_uint(count);
     print(" files: ");
     print_uint(layers[0]);
     print(" by the AI, ");
+
+    if (layers[3])
+    {
+        print_uint(layers[3]);
+        print(" by what you taught it, ");
+    }
+
     print_uint(layers[1]);
     print(" by the rules, ");
     print_uint(layers[2]);
@@ -804,21 +899,192 @@ static void organize(const char *directory, int apply)
         return;
     }
 
-    char log_path[PATH_MAX];
-
-    join(log_path, directory, LOG_NAME);
-
-    int fd = open(log_path, O_WRITE | O_CREATE | O_TRUNC);
-
-    if (fd >= 0)
-    {
-        write(fd, log_text, (unsigned long)(log_end - log_text));
-        close(fd);
-    }
-
     print("Files moved. Undo with: organize ");
     print(directory);
     print(" --undo\n");
+}
+
+static void folder_of(const char *path, char *out)
+{
+    unsigned long length = strlen(path);
+
+    while (length > 1 && path[length - 1] != '/')
+    {
+        length--;
+    }
+
+    memcpy(out, path, length > 1 ? length - 1 : 1);
+    out[length > 1 ? length - 1 : 1] = 0;
+}
+
+static int find_file(const char *folder, const char *name, const char *skip, char *out, int depth)
+{
+    dir_entry_t entry;
+    char path[PATH_MAX];
+
+    for (unsigned long i = 0; readdir(folder, i, &entry) == 0; i++)
+    {
+        if (strlen(folder) + strlen(entry.name) + 2 >= PATH_MAX)
+        {
+            continue;
+        }
+
+        join(path, folder, entry.name);
+
+        if (entry.type == FILE_TYPE_FILE && strcmp(entry.name, name) == 0 && strcmp(path, skip) != 0)
+        {
+            strcpy(out, path);
+            return 1;
+        }
+
+        if (entry.type == FILE_TYPE_DIR && entry.name[0] != '.' && depth < SEARCH_DEPTH &&
+            find_file(path, name, skip, out, depth + 1))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void learn(const char *directory, int quiet)
+{
+    char log_path[PATH_MAX];
+    int changed = 0;
+    int corrections = 0;
+
+    join(log_path, directory, LOG_NAME);
+
+    int fd = open(log_path, O_READ);
+
+    if (fd < 0)
+    {
+        if (!quiet)
+        {
+            print("organize: nothing organized in ");
+            print(directory);
+            print(" yet, so nothing to learn from\n");
+        }
+
+        return;
+    }
+
+    long length = read(fd, log_text, sizeof(log_text) - 1);
+
+    close(fd);
+    log_text[length > 0 ? length : 0] = 0;
+
+    if (load_model() != 0)
+    {
+        print("organize: cannot load " MODEL_PATH "\n");
+        return;
+    }
+
+    for (char *line = log_text; *line;)
+    {
+        char *end = line;
+
+        while (*end && *end != '\n')
+        {
+            end++;
+        }
+
+        char saved = *end;
+        char *tab = line;
+
+        *end = 0;
+
+        while (*tab && *tab != '\t')
+        {
+            tab++;
+        }
+
+        if (*tab)
+        {
+            char found[PATH_MAX];
+            char placed[PATH_MAX];
+            char now[PATH_MAX];
+            const char *from = line;
+            const char *to = tab + 1;
+            const char *name = to + strlen(to);
+            result_t result;
+            unsigned long size;
+            unsigned long head_length;
+
+            *tab = 0;
+
+            while (name > to && name[-1] != '/')
+            {
+                name--;
+            }
+
+            folder_of(to, placed);
+
+            if (classify(to, name, &result, &size, &head_length) == 0)
+            {
+                changed |= learn_add(name, size, "", result.type, personal_x);
+            }
+            else if (find_file(SEARCH_ROOT, name, from, found, 0))
+            {
+                folder_of(found, now);
+
+                if (strcmp(now, placed) != 0 && strcmp(now, directory) != 0 &&
+                    classify(found, name, &result, &size, &head_length) == 0 &&
+                    learn_add(name, size, now, result.type, personal_x))
+                {
+                    changed = 1;
+                    corrections++;
+                    print("[ORGANIZE] learned: ");
+                    print(name);
+                    print(" belongs in ");
+                    print(now);
+                    print("\n");
+                }
+            }
+        }
+
+        line = saved ? end + 1 : end;
+    }
+
+    if (changed)
+    {
+        int folders = learn_train();
+
+        if (corrections || !quiet)
+        {
+            print("[ORGANIZE] personal model trained: ");
+            print_uint((unsigned long)folders);
+            print(folders == 1 ? " folder of yours\n" : " folders of yours\n");
+        }
+    }
+    else if (!quiet)
+    {
+        print("organize: nothing new to learn\n");
+    }
+}
+
+static void set_auto(const char *mode)
+{
+    if (strcmp(mode, "on") != 0 && strcmp(mode, "off") != 0)
+    {
+        print("usage: organize auto on | off\n");
+        return;
+    }
+
+    mkdir("/etc");
+
+    int fd = open(MODE_PATH, O_WRITE | O_CREATE | O_TRUNC);
+
+    if (fd < 0)
+    {
+        print("organize: cannot write " MODE_PATH "\n");
+        return;
+    }
+
+    write(fd, mode, strlen(mode));
+    close(fd);
+    print(strcmp(mode, "on") == 0 ? "Auto-organize is on: new files in " DEFAULT_DIR " are sorted by themselves\n"
+                                   : "Auto-organize is off\n");
 }
 
 static void remove_empty_parents(const char *path, const char *directory)
@@ -927,12 +1193,23 @@ static void undo(const char *directory)
 int main(void)
 {
     char args[ARGS_MAX];
-    char *words[4];
+    char *words[6];
     int count = 0;
+    const char *only = 0;
 
     getargs(args, sizeof(args));
 
-    for (char *p = args; *p && count < 4;)
+    for (int i = 0; args[i]; i++)
+    {
+        if ((i == 0 || args[i - 1] == ' ') && memcmp_bytes(args + i, "--only ", 7) == 0)
+        {
+            only = args + i + 7;
+            args[i] = 0;
+            break;
+        }
+    }
+
+    for (char *p = args; *p && count < 6;)
     {
         while (*p == ' ')
         {
@@ -952,9 +1229,30 @@ int main(void)
         }
     }
 
+    if (count > 0 && strcmp(words[0], "auto") == 0)
+    {
+        set_auto(count > 1 ? words[1] : "");
+        return 0;
+    }
+
+    if (count > 0 && strcmp(words[0], "forget") == 0)
+    {
+        learn_forget();
+        print("organize: forgot everything it learned from you (the base model is unchanged)\n");
+        return 0;
+    }
+
+    if (count > 0 && strcmp(words[0], "personal") == 0)
+    {
+        learn_list();
+        return 0;
+    }
+
     const char *directory = DEFAULT_DIR;
     int apply = 0;
     int reverse = 0;
+    int quiet = 0;
+    int learning = 0;
 
     for (int i = 0; i < count; i++)
     {
@@ -965,6 +1263,14 @@ int main(void)
         else if (strcmp(words[i], "--undo") == 0)
         {
             reverse = 1;
+        }
+        else if (strcmp(words[i], "--quiet") == 0)
+        {
+            quiet = 1;
+        }
+        else if (strcmp(words[i], "learn") == 0)
+        {
+            learning = 1;
         }
         else
         {
@@ -977,16 +1283,21 @@ int main(void)
     if (stat(directory, &info) != 0 || info.type != FILE_TYPE_DIR)
     {
         print("usage: organize [DIR] [--apply | --undo]   (default DIR: " DEFAULT_DIR ")\n");
+        print("       organize auto on | off    organize learn [DIR]    organize personal    organize forget\n");
         return 1;
     }
 
-    if (reverse)
+    if (learning)
+    {
+        learn(directory, quiet);
+    }
+    else if (reverse)
     {
         undo(directory);
     }
     else
     {
-        organize(directory, apply);
+        organize(directory, apply, only, quiet);
     }
 
     return 0;

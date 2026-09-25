@@ -31,3 +31,4 @@ PROGRAM healthd
 PROGRAM ask
 PROGRAM agent
 PROGRAM chat
+PROGRAM organized

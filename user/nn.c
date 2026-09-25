@@ -138,6 +138,18 @@ static void forward(const nn_model_t *model, const double *inputs)
     }
 }
 
+unsigned int nn_hidden(const nn_model_t *model, double *out)
+{
+    unsigned int width = model->layers[model->layer_count - 1].inputs;
+
+    for (unsigned int i = 0; i < width; i++)
+    {
+        out[i] = xq[i] / 127.0;
+    }
+
+    return width;
+}
+
 void nn_logits(const nn_model_t *model, const double *inputs, double *out)
 {
     forward(model, inputs);

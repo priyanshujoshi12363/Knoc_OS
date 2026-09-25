@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.20.0-blue)
+![Version](https://img.shields.io/badge/version-v0.21.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.20.0 starting
+[INFO] KnocOS v0.21.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,28 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Chat (v0.20.0)
+## ✅ Just Completed: Auto-Organize and Learning (v0.21.0)
+
+**Downloads sort themselves, and KnocOS learns your folders.**
+
+```text
+knoc:/$ organize auto on
+[ORGANIZE] 335505283.pdf -> Documents/335505283.pdf (ai)
+[ORGANIZE] mystery.xyz -> Random/mystery.xyz (random)
+knoc:/$ move /home/Downloads/Documents/335505283.pdf /home/College
+knoc:/$ organize learn
+[ORGANIZE] learned: 335505283.pdf belongs in /home/College
+[ORGANIZE] personal model trained: 1 folder of yours
+...a similar PDF is downloaded...
+[ORGANIZE] 335505299.pdf -> /home/College/335505299.pdf (personal)
+[ORGANIZE] todo.txt -> Text/todo.txt (ai)
+```
+
+- **Automatic:** the `organized` daemon sorts new files once they stop growing
+- **Learns from you:** move a sorted file to your own folder and a small personal model (trained inside KnocOS, on top of the frozen base model) sends similar files there next time
+- **Safe:** it only overrides the base model when it is sure and the file type fits; `organize --undo` still works; `organize forget` resets what it learned
+
+## Chat (v0.20.0)
 
 **Talk to KnocOS.** `chat` keeps Qwen loaded and remembers the whole conversation. It reads the memory graph when your message needs it and uses the agent's tools when you ask it to do something (always asking y/n before changing anything):
 
@@ -283,7 +304,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** auto-organize: Downloads sort themselves and learn from your corrections.
+**Next up:** a crash classifier NN in the AI space, replacing the rule brain.
 
 Recent progress:
 
@@ -311,7 +332,8 @@ Recent progress:
 | `f2e6d5f` | CI: tests wait for the shell prompt |
 | `a6b2983` | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
 | `dd6f3a9` | Shell scripts, redirection for every command, `copy`/`move`, startup script, agent `run_script`, version `v0.19.0` |
-| *(uncommitted)* | `chat` with conversation memory, shared assistant core (`assist.c`), version `v0.20.0` |
+| `bcb9a63` | `chat` with conversation memory, shared assistant core (`assist.c`), version `v0.20.0` |
+| *(uncommitted)* | Auto-organize daemon, learning from corrections (personal model), version `v0.21.0` |
 
 What works right now:
 
@@ -333,14 +355,14 @@ What works right now:
 - **Console as a process:** an INTERACTIVE kernel process reads the keyboard (sleeping until a key arrives), handles the control keys and passes the rest to the shell
 - M-mode has its **own stack** (`mscratch`), so the timer handler never touches process stacks. The S-mode trap handler saves `sepc`/`sstatus` so a process switch inside a trap returns to the right place
 - Self-tests: the disk test writes and reads back a sector, reads text placed in `disk.img` by the host, and increments a boot counter stored on the disk
-- Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
+- Self-tests: the timer test waits for 5 kernel ticks (1 s timeout), then checks the timer isn't running away (at most 1000 ticks in 30 ms; a busy host can deliver missed ticks in a burst, which is normal), and the trap test runs `ebreak` and checks the handler ran and returned
 
 Next steps (full list in `goal.md`, section 4c):
 
 - [x] v0.14.0 – v0.18.0: file organizer AI, memory graph, anomaly detector, LLM inside KnocOS, self-healing, GraphRAG, the agent
 - [x] v0.19.0: shell scripts
 - [x] v0.20.0: `chat`
-- [ ] v0.21.0: auto-organize + learning
+- [x] v0.21.0: auto-organize + learning
 - [ ] v0.22.0 – v0.26.0: crash classifier NN, context + intent security, C library, compiler inside KnocOS, kernel on several cores
 - [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)

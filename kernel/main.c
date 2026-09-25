@@ -24,6 +24,8 @@
 #include "telemetry.h"
 
 #define TIMER_TEST_TICKS 5
+#define TIMER_RUNAWAY_WINDOW 3
+#define TIMER_RUNAWAY_TICKS 1000
 #define KEY_CTRL_C 0x03
 #define KEY_CTRL_D 0x04
 #define KEY_CTRL_E 0x05
@@ -457,6 +459,7 @@ static void console_process(void *arg)
     {
         health_started = 1;
         process_spawn(program_find("healthd"));
+        process_spawn(program_find("organized"));
     }
 
     if (!tty_has_owner() && process_spawn(program_find("knocsh")) < 0)
@@ -912,10 +915,16 @@ void kernel_main(uintptr_t dtb)
         }
     }
 
-    if (timer_read() - time_start <
-        (TIMER_TEST_TICKS - 1) * TIMER_INTERVAL)
+    uint64_t window_start = timer_read();
+    uint64_t ticks_before = timer_ticks();
+
+    while (timer_read() - window_start < TIMER_RUNAWAY_WINDOW * TIMER_INTERVAL)
     {
-        panic("Timer ticks arrived too fast");
+    }
+
+    if (timer_ticks() - ticks_before > TIMER_RUNAWAY_TICKS)
+    {
+        panic("Timer interrupts never stop (runaway timer)");
     }
 
     log_info("Supervisor timer interrupts verified");

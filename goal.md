@@ -52,6 +52,7 @@ Find files by **meaning**, not just filename or path ("the invoice from last mon
 
 ### 🗂️ Automatic File Organization
 Files go where they belong automatically, e.g. a WhatsApp video lands in `WhatsApp/Videos`.
+- *Built in v0.21.0:* the `organized` daemon sorts new downloads by itself, and a personal model trained inside KnocOS learns your own folders from your corrections
 - *Built in v0.14.0:* `organize` in the knocsh shell, a 280K-parameter int8 classifier (type + source) with a rules layer and a `Random/` fallback, plan / apply / undo
 - *Small NN:* file-type and source classifier
 - *OS:* rule engine plus a user-reviewable move log (undo always possible)
@@ -131,17 +132,17 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.20.0)
+## 4. Where KnocOS Is Today (v0.21.0)
 
 | Area | What works |
 |---|---|
 | **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, virtio disk), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
 | **AI that survives crashes** | The AI space on core 1 (PMP-protected), black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
 | **User space** | U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
-| **Small AI** | File organizer (type + source classifier), anomaly detector with self-healing (`healthd`), memory graph (KnocGraph) |
+| **Small AI** | File organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing (`healthd`), memory graph (KnocGraph) |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Quality** | `make test` (8 runs) in CI on every push |
+| **Quality** | `make test` (9 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -171,6 +172,7 @@ People can move to KnocOS without losing their software.
 | v0.18.0 | 2026-09-25 | The agent: tools, app manifests, output capture, installed apps, shared LLM engine |
 | v0.19.0 | 2026-09-26 | Shell scripts: variables, if / for / while, `>` and `>>` for every command, `copy` / `move`, startup script, the agent's `run_script` |
 | v0.20.0 | 2026-09-26 | Chat: a conversation with the LLM that remembers, with memory-graph facts and the agent's tools |
+| v0.21.0 | 2026-09-26 | Auto-organize and learning: a daemon sorts Downloads, a personal model learns your folders from corrections |
 
 ---
 
@@ -184,7 +186,7 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 |---|---|---|---|
 | **v0.19.0** ✅ | Shell scripts | `.ksh` scripts in knocsh (variables, `$1`, `$?`, if / else / for / while, `exit`), `>` and `>>` for every command, `copy` / `move`, `/etc/startup.ksh`, the agent's `run_script` tool | You and the agent can automate tasks |
 | **v0.20.0** ✅ | Chat | `chat`: a conversation with the LLM that remembers what you said; the agent's tools inside the chat | Talk to KnocOS like an assistant |
-| v0.21.0 | Auto-organize + learning | Downloads sorted by themselves; files you move back become training data | The organizer works alone and learns your files |
+| **v0.21.0** ✅ | Auto-organize + learning | Downloads sorted by themselves; files you move back become training data | The organizer works alone and learns your files |
 
 ### Phase 2: Smarter small AI
 

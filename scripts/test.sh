@@ -132,7 +132,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem chat counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organize quiet recorder spawner spin spy" \
+    "[files] /bin: agent ask badcall bigmem chat counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organized organize quiet recorder spawner spin spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -158,7 +158,7 @@ check \
     "Disk Images/ubuntu-24.04-desktop-amd64.iso" \
     "Installers/code_1.93.1_amd64.deb" \
     "Spreadsheets/budget_2024.xlsx" \
-    "random  Random/mystery.xyz" \
+    "random    Random/mystery.xyz" \
     "Files moved. Undo with: organize /home/Downloads --undo" \
     "       700  mystery.xyz" \
     "Restored 14 files and removed the empty folders" \
@@ -398,6 +398,27 @@ check \
     "stop_program(name=nothing): error: no running program with that name" \
     "lower_priority(name=knocsh): error: that program is protected"
 check_absent "name=nothing) Allow?" "name=knocsh) Allow?"
+show_log_on_failure
+
+echo "Run 9: auto-organize sorts new downloads by itself and learns from a correction"
+new_disk
+boot "organize auto on" "sleep 14" "mkdir /home/College" \
+    "move /home/Downloads/Documents/335505283.pdf /home/College" "organize learn" "organize personal" \
+    "copy /home/College/335505283.pdf /home/Downloads/335505299.pdf" "echo buy milk > /home/Downloads/todo.txt" \
+    "sleep 14" "ls /home/College" "organize auto off" "memory why /home/College/335505283.pdf" \
+    "organize forget" "organize personal"
+check \
+    "Auto-organize is on" \
+    "[ORGANIZE] 335505283.pdf -> Documents/335505283.pdf (ai)" \
+    "[ORGANIZE] mystery.xyz -> Random/mystery.xyz (random)" \
+    "[ORGANIZE] learned: 335505283.pdf belongs in /home/College" \
+    "[ORGANIZE] personal model trained: 1 folder of yours" \
+    "335505283.pdf  ->  /home/College" \
+    "[ORGANIZE] 335505299.pdf -> /home/College/335505299.pdf (personal)" \
+    "[ORGANIZE] todo.txt -> Text/todo.txt (ai)" \
+    "knocsh: file /home/Downloads/Documents/335505283.pdf --moved_to--> file /home/College/335505283.pdf" \
+    "organize: forgot everything it learned from you" \
+    "Nothing learned yet"
 show_log_on_failure
 
 echo "RESULT: PASS"

@@ -483,6 +483,10 @@ static void cmd_copy(int argc, char **args, int move)
         {
             fail(result == E_EXISTS ? to : from, result);
         }
+        else
+        {
+            graph_record(GRAPH_KIND_FILE, from, GRAPH_REL_MOVED_TO, GRAPH_KIND_FILE, to, 100);
+        }
 
         return;
     }
@@ -1449,6 +1453,7 @@ static void cmd_help(void)
     print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
+    print("Organize:  organize auto on|off  organize learn  organize personal  organize forget\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 

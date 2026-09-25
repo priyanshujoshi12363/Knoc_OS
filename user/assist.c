@@ -489,6 +489,8 @@ static int tool_move(const call_t *call, text_t *out)
         return refuse(out, "cannot move it");
     }
 
+    graph_record(GRAPH_KIND_FILE, from, GRAPH_REL_MOVED_TO, GRAPH_KIND_FILE, to, 100);
+
     add(out, "moved ");
     add(out, from);
     add(out, " to ");

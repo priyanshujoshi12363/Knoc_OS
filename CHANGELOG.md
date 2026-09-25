@@ -2,6 +2,29 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.21.0] - 2026-09-26
+
+Auto-organize and learning: Downloads sort themselves, and KnocOS learns your own folders.
+
+### Added
+- `organized`, a background daemon started at boot: with `organize auto on` it watches `/home/Downloads`, waits until a new file stops growing (so half-downloaded files are never moved) and sorts it; `organize auto off` stops it (`/etc/organize.mode`)
+- Learning from corrections, without retraining the base model:
+  - `organize learn [DIR]` (also run by the daemon every 15 s): a file organize sorted that you moved into another folder is a correction; files you left in place are examples of "keep"
+  - A personal model inside KnocOS: softmax regression on the base model's 96-value hidden layer plus the words of the file name, trained in KnocOS in seconds; it chooses between "keep the normal folder" and your own folders
+  - It only overrides the base model when it is at least 75% sure and the file's type matches files you put in that folder
+  - Order: personal model → base AI → rules → `Random/`; the layer shows as `personal`
+  - `organize personal` lists what it learned, `organize forget` resets it (stored in `/home/.organize`)
+- `nn_hidden`: the NN runtime hands out the last hidden layer
+- Your own moves are in the memory graph: `move` in the shell and the agent's `move` tool record `moved_to`, so `memory why` explains them
+- `organize --only NAME` (one file) and `--quiet` (one line per file), used by the daemon
+- `make test` Run 9: automatic sorting, a correction, learning, a similar new file following the correction, an unrelated file still going to its normal folder, and `forget`
+
+### Fixed
+- The boot timer self-test could panic on a busy host ("Timer ticks arrived too fast"): after QEMU is paused, missed ticks arrive in a burst, which is correct. It now checks only for a runaway timer (more than 1000 ticks in 30 ms)
+
+### Changed
+- organize adds to its undo log instead of replacing it, so `organize --undo` undoes every automatic and manual sort since the last undo
+
 ## [0.20.0] - 2026-09-26
 
 Chat: talk to KnocOS, and it remembers the conversation.
