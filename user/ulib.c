@@ -94,9 +94,9 @@ int spawn(const char *name)
     return (int)syscall(SYS_SPAWN, (long)name, 0, 0);
 }
 
-int spawn_capture(const char *name, const char *args)
+int spawn_capture(const char *name, const char *args, int quiet)
 {
-    return (int)syscall(SYS_SPAWN_CAPTURE, (long)name, (long)args, 0);
+    return (int)syscall(SYS_SPAWN_CAPTURE, (long)name, (long)args, quiet);
 }
 
 long captured(char *buffer, unsigned long length)
@@ -304,6 +304,18 @@ int is_error(long result)
     return result < 0 && result >= -64;
 }
 
+static int output_fd = FD_STDOUT;
+
+void set_output(int fd)
+{
+    output_fd = fd;
+}
+
+int output(void)
+{
+    return output_fd;
+}
+
 void print(const char *text)
 {
     unsigned long length = 0;
@@ -313,7 +325,7 @@ void print(const char *text)
         length++;
     }
 
-    write(FD_STDOUT, text, length);
+    write(output_fd, text, length);
 }
 
 void print_uint(unsigned long value)

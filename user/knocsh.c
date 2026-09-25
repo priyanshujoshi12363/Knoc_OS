@@ -9,9 +9,47 @@
 #define PARTS_MAX 32
 #define CAT_CHUNK 256
 #define MIB (1024UL * 1024)
+#define VARS_MAX 32
+#define VAR_NAME 16
+#define VAR_VALUE 128
+#define SCRIPT_ARGS 10
+#define SCRIPT_MAX 8192
+#define SCRIPT_LINES 256
+#define SCRIPT_DEPTH 4
+#define LOOP_MAX 10000
+#define STARTUP_SCRIPT "/etc/startup.ksh"
+#define COPY_CHUNK 4096
 
 static char cwd[PATH_MAX] = "/";
 static char line[LINE_MAX];
+
+typedef struct variable
+{
+    char name[VAR_NAME];
+    char value[VAR_VALUE];
+} variable_t;
+
+typedef struct frame
+{
+    int count;
+    char args[SCRIPT_ARGS][VAR_VALUE];
+} frame_t;
+
+typedef struct script
+{
+    char *lines[SCRIPT_LINES];
+    int count;
+} script_t;
+
+static variable_t variables[VARS_MAX];
+static frame_t frames[SCRIPT_DEPTH];
+static script_t scripts[SCRIPT_DEPTH];
+static char script_text[SCRIPT_DEPTH][SCRIPT_MAX];
+static frame_t *frame;
+static int depth;
+static int status;
+static int stop_script;
+static int redirect_fd = -1;
 
 static const char *class_names[] = {"INTERACTIVE", "AI_AGENT", "NORMAL", "BACKGROUND", "IDLE"};
 static const char *state_names[] = {"UNUSED", "READY", "RUNNING", "SLEEPING", "EXITED", "CRASHED", "LOADING", "BLOCKED"};
@@ -37,7 +75,7 @@ static void print_size(unsigned long value)
 
     while (count > 0)
     {
-        write(FD_STDOUT, &digits[--count], 1);
+        write(output(), &digits[--count], 1);
     }
 }
 
@@ -70,8 +108,22 @@ static const char *error_text(long code)
     }
 }
 
+static void copy_text(char *to, const char *from, unsigned long room)
+{
+    unsigned long i = 0;
+
+    while (from[i] && i < room - 1)
+    {
+        to[i] = from[i];
+        i++;
+    }
+
+    to[i] = 0;
+}
+
 static void fail(const char *what, long code)
 {
+    status = 1;
     print("knocsh: ");
     print(what);
     print(": ");
@@ -341,7 +393,7 @@ static void cmd_cat(int argc, char **args)
 
     while ((count = read(fd, buffer, sizeof(buffer))) > 0)
     {
-        write(FD_STDOUT, buffer, (unsigned long)count);
+        write(output(), buffer, (unsigned long)count);
         newline = buffer[count - 1] == '\n';
     }
 
@@ -353,21 +405,13 @@ static void cmd_cat(int argc, char **args)
     }
 }
 
-/* echo WORDS... [> FILE] */
 static void cmd_echo(int argc, char **args)
 {
     char text[LINE_MAX];
     unsigned long length = 0;
-    int redirect = 0;
 
     for (int i = 1; i < argc; i++)
     {
-        if (strcmp(args[i], ">") == 0)
-        {
-            redirect = i;
-            break;
-        }
-
         if (length > 0)
         {
             text[length++] = ' ';
@@ -380,33 +424,207 @@ static void cmd_echo(int argc, char **args)
     }
 
     text[length++] = '\n';
+    write(output(), text, length);
+}
 
-    if (!redirect)
+static const char *base_name(const char *path)
+{
+    const char *base = path;
+
+    for (int i = 0; path[i]; i++)
     {
-        write(FD_STDOUT, text, length);
+        if (path[i] == '/' && path[i + 1])
+        {
+            base = path + i + 1;
+        }
+    }
+
+    return base;
+}
+
+static void destination(const char *from, const char *to, char *out)
+{
+    file_stat_t info;
+
+    resolve(to, out);
+
+    if (stat(out, &info) == 0 && info.type == FILE_TYPE_DIR && strlen(out) + strlen(base_name(from)) + 2 < PATH_MAX)
+    {
+        if (strcmp(out, "/") != 0)
+        {
+            strcpy(out + strlen(out), "/");
+        }
+
+        strcpy(out + strlen(out), base_name(from));
+    }
+}
+
+static void cmd_copy(int argc, char **args, int move)
+{
+    char from[PATH_MAX];
+    char to[PATH_MAX];
+    static char chunk[COPY_CHUNK];
+
+    if (argc < 3)
+    {
+        print(move ? "usage: move FROM TO\n" : "usage: copy FROM TO\n");
+        status = 1;
         return;
     }
 
-    if (redirect + 1 >= argc)
+    resolve(args[1], from);
+    destination(from, args[2], to);
+
+    if (move)
     {
-        print("usage: echo TEXT > FILE\n");
+        long result = rename(from, to);
+
+        if (result != 0)
+        {
+            fail(result == E_EXISTS ? to : from, result);
+        }
+
         return;
     }
 
-    char path[PATH_MAX];
+    int in = open(from, O_READ);
 
-    resolve(args[redirect + 1], path);
-
-    int fd = open(path, O_WRITE | O_CREATE | O_TRUNC);
-
-    if (fd < 0)
+    if (in < 0)
     {
-        fail(path, fd);
+        fail(from, in);
         return;
     }
 
-    write(fd, text, length);
-    close(fd);
+    int out = open(to, O_WRITE | O_CREATE | O_TRUNC);
+
+    if (out < 0)
+    {
+        close(in);
+        fail(to, out);
+        return;
+    }
+
+    long got;
+
+    while ((got = read(in, chunk, sizeof(chunk))) > 0)
+    {
+        if (write(out, chunk, (unsigned long)got) != got)
+        {
+            fail(to, E_NOSPACE);
+            break;
+        }
+    }
+
+    close(in);
+    close(out);
+}
+
+static variable_t *find_variable(const char *name, int create)
+{
+    for (int i = 0; i < VARS_MAX; i++)
+    {
+        if (variables[i].name[0] && strcmp(variables[i].name, name) == 0)
+        {
+            return &variables[i];
+        }
+    }
+
+    for (int i = 0; create && i < VARS_MAX; i++)
+    {
+        if (variables[i].name[0] == 0)
+        {
+            copy_text(variables[i].name, name, VAR_NAME);
+            return &variables[i];
+        }
+    }
+
+    return 0;
+}
+
+static void set_variable(const char *name, const char *value)
+{
+    variable_t *v = find_variable(name, 1);
+
+    if (v)
+    {
+        copy_text(v->value, value, VAR_VALUE);
+    }
+    else
+    {
+        print("knocsh: too many variables\n");
+        status = 1;
+    }
+}
+
+static void cmd_set(int argc, char **args)
+{
+    char value[VAR_VALUE];
+    unsigned long length = 0;
+
+    if (argc < 2)
+    {
+        for (int i = 0; i < VARS_MAX; i++)
+        {
+            if (variables[i].name[0])
+            {
+                print(variables[i].name);
+                print("=");
+                print(variables[i].value);
+                print("\n");
+            }
+        }
+
+        return;
+    }
+
+    for (int i = 2; i < argc; i++)
+    {
+        if (i > 2 && length < sizeof(value) - 1)
+        {
+            value[length++] = ' ';
+        }
+
+        for (unsigned long j = 0; args[i][j] && length < sizeof(value) - 1; j++)
+        {
+            value[length++] = args[i][j];
+        }
+    }
+
+    value[length] = 0;
+    set_variable(args[1], value);
+}
+
+static void cmd_inc(int argc, char **args)
+{
+    char text[24];
+    variable_t *v = argc > 1 ? find_variable(args[1], 1) : 0;
+
+    if (!v)
+    {
+        print("usage: inc NAME\n");
+        status = 1;
+        return;
+    }
+
+    long value = parse_number(v->value);
+    long step = argc > 2 ? parse_number(args[2]) : 1;
+    unsigned long n = (unsigned long)((value < 0 ? 0 : value) + (step < 0 ? 0 : step));
+    int length = 0;
+    char digits[24];
+
+    do
+    {
+        digits[length++] = (char)('0' + n % 10);
+        n /= 10;
+    } while (n);
+
+    for (int i = 0; i < length; i++)
+    {
+        text[i] = digits[length - 1 - i];
+    }
+
+    text[length] = 0;
+    copy_text(v->value, text, VAR_VALUE);
 }
 
 static void cmd_path_change(int argc, char **args, int make)
@@ -558,7 +776,8 @@ static void run_program(const char *name, int background, int argc, char **args,
 
     join_args(argc, args, first, program_args);
 
-    int pid = spawn_args(name, program_args);
+    int capture = redirect_fd >= 0 && !background;
+    int pid = capture ? spawn_capture(name, program_args, 1) : spawn_args(name, program_args);
 
     if (pid < 0)
     {
@@ -577,6 +796,24 @@ static void run_program(const char *name, int background, int argc, char **args,
     }
 
     long code = wait(pid);
+
+    if (capture)
+    {
+        static char captured_output[4096];
+        long length = captured(captured_output, sizeof(captured_output));
+
+        if (length > 0)
+        {
+            write(redirect_fd, captured_output, (unsigned long)length);
+        }
+    }
+
+    status = code == 0 ? 0 : code > 0 ? (int)code : 1;
+
+    if (code == E_KILLED && depth > 0)
+    {
+        stop_script = 1;
+    }
 
     if (code == E_KILLED)
     {
@@ -1203,7 +1440,11 @@ static void cmd_uptime(void)
 
 static void cmd_help(void)
 {
-    print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT [> FILE]  mkdir DIR  rm PATH\n");
+    print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT  mkdir DIR  rm PATH  copy FROM TO  move FROM TO\n");
+    print("Output:    COMMAND > FILE  COMMAND >> FILE (works for every command and program)\n");
+    print("Scripts:   run FILE.ksh [ARGS] or FILE.ksh  set NAME VALUE  inc NAME  $NAME $1 $# $?\n");
+    print("           if COND / else / end  for X in A B C / end  while COND / end  exit N\n");
+    print("           COND: exists PATH, A == B, A != B, not COND, or any command (true when it exits with 0)\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
     print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
@@ -1211,9 +1452,524 @@ static void cmd_help(void)
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 
+static int is_name_char(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static void put_number(char *out, unsigned long *length, unsigned long room, long value)
+{
+    char digits[24];
+    int n = 0;
+    unsigned long v = (unsigned long)(value < 0 ? -value : value);
+
+    if (value < 0 && *length < room - 1)
+    {
+        out[(*length)++] = '-';
+    }
+
+    do
+    {
+        digits[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+
+    while (n > 0 && *length < room - 1)
+    {
+        out[(*length)++] = digits[--n];
+    }
+}
+
+static void expand(const char *in, char *out, unsigned long room)
+{
+    unsigned long length = 0;
+
+    for (unsigned long i = 0; in[i] && length < room - 1;)
+    {
+        if (in[i] == '\\' && in[i + 1] == '$')
+        {
+            out[length++] = '$';
+            i += 2;
+            continue;
+        }
+
+        if (in[i] != '$')
+        {
+            out[length++] = in[i++];
+            continue;
+        }
+
+        char next = in[i + 1];
+        const char *value = 0;
+
+        if (next >= '0' && next <= '9')
+        {
+            int index = next - '0';
+
+            value = frame && index < frame->count ? frame->args[index] : "";
+            i += 2;
+        }
+        else if (next == '#')
+        {
+            put_number(out, &length, room, frame ? frame->count - 1 : 0);
+            i += 2;
+            continue;
+        }
+        else if (next == '?')
+        {
+            put_number(out, &length, room, status);
+            i += 2;
+            continue;
+        }
+        else if (is_name_char(next))
+        {
+            char name[VAR_NAME];
+            int n = 0;
+
+            i++;
+
+            while (is_name_char(in[i]))
+            {
+                if (n < VAR_NAME - 1)
+                {
+                    name[n++] = in[i];
+                }
+
+                i++;
+            }
+
+            name[n] = 0;
+
+            variable_t *v = find_variable(name, 0);
+
+            value = v ? v->value : "";
+        }
+        else
+        {
+            out[length++] = in[i++];
+            continue;
+        }
+
+        while (*value && length < room - 1)
+        {
+            out[length++] = *value++;
+        }
+    }
+
+    out[length] = 0;
+}
+
+static int execute(int argc, char **args);
+
+static int open_redirect(int argc, char **args, int *fd)
+{
+    if (argc < 3 || (strcmp(args[argc - 2], ">") != 0 && strcmp(args[argc - 2], ">>") != 0))
+    {
+        return argc;
+    }
+
+    char path[PATH_MAX];
+    int append = strcmp(args[argc - 2], ">>") == 0;
+
+    resolve(args[argc - 1], path);
+    *fd = open(path, O_WRITE | O_CREATE | (append ? 0 : O_TRUNC));
+
+    if (*fd < 0)
+    {
+        fail(path, *fd);
+        return -1;
+    }
+
+    if (append)
+    {
+        file_stat_t info;
+
+        if (stat(path, &info) == 0)
+        {
+            seek(*fd, info.size);
+        }
+    }
+
+    return argc - 2;
+}
+
+static int run_words(int argc, char **args)
+{
+    int fd = -1;
+
+    argc = open_redirect(argc, args, &fd);
+
+    if (argc <= 0)
+    {
+        return 0;
+    }
+
+    if (fd >= 0)
+    {
+        set_output(fd);
+        redirect_fd = fd;
+    }
+
+    int result = execute(argc, args);
+
+    if (fd >= 0)
+    {
+        set_output(FD_STDOUT);
+        redirect_fd = -1;
+        close(fd);
+    }
+
+    return result;
+}
+
+static int run_line(const char *text)
+{
+    char expanded[LINE_MAX];
+    char *args[WORDS_MAX];
+
+    expand(text, expanded, sizeof(expanded));
+
+    int argc = split(expanded, args);
+
+    return argc > 0 ? run_words(argc, args) : 0;
+}
+
+static const char *skip_spaces(const char *text)
+{
+    while (*text == ' ' || *text == '\t')
+    {
+        text++;
+    }
+
+    return text;
+}
+
+static int first_word_is(const char *text, const char *word)
+{
+    unsigned long n = strlen(word);
+
+    text = skip_spaces(text);
+    return memcmp_bytes(text, word, n) == 0 && (text[n] == 0 || text[n] == ' ' || text[n] == '\t');
+}
+
+static int block_start(const char *text)
+{
+    return first_word_is(text, "if") || first_word_is(text, "for") || first_word_is(text, "while");
+}
+
+static int find_end(script_t *s, int start, int *else_at)
+{
+    int nest = 0;
+
+    *else_at = -1;
+
+    for (int i = start + 1; i < s->count; i++)
+    {
+        if (block_start(s->lines[i]))
+        {
+            nest++;
+        }
+        else if (first_word_is(s->lines[i], "end"))
+        {
+            if (nest == 0)
+            {
+                return i;
+            }
+
+            nest--;
+        }
+        else if (first_word_is(s->lines[i], "else") && nest == 0)
+        {
+            *else_at = i;
+        }
+    }
+
+    return -1;
+}
+
+static int condition(const char *text)
+{
+    char expanded[LINE_MAX];
+    char *args[WORDS_MAX];
+
+    expand(text, expanded, sizeof(expanded));
+
+    int argc = split(expanded, args);
+    int negate = argc > 0 && strcmp(args[0], "not") == 0;
+    char **words = args + negate;
+    int count = argc - negate;
+    int result;
+
+    if (count == 2 && strcmp(words[0], "exists") == 0)
+    {
+        char path[PATH_MAX];
+        file_stat_t info;
+
+        resolve(words[1], path);
+        result = stat(path, &info) == 0;
+    }
+    else if (count == 3 && (strcmp(words[1], "==") == 0 || strcmp(words[1], "!=") == 0))
+    {
+        result = (strcmp(words[0], words[2]) == 0) == (strcmp(words[1], "==") == 0);
+    }
+    else if (count == 2 && (strcmp(words[0], "==") == 0 || strcmp(words[0], "!=") == 0))
+    {
+        result = (words[1][0] == 0) == (strcmp(words[0], "==") == 0);
+    }
+    else if (count > 0)
+    {
+        run_words(count, words);
+        result = status == 0;
+    }
+    else
+    {
+        result = 0;
+    }
+
+    return negate ? !result : result;
+}
+
+static void script_error(int line_number, const char *what)
+{
+    status = 1;
+    print("knocsh: script line ");
+    print_uint((unsigned long)line_number + 1);
+    print(": ");
+    print(what);
+    print("\n");
+}
+
+static int run_range(script_t *s, int from, int to)
+{
+    for (int i = from; i < to; i++)
+    {
+        const char *text = skip_spaces(s->lines[i]);
+
+        if (text[0] == 0 || text[0] == '#')
+        {
+            continue;
+        }
+
+        if (block_start(text))
+        {
+            int else_at;
+            int end = find_end(s, i, &else_at);
+
+            if (end < 0 || end > to)
+            {
+                script_error(i, "missing end");
+                return 1;
+            }
+
+            if (first_word_is(text, "if"))
+            {
+                int result = condition(skip_spaces(text + 2));
+
+                if (stop_script)
+                {
+                    return 1;
+                }
+
+                if (result && run_range(s, i + 1, else_at >= 0 ? else_at : end))
+                {
+                    return 1;
+                }
+
+                if (!result && else_at >= 0 && run_range(s, else_at + 1, end))
+                {
+                    return 1;
+                }
+            }
+            else if (first_word_is(text, "for"))
+            {
+                char expanded[LINE_MAX];
+                char *words[WORDS_MAX];
+
+                expand(skip_spaces(text + 3), expanded, sizeof(expanded));
+
+                int count = split(expanded, words);
+
+                if (count < 2 || strcmp(words[1], "in") != 0)
+                {
+                    script_error(i, "use: for NAME in WORDS...");
+                    return 1;
+                }
+
+                for (int w = 2; w < count; w++)
+                {
+                    set_variable(words[0], words[w]);
+
+                    if (run_range(s, i + 1, end))
+                    {
+                        return 1;
+                    }
+                }
+            }
+            else
+            {
+                int rounds = 0;
+
+                while (condition(skip_spaces(text + 5)))
+                {
+                    if (stop_script || run_range(s, i + 1, end))
+                    {
+                        return 1;
+                    }
+
+                    if (++rounds >= LOOP_MAX)
+                    {
+                        script_error(i, "while loop stopped after 10000 rounds");
+                        return 1;
+                    }
+                }
+            }
+
+            i = end;
+            continue;
+        }
+
+        if (first_word_is(text, "else") || first_word_is(text, "end"))
+        {
+            script_error(i, "else or end without if, for or while");
+            return 1;
+        }
+
+        if (first_word_is(text, "exit"))
+        {
+            char expanded[LINE_MAX];
+
+            expand(skip_spaces(text + 4), expanded, sizeof(expanded));
+            status = expanded[0] ? (int)parse_number(expanded) : status;
+            return 1;
+        }
+
+        run_line(text);
+
+        if (stop_script)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void run_script(const char *path, int argc, char **args, int first)
+{
+    if (depth >= SCRIPT_DEPTH)
+    {
+        print("knocsh: scripts nested too deep\n");
+        status = 1;
+        return;
+    }
+
+    int fd = open(path, O_READ);
+
+    if (fd < 0)
+    {
+        fail(path, fd);
+        return;
+    }
+
+    char *text = script_text[depth];
+    long length = read(fd, text, SCRIPT_MAX - 1);
+
+    close(fd);
+
+    if (length < 0)
+    {
+        fail(path, length);
+        return;
+    }
+
+    text[length] = 0;
+
+    script_t *s = &scripts[depth];
+    frame_t *f = &frames[depth];
+
+    s->count = 0;
+
+    for (char *p = text; *p && s->count < SCRIPT_LINES;)
+    {
+        s->lines[s->count++] = p;
+
+        while (*p && *p != '\n')
+        {
+            p++;
+        }
+
+        if (*p)
+        {
+            *p++ = 0;
+        }
+    }
+
+    for (int i = 0; i < s->count; i++)
+    {
+        unsigned long n = strlen(s->lines[i]);
+
+        if (n > 0 && s->lines[i][n - 1] == '\r')
+        {
+            s->lines[i][n - 1] = 0;
+        }
+    }
+
+    f->count = 0;
+    copy_text(f->args[f->count++], path, VAR_VALUE);
+
+    for (int i = first; i < argc && f->count < SCRIPT_ARGS; i++)
+    {
+        copy_text(f->args[f->count++], args[i], VAR_VALUE);
+    }
+
+    frame_t *saved = frame;
+
+    frame = f;
+    depth++;
+    status = 0;
+    run_range(s, 0, s->count);
+    depth--;
+    frame = saved;
+
+    if (stop_script)
+    {
+        print("knocsh: script ");
+        print(path);
+        print(" stopped\n");
+
+        if (depth == 0)
+        {
+            stop_script = 0;
+        }
+    }
+}
+
+static int script_path(const char *word, char *path)
+{
+    unsigned long n = strlen(word);
+    int slash = 0;
+    file_stat_t info;
+
+    for (unsigned long i = 0; i < n; i++)
+    {
+        slash |= word[i] == '/';
+    }
+
+    if (!slash && !(n > 4 && strcmp(word + n - 4, ".ksh") == 0))
+    {
+        return 0;
+    }
+
+    resolve(word, path);
+    return stat(path, &info) == 0 && info.type == FILE_TYPE_FILE;
+}
+
 static int execute(int argc, char **args)
 {
     const char *command = args[0];
+    char path[PATH_MAX];
+
+    status = 0;
 
     if (strcmp(command, "help") == 0)
     {
@@ -1248,6 +2004,29 @@ static int execute(int argc, char **args)
     {
         cmd_path_change(argc, args, 0);
     }
+    else if (strcmp(command, "copy") == 0 || strcmp(command, "cp") == 0)
+    {
+        cmd_copy(argc, args, 0);
+    }
+    else if (strcmp(command, "move") == 0 || strcmp(command, "mv") == 0)
+    {
+        cmd_copy(argc, args, 1);
+    }
+    else if (strcmp(command, "set") == 0)
+    {
+        cmd_set(argc, args);
+    }
+    else if (strcmp(command, "inc") == 0)
+    {
+        cmd_inc(argc, args);
+    }
+    else if (block_start(command) || strcmp(command, "else") == 0 || strcmp(command, "end") == 0)
+    {
+        print("knocsh: ");
+        print(command);
+        print(" works inside scripts (.ksh files)\n");
+        status = 1;
+    }
     else if (strcmp(command, "ps") == 0)
     {
         cmd_ps();
@@ -1260,7 +2039,12 @@ static int execute(int argc, char **args)
     {
         if (argc < 2)
         {
-            print("usage: run NAME [&]\n");
+            print("usage: run NAME [&] | run SCRIPT.ksh [ARGS]\n");
+            status = 1;
+        }
+        else if (script_path(args[1], path))
+        {
+            run_script(path, argc, args, 2);
         }
         else
         {
@@ -1323,6 +2107,10 @@ static int execute(int argc, char **args)
     {
         return 1;
     }
+    else if (script_path(command, path))
+    {
+        run_script(path, argc, args, 1);
+    }
     else if (program_exists(command))
     {
         run_program(command, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
@@ -1332,6 +2120,7 @@ static int execute(int argc, char **args)
         print("knocsh: unknown command: ");
         print(command);
         print(" (type help)\n");
+        status = 1;
     }
 
     return 0;
@@ -1339,9 +2128,28 @@ static int execute(int argc, char **args)
 
 int main(void)
 {
+    char request[ARGS_MAX];
     char *args[WORDS_MAX];
+    char path[PATH_MAX];
+    file_stat_t info;
+
+    getargs(request, sizeof(request));
+
+    int argc = split(request, args);
+
+    if (argc > 0)
+    {
+        resolve(args[0], path);
+        run_script(path, argc, args, 1);
+        return status;
+    }
 
     print("\nKnocOS shell (knocsh). Type help for commands.\n");
+
+    if (stat(STARTUP_SCRIPT, &info) == 0)
+    {
+        run_script(STARTUP_SCRIPT, 0, args, 0);
+    }
 
     while (1)
     {
@@ -1351,9 +2159,7 @@ int main(void)
 
         read_line();
 
-        int argc = split(line, args);
-
-        if (argc > 0 && execute(argc, args))
+        if (run_line(line))
         {
             print("knocsh: bye (the console goes back to plain echo)\n");
             return 0;

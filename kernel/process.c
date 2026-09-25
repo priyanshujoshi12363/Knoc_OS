@@ -75,6 +75,7 @@ typedef struct process
     uint64_t seen_disk_bytes;
     int capture_owner;
     int capture_pid;
+    int capture_quiet;
     uint32_t capture_length;
     char capture[PROCESS_CAPTURE_MAX];
     uint64_t block_seq;
@@ -397,6 +398,7 @@ static process_t *create_locked(const char *name,
     p->seen_disk_bytes = 0;
     p->capture_owner = 0;
     p->capture_pid = 0;
+    p->capture_quiet = 0;
     p->capture_length = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
@@ -611,9 +613,9 @@ int process_spawn_args(const program_t *program, const char *args)
     return spawn(program, args, 0);
 }
 
-int process_spawn_capture(const program_t *program, const char *args)
+int process_spawn_capture(const program_t *program, const char *args, int quiet)
 {
-    return spawn(program, args, 1);
+    return spawn(program, args, quiet ? 2 : 1);
 }
 
 static int spawn(const program_t *program, const char *args, int capture)
@@ -651,6 +653,7 @@ static int spawn(const program_t *program, const char *args, int capture)
     if (capture && current != 0)
     {
         p->capture_owner = current->pid;
+        p->capture_quiet = capture == 2;
         current->capture_pid = p->pid;
         current->capture_length = 0;
     }
@@ -678,7 +681,7 @@ static int spawn(const program_t *program, const char *args, int capture)
 
     int pid = p->pid;
 
-    if (program->flags & PROGRAM_TERMINAL)
+    if ((program->flags & PROGRAM_TERMINAL) && args[0] == 0)
     {
         tty_set_owner(pid);
     }
@@ -800,11 +803,11 @@ void process_record_syscall(uint64_t number)
 
 static process_t *find_live(int pid);
 
-void process_capture(const char *data, uint64_t length)
+int process_capture(const char *data, uint64_t length)
 {
     if (current == 0 || current->capture_owner == 0)
     {
-        return;
+        return 0;
     }
 
     uint64_t enabled = interrupts_disable();
@@ -818,7 +821,10 @@ void process_capture(const char *data, uint64_t length)
         }
     }
 
+    int quiet = owner != 0 && owner->capture_pid == current->pid && current->capture_quiet;
+
     interrupts_restore(enabled);
+    return quiet;
 }
 
 uint64_t process_captured(char *out, uint64_t length)

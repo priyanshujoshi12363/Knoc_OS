@@ -61,6 +61,7 @@ An AI agent that can operate system capabilities through **controlled tools**: c
 - *LLM:* plans multi-step tasks
 - *OS:* exposes a typed **tool API** (open app, run command, edit file, drive Blender via its Python API, ...)
 - Every action goes through the permission system below
+- *Built in v0.18.0:* `agent` with rules first, then Qwen tool calling, 12 tools, any app with a manifest, y/n before every change, every action logged in the memory graph
 
 ### 🔐 Intent-based Security
 The OS understands **what** an AI or app is trying to do, not just which syscall it made, and enforces permissions on that intent.
@@ -72,16 +73,19 @@ The OS understands **what** an AI or app is trying to do, not just which syscall
 Persistent memory about authorized files, projects and activity, so the AI knows *you*.
 - Stored locally, encrypted, fully user-controlled (view, edit, delete)
 - Only data the user has authorized is included
+- *Built in v0.15.0:* KnocGraph, the memory graph (see section 8)
 
 ### 🩺 Self-Diagnosing OS
 The OS investigates its own performance problems and errors and finds the likely cause.
 - *Small NN:* anomaly detection on CPU, memory, disk and crash telemetry
 - *LLM:* explains the problem in plain language and suggests fixes
+- *Built in v0.16.0 / v0.17.0:* `healthd` (a multi-label NN on kernel telemetry) finds memory leaks, CPU hogs, disk thrashing, spawn storms and a filling disk and names the program; `ask what is wrong` explains it with facts from the memory graph
 
 ### 🛠️ Self-Healing / Recovery
 When possible, KnocOS automatically fixes or recovers from problems: restart failed services, roll back bad updates, restore corrupted config.
 - Snapshots / checkpoints of system state
 - Healing actions logged and reversible
+- *Built in v0.9.0 / v0.17.0:* the AI space restarts crashed programs, disables bad drivers and restarts the kernel; `healthd` lowers the priority of or stops the program causing a problem, and logs every fix
 
 ### 🌐 KnocNet: OS-to-OS Communication Network
 KnocOS machines communicate **directly with each other** (peer-to-peer), without a central server.
@@ -127,129 +131,110 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Roadmap: From Kernel to AI-OS
+## 4. Where KnocOS Is Today (v0.19.0)
 
-Where KnocOS is **today**: boot, logging, physical pages, Sv39 paging, kernel heap, timer interrupts forwarded to the kernel, a Supervisor-mode trap handler, the PLIC interrupt controller, interrupt-driven keyboard input, a device driver model, a virtio-blk disk driver with permanent storage, processes with an **AI-aware scheduler**, an **AI space on its own CPU core that survives kernel crashes**, **fault containment** and a **warm kernel restart** so the AI never stops, **big memory** (RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks), **user mode + system calls** (capabilities, quotas, a system call trace the AI space reads), **wait queues** and the **KnocFS filesystem** (programs and model files on disk), the **`knocsh` shell**, automated tests and CI (see `README.md`).
+| Area | What works |
+|---|---|
+| **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, virtio disk), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
+| **AI that survives crashes** | The AI space on core 1 (PMP-protected), black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
+| **User space** | U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
+| **Small AI** | File organizer (type + source classifier), anomaly detector with self-healing (`healthd`), memory graph (KnocGraph) |
+| **LLM** | Qwen2.5-0.5B int8 with our own C engine (`ask`), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
+| **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
+| **Quality** | `make test` (7 runs) in CI on every push |
 
-| Stage | Focus | Key deliverables |
-|---|---|---|
-| **1. Kernel foundation** ✅ | Interrupts, traps, processes | ~~Trap handling~~ ✅, ~~timer heartbeat~~ ✅, ~~PLIC~~ ✅, ~~keyboard input~~ ✅, ~~device abstraction~~ ✅, ~~scheduler~~ ✅, ~~context switch~~ ✅, ~~AI-aware classes~~ ✅, ~~crash black box~~ ✅, ~~watchdog~~ ✅, ~~fault containment~~ ✅, ~~warm kernel restart~~ ✅, ~~user mode~~ ✅, ~~syscalls~~ ✅ |
-| **1b. Resilient AI + memory for models** ✅ | Guardian, large RAM | ~~Crash black box~~ ✅, ~~watchdog~~ ✅, ~~isolated AI runtime space~~ ✅, ~~more RAM + large-memory support (2 MiB pages, memory map from the device tree)~~ ✅ |
-| **2. Real OS** | Storage, drivers, userland | ~~virtio disk~~ ✅, virtio net, filesystem, ELF loader, shell, libc |
-| **3. NN runtime** | Small AI inside the OS | Tensor math library (integer/quantized), NN model format, background inference service |
-| **4. First small NNs** | Train & deploy task models | File classifier → auto-organization; embeddings → semantic search; anomaly detector → diagnostics |
-| **5. LLM runtime** | Big local model | Quantized LLM inference (llama.cpp-style), memory-mapped model loading, AI-aware scheduling |
-| **6. Agent & tools** | Universal OS Agent | Tool API, permission/intent security, knowledge layer, context engine |
-| **7. KnocNet** | OS-to-OS network | TCP/IP stack, discovery, encrypted P2P protocol, shared tasks |
-| **8. Compatibility** | Run other platforms' apps | Linux ABI → Windows PE/Win32 → partial macOS Mach-O |
-| **9. Hardware** | Real machines & acceleration | x86-64/ARM64 ports, GPU/NPU drivers, custom RISC-V + FPGA AI accelerator |
-
-### Stage 1 progress
-
-| Step | Status | Why it matters for the AI-OS |
-|---|---|---|
-| Timer interrupts forwarded to the kernel | ✅ Done | The "heartbeat" the scheduler will use to share the CPU between apps, the LLM and background NNs |
-| Supervisor trap handler | ✅ Done | Crashes are reported clearly instead of freezing, which is needed for self-diagnosis later |
-| PLIC + interrupt-driven UART input | ✅ Done | The OS reacts to devices, the base for every driver (disk, network, GPU/NPU) |
-| Power-off driver, automated tests (`make test`), CI | ✅ Done | Every change is checked automatically, the first step toward production quality |
-| Device abstraction | ✅ Done | One common driver interface: the disk, network and GPU/NPU drivers the AI features need all plug in the same way |
-| virtio-blk disk driver | ✅ Done | Permanent storage for files, and later for NN and LLM model files |
-| Processes, context switch, AI-aware scheduler | ✅ Done | AI agent work gets the largest CPU share (60%), interactive work always responds first, background NNs never starve |
-| AI space: black box + watchdog + recovery (v0.8.0) | ✅ Done | Core 1 survives kernel crashes and freezes, diagnoses them, saves a report and recovers |
-| Fault containment + warm kernel restart (v0.9.0) | ✅ Done | A crashing process only kills itself, the AI decides the fix (restart it / disable its driver), and the AI never stops while the kernel restarts from a clean copy |
-| Big memory (v0.10.0) | ✅ Done | Room for real AI models: RAM size from the device tree, a buddy allocator with 1 GiB blocks, 2 MiB megapages, spinlocks, a 256 MiB AI space |
-| User mode + system calls (v0.11.0) | ✅ Done | Programs run in U-mode with their own page tables; checked system calls with capabilities and quotas; the AI sees each program's system calls and won't restart a suspicious one |
-| Wait queues + filesystem (v0.12.0) | ✅ Done | Processes sleep until an event instead of polling; KnocFS stores programs, files and model files (contiguous extents); a host tool copies models onto the disk |
-| Shell (v0.13.0) | ✅ Done | `knocsh`: files, programs, `ps`/`kill`/Ctrl-C, and the AI's view (`crashes`, `ai`) |
-| Agent (v0.18.0) | ✅ Done | `agent`: rules + Qwen tool calling, 12 tools, any app with a manifest, y/n before changes, logged in the memory graph |
-| Self-healing + GraphRAG (v0.17.0) | ✅ Done | `healthd` fixes what it finds (lower priority or stop the program); `ask` answers from the memory graph, health and crash facts |
-| Anomaly detector + first LLM (v0.16.0) | ✅ Done | `healthd` finds leaks, CPU hogs, disk thrashing, spawn storms and a filling disk; `ask` runs Qwen2.5-0.5B with our own engine |
-| Memory graph (v0.15.0) | ✅ Done | Every AI model records what it learns and decides; `memory` in the shell; survives reboots |
-| First AI model in KnocOS (v0.14.0) | ✅ Done | File organizer: an int8 type + source classifier with a rules layer and a `Random/` fallback, running as `/bin/organize` |
-
-README.md Phase 4 (interrupts) and Phase 5 (processes) together make up Stage 1 here.
+**Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
 ---
 
-## 4b. Milestone Roadmap: v0.8 → v1.0
+## 4b. Version History (done)
 
-Each milestone builds on the ones before it. Big milestones are split into sub-steps when we reach them.
+| Version | Date | Milestone |
+|---|---|---|
+| v0.1.0 | 2026-09-10 | First boot: M-mode start, UART output, drop to S-mode |
+| v0.2.0 | 2026-09-13 | Physical pages and Sv39 virtual memory |
+| v0.3.0 | 2026-09-13 | Kernel heap |
+| v0.4.0 | 2026-09-23 | Hardware interrupts and traps: timer, trap handler, PLIC, keyboard input, power-off driver, `make test`, CI |
+| v0.5.0 | 2026-09-23 | Device abstraction (one driver interface) |
+| v0.6.0 | 2026-09-23 | virtio disk driver: permanent storage |
+| v0.7.0 | 2026-09-23 | Processes, context switch, AI-aware scheduler |
+| v0.8.0 | 2026-09-23 | **AI space** on core 1: survives kernel crashes, black box, rule brain, safe mode |
+| v0.9.0 | 2026-09-23 | Fault containment and warm kernel restart: the AI never stops |
+| v0.10.0 | 2026-09-23 | Big memory: RAM from the device tree, buddy allocator, 2 MiB megapages, spinlocks |
+| v0.11.0 | 2026-09-23 | User mode and system calls, capabilities, quotas, system call trace for the AI |
+| v0.12.0 | 2026-09-23 | Wait queues and the KnocFS filesystem; programs and models live on disk |
+| v0.13.0 | 2026-09-23 | The `knocsh` shell |
+| v0.14.0 | 2026-09-24 | First AI model inside KnocOS: the file organizer |
+| v0.15.0 | 2026-09-24 | Memory graph (KnocGraph): one shared memory for every AI model |
+| v0.16.0 | 2026-09-24 | Anomaly detector (`healthd`) and the first LLM inside KnocOS (`ask`, Qwen2.5-0.5B) |
+| v0.17.0 | 2026-09-24 | Self-healing (`healthd` fixes problems) and GraphRAG (`ask` answers from the memory graph) |
+| v0.18.0 | 2026-09-25 | The agent: tools, app manifests, output capture, installed apps, shared LLM engine |
+| v0.19.0 | 2026-09-26 | Shell scripts: variables, if / for / while, `>` and `>>` for every command, `copy` / `move`, startup script, the agent's `run_script` |
 
-### Phase A: AI that survives crashes
+---
 
-| # | Version | Milestone | What we build | Result |
-|---|---|---|---|---|
-| 1 | **v0.8.0** ✅ | **AI space (Guardian core)** | Core 1 runs a protected AI space (PMP-protected memory the kernel can't touch), heartbeat mailbox, crash + freeze detection, black box saved by the AI space, rule brain, reboot / safe mode / boot-loop protection | The kernel crashes and **core 1 keeps running**: it saves the report, diagnoses and recovers |
-| 2 | **v0.9.0** ✅ | Fault containment + warm restart | A crashing process kills only itself, auto-restart of processes, disabling a bad driver on the next boot, the AI space restarting **only the kernel** from a clean copy | **The AI never stops**, even while the kernel restarts |
+## 4c. Roadmap (next)
 
-### Phase B: A real OS foundation
+Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI last**. Each version is one milestone; big ones are split into sub-steps when we reach them.
 
-| # | Version | Milestone | What we build | Result |
-|---|---|---|---|---|
-| 3 | **v0.10.0** ✅ | Big memory | RAM size from the device tree, 2–4 GiB+, 2 MiB megapages, buddy page allocator, spinlocks for 2 cores, bigger AI region | Room for real AI models |
-| 4 | **v0.11.0** ✅ | User mode + system calls | U-mode programs with their own page tables, `ecall` system calls, program loader | A buggy program can't hurt the OS |
-| 5 | **v0.12.0** ✅ | Filesystem (KnocFS) | Files and folders on disk, `open/read/write/close`, a host tool to copy files (models) onto the disk | Files survive reboots, models live on disk |
-| 6 | **v0.13.0** ✅ | Shell + user programs | `knocsh` (`ls`, `cat`, `ps`, `kill`, `devices`, `crashes`, `mem`, `run`), a tiny C library | You type commands |
+### Phase 1: Automation and conversation
 
-### Phase C: The small AI layer
-
-| # | Version | Milestone | What we build | Result |
-|---|---|---|---|---|
-| 7 | **v0.14.0** ✅ | First AI model in KnocOS | File organizer: int8 type + source classifier, rules layer, `Random/` fallback, `/bin/organize` | A neural network sorts Downloads inside KnocOS |
-| 8 | **v0.15.0** ✅ | Memory graph (KnocGraph) | Nodes, links and events on disk, the `graph` system call, `memory` shell commands, every AI model and the AI space write to it | One shared memory the LLM will read later |
-| 9 | **v0.16.0** ✅ | Anomaly detector + first LLM | Kernel telemetry, `healthd` and `health`; Qwen2.5-0.5B int8 with our own C engine, `ask` | The OS notices problems itself, and an LLM runs inside it |
-| 10 | **v0.17.0** ✅ | Self-healing + GraphRAG | `healthd` recover mode, `setclass`, multi-label health model; `ask` retrieves facts from the graph, health and crash reports | The OS fixes itself, and the LLM knows this computer |
-| 10a | **v0.18.0** ✅ | Agent (first form of #19) | Tool registry, app manifests, output capture, Qwen tool-calling loop, y/n gate | The LLM does tasks with any KnocOS app |
-| 10b | v0.19+ | Auto-organize + learning | Watch Downloads, user corrections become training data | The organizer works by itself and learns your files |
-| 11 | v0.18.x | Crash classifier NN | Trained on real crash records from the memory graph, in the AI space | Real AI replaces the rule brain |
-| 12 | v0.19.0 | Context + intent | What you're working on; suspicious program behaviour from system call traces | Context and security models |
-
-### Phase D: A kernel ready for big software
-
-| # | Version | Milestone | What we build |
+| Version | Milestone | What we build | Result |
 |---|---|---|---|
-| 13 | v0.20.0 | Kernel on several cores | e.g. 3 kernel cores + 1 AI core, locks everywhere |
-| 14 | v0.21.0 | C library + porting layer | stdio, malloc, math, time, `mmap`, threads, disk cache, SQLite (the memory graph moves to it) |
-| 15 | v0.22.0 | Fast model loading | Large disk requests straight into program memory |
+| **v0.19.0** ✅ | Shell scripts | `.ksh` scripts in knocsh (variables, `$1`, `$?`, if / else / for / while, `exit`), `>` and `>>` for every command, `copy` / `move`, `/etc/startup.ksh`, the agent's `run_script` tool | You and the agent can automate tasks |
+| v0.20.0 | Chat | `chat`: a conversation with the LLM that remembers what you said; the agent's tools inside the chat | Talk to KnocOS like an assistant |
+| v0.21.0 | Auto-organize + learning | Downloads sorted by themselves; files you move back become training data | The organizer works alone and learns your files |
 
-### Phase E: The LLM "main brain"
+### Phase 2: Smarter small AI
 
-| # | Version | Milestone | What we build |
+| Version | Milestone | What we build | Result |
 |---|---|---|---|
-| 16 | v0.23.0 | LLM runtime | First form done early in v0.16.0 (our own engine instead of a llama.cpp port); next: both cores, speed, bigger Qwen models |
-| 17 | v0.24.0 | Embeddings | Vectors on graph nodes, search by meaning |
-| 18 | v0.25.0 | LLM ↔ memory graph | First form done in v0.17.0 (keyword + name retrieval); next: embeddings and graph walks |
-| 19 | v0.26.0 | Agent + tools + intent security | First form done in v0.18.0 (rules → LLM, tool table, y/n gate); next: scripts, a coding model, undo for every tool |
+| v0.22.0 | Crash classifier NN | A small NN in the AI space trained on crash records from the memory graph | Real AI replaces the rule brain |
+| v0.23.0 | Context + intent security | What you're working on; suspicious program behaviour from system call traces | Context-aware help, and the OS spots misbehaving programs |
 
-### Phase F: Connected
+### Phase 3: A userland for real software
 
-| # | Version | Milestone |
+| Version | Milestone | What we build | Result |
+|---|---|---|---|
+| v0.24.0 | C library | `printf`, `malloc`, files, time, strings, math, a porting layer | Normal C programs can be written for KnocOS |
+| v0.25.0 | Compiler inside KnocOS | Port TinyCC; the agent can write, compile and fix C code | KnocOS builds its own programs; base of the coding agent |
+| v0.26.0 | Kernel on several cores | SMP kernel, locks everywhere, programs on every core | Real multitasking, faster everything |
+
+### Phase 4: Connected
+
+| Version | Milestone | What we build | Result |
+|---|---|---|---|
+| v0.27.0 | Networking | virtio-net driver, TCP/IP, downloading files and models | KnocOS is online |
+| v0.28.0 | KnocNet | Direct, encrypted links between KnocOS machines; shared files and AI jobs | OS-to-OS communication |
+| v0.29.0 | Semantic search | Embeddings on files and graph nodes, search by meaning | "Find the invoice from last month" |
+
+### Phase 5: Other systems' apps
+
+| Version | Milestone | What we build | Result |
+|---|---|---|---|
+| v0.30.0 | Linux app compatibility | Linux ELF loader and system call layer | Linux programs run on KnocOS |
+| later | Windows and macOS | `.exe` (Wine-style), partial macOS | Easy migration |
+
+### Phase 6: Smooth GUI (last)
+
+| Version | Milestone | What we build |
 |---|---|---|
-| 20 | v0.27.0 | virtio-net, TCP/IP, model download |
-| 21 | v0.28.0 | KnocNet: direct links between KnocOS machines |
+| v0.31.0 | Graphics | virtio-gpu framebuffer, pixels, fonts |
+| v0.32.0 | Input | Mouse and keyboard events |
+| v0.33.0 | Window system | Windows, compositing, apps drawing on screen |
+| v0.34.0 | Desktop + AI panel | Desktop, chat with the LLM, memory graph viewer, organizer, health |
 
-### Phase G: Other systems' apps
+### Hardware track (when a board arrives, alongside the phases above)
 
-| # | Version | Milestone |
-|---|---|---|
-| 22 | v0.29.0 | Linux ELF compatibility |
-| | later | Windows `.exe` (Wine-style), partial macOS |
+| Step | What |
+|---|---|
+| Faster LLM | Parallel matrix math on the idle cores (QEMU multi-threaded mode already works), RISC-V vector instructions |
+| Bigger brain | Swap in Qwen2.5 1.5B / 7B / Coder: only a new `.kllm` file and more RAM, no pipeline changes |
+| Real machine | Boot on a RISC-V board (OpenSBI), later x86-64 / ARM64 and GPU/NPU drivers |
 
-### Phase H: Smooth GUI (last)
+### v1.0
 
-The GUI comes after the kernel, the AI layer, the LLM and the agent.
-
-| # | Version | Milestone |
-|---|---|---|
-| 23 | v0.30.0 | Framebuffer: virtio-gpu, pixels, fonts |
-| 24 | v0.31.0 | Input: mouse + keyboard |
-| 25 | v0.32.0 | Window system |
-| 26 | v0.33.0 | Desktop + AI panel (LLM chat, memory graph viewer, organizer, health) |
-
-### Road to v1.0
-Real RISC-V hardware (with OpenSBI), x86-64 / ARM64 ports, RISC-V vector math, GPU/NPU drivers, Linux ABI → Windows `.exe` → partial macOS compatibility, and the full feature list above (semantic file system, auto-organization, OS-wide context, self-healing with rollback).
-
-**Honest notes:** v0.11, v0.16 and v0.17 are the biggest steps. An LLM on QEMU will be slow (QEMU emulates the CPU), so it works as proof first; real speed comes with real hardware.
+Everything above working together on real hardware: an OS that boots, survives its own crashes, organizes and heals itself, talks and acts through a local LLM, connects to other KnocOS machines, runs Linux apps, and has a smooth desktop.
 
 ---
 
@@ -284,7 +269,7 @@ The scheduler treats AI work as a first-class citizen, without letting it freeze
 - **Small NNs** are small enough to run in recovery mode and the guardian: they recognize crash patterns immediately
 - **The big LLM** needs a healthy system: after recovery it reads the black box and explains the problem in plain language
 - **Built in v0.8.0:** Layers 2 and 3 exist as the **AI space** on CPU core 1: PMP-protected memory the kernel can't touch, a heartbeat mailbox, crash and freeze detection, a rule brain (Tier 0), a black box on disk, and reboot / safe mode / boot-loop halt
-- **Built in v0.9.0:** Layer 1 in its first form (**fault containment**: a crashing process stops alone, and the AI space decides whether to restart it or disable the driver it crashed in), and a **warm kernel restart**: the AI space keeps a clean copy of the kernel, stops core 0, restores it and restarts only the kernel, so the AI never goes down. The small NN (v0.15) and later an LLM replace the rule brain in the same place
+- **Built in v0.9.0:** Layer 1 in its first form (**fault containment**: a crashing process stops alone, and the AI space decides whether to restart it or disable the driver it crashed in), and a **warm kernel restart**: the AI space keeps a clean copy of the kernel, stops core 0, restores it and restarts only the kernel, so the AI never goes down. A crash classifier NN (planned for v0.22.0) and later the LLM replace the rule brain in the same place
 
 ---
 
@@ -314,9 +299,9 @@ request / event → Tier 0: rules (no AI, never wrong)
 
 ### Rules
 - **No model is hallucination-free.** The design makes mistakes harmless: closed-set classification, confidence thresholds, grammar-constrained output, verification of results, and grounding in real data
-- **Model-agnostic:** models load from the standard **GGUF** format through a **model registry** (a config that maps roles to model files), so a better model is a file swap, not a code change
-- **Runtime:** our own small int8 runtime for small NNs (Stage 3). A port of **llama.cpp** for big LLMs (Stage 5), which needs a filesystem, memory mapping, threads and a C library
-- **Getting models onto KnocOS:** first by copying them onto the disk image from the host (built in v0.12.0: `make put FILE=model.gguf DEST=/models/model.gguf`), later by downloading them over KnocNet / TCP/IP
+- **Model-agnostic:** built in v0.18.0. LLMs are converted to KnocOS's `.kllm` format (int8, tokenizer inside) by `models/llm/export.py`, and `/etc/llm.model` chooses which one runs, so a better model is a file swap, not a code change
+- **Runtime:** our own small int8 runtime for small NNs (`user/nn.c`, v0.14.0) and our own LLM engine (`user/llm.c`, v0.16.0) instead of a llama.cpp port, which would need a full C library
+- **Getting models onto KnocOS:** copied onto the disk image from the host (`make reset-disk DISK_MB=1024` puts Qwen on it, `make put FILE=... DEST=/models/...` adds others), later downloaded over TCP/IP (v0.27.0)
 
 ---
 
@@ -336,7 +321,7 @@ The Personal Knowledge Layer, built on ideas from open-source AI memory projects
 - **Privacy:** local only, encrypted, only authorized data, and the user can view, edit and delete everything
 - **Connected to the Guardian:** black box crash reports become memories, so the AI remembers past failures when diagnosing
 - **Built in v0.15.0 (first form):** KnocGraph, a knowledge graph in the kernel (4,096 nodes, 16,384 links on KnocFS). The organizer, the AI space (crash reports, verdicts, disabled drivers), the security checks and the kernel (started programs) all write to it; `memory` shows, explains (`memory why FILE`) and forgets. It moves to SQLite + vectors once the C library exists
-- **When:** after the filesystem, user mode and a C library exist (goal.md Stage 6)
+- **Next:** SQLite + vectors after the C library (v0.24.0) and embeddings (v0.29.0)
 
 ---
 

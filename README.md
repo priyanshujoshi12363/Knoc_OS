@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.18.0-blue)
+![Version](https://img.shields.io/badge/version-v0.19.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.18.0 starting
+[INFO] KnocOS v0.19.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,34 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: The Agent (v0.18.0)
+## ✅ Just Completed: Shell Scripts (v0.19.0)
+
+**knocsh can run scripts**, so you and the agent can automate tasks:
+
+```text
+# /home/backup.ksh
+set folder $1
+if exists $folder
+    mkdir /home/backup
+    for f in notes.txt todo.txt
+        copy $folder/$f /home/backup
+    end
+    echo backup of $folder done
+else
+    echo no folder $folder
+end
+```
+```text
+knoc:/$ run /home/backup.ksh /home/Downloads
+```
+
+- Variables (`set`, `$NAME`, `inc`), arguments (`$1`, `$#`), the last exit code (`$?`)
+- `if` / `else` / `end`, `for` / `end`, `while` / `end`, `exit N`; conditions: `exists PATH`, `A == B`, `not ...`, or any command
+- `>` and `>>` for every command and program: `ps > /tmp/ps.txt`
+- `copy` and `move`, and `/etc/startup.ksh` runs at every start
+- The agent can run scripts too (`run_script`): it shows you the script and asks y/n first
+
+## The Agent (v0.18.0)
 
 **The LLM can do things, not only answer.** `agent` gets a task, uses tools and apps, asks you before changing anything, and logs what it did in the memory graph:
 
@@ -238,7 +265,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** shell scripts the agent can write and run, then `chat`.
+**Next up:** `chat`, a conversation with the LLM that remembers what you said.
 
 Recent progress:
 
@@ -264,7 +291,8 @@ Recent progress:
 | `a3adfcf` | Kernel telemetry, the anomaly detector `healthd`, fair sleep locks, faster disk, the Qwen LLM with our own engine (`ask`), version `v0.16.0` |
 | `422d0ba` | Self-healing `healthd` (recover/watch, `setclass`), multi-label health model, GraphRAG for `ask`, prompt prefix cache, version `v0.17.0` |
 | `f2e6d5f` | CI: tests wait for the shell prompt |
-| *(uncommitted)* | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
+| `a6b2983` | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
+| *(uncommitted)* | Shell scripts, redirection for every command, `copy`/`move`, startup script, agent `run_script`, version `v0.19.0` |
 
 What works right now:
 
@@ -288,14 +316,15 @@ What works right now:
 - Self-tests: the disk test writes and reads back a sector, reads text placed in `disk.img` by the host, and increments a boot counter stored on the disk
 - Self-tests: the timer test waits for 5 kernel ticks (1 s timeout, and they must not arrive faster than 10 ms apart), and the trap test runs `ebreak` and checks the handler ran and returned
 
-Next steps:
+Next steps (full list in `goal.md`, section 4c):
 
-- [x] v0.9.0: fault containment (a crashing process only kills itself), process auto-restart, disabling a crashing driver, warm kernel restart by the AI space
-- [x] v0.10.0: big memory (2–4 GiB+) for AI models
-- [x] v0.11.0: user mode + system calls, capabilities, quotas, system call trace for the AI
-- [x] v0.12.0: wait queues, KnocFS filesystem, programs and models on disk
-- [x] v0.13.0: the shell `knocsh`
-- [ ] v0.14.0+: small NN runtime, first trained NNs (see the Milestone Roadmap)
+- [x] v0.14.0 – v0.18.0: file organizer AI, memory graph, anomaly detector, LLM inside KnocOS, self-healing, GraphRAG, the agent
+- [x] v0.19.0: shell scripts
+- [ ] v0.20.0: `chat`
+- [ ] v0.21.0: auto-organize + learning
+- [ ] v0.22.0 – v0.26.0: crash classifier NN, context + intent security, C library, compiler inside KnocOS, kernel on several cores
+- [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
+- [ ] v0.31.0 – v0.34.0: the GUI (last)
 
 ---
 

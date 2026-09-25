@@ -77,7 +77,7 @@ typedef struct guide
 
 static app_t apps[APPS_MAX];
 static int app_count;
-static char output[OUTPUT_MAX];
+static char tool_output[OUTPUT_MAX];
 static char generated[GENERATED_MAX];
 static char system_prompt[6144];
 static llm_prompt_t prompt;
@@ -634,7 +634,7 @@ static int tool_run_app(const call_t *call, text_t *out)
         return refuse(out, "no such app (apps are described in /etc/apps)");
     }
 
-    int pid = spawn_capture(name, args ? args : "");
+    int pid = spawn_capture(name, args ? args : "", 0);
 
     if (pid < 0)
     {
@@ -658,6 +658,80 @@ static int tool_run_app(const call_t *call, text_t *out)
     return 0;
 }
 
+static int tool_run_script(const call_t *call, text_t *out)
+{
+    const char *path = arg(call, "path");
+    const char *args = arg(call, "args");
+    static char command[ARGS_MAX];
+    static char captured_output[4096];
+    text_t c = {command, 0, sizeof(command)};
+
+    add(&c, path);
+
+    if (args && args[0])
+    {
+        add(&c, " ");
+        add(&c, args);
+    }
+
+    int pid = spawn_capture("knocsh", command, 0);
+
+    if (pid < 0)
+    {
+        return refuse(out, "the script could not start");
+    }
+
+    long code = wait(pid);
+    long length = captured(captured_output, sizeof(captured_output));
+
+    add_bytes(out, captured_output, length > 0 ? (int)length : 0);
+    add(out, "\n[exit code ");
+
+    if (code < 0)
+    {
+        add(out, "-");
+        code = -code;
+    }
+
+    add_uint(out, (unsigned long)code);
+    add(out, "]");
+    return 0;
+}
+
+static int script_ok(const char *path)
+{
+    file_stat_t info;
+    unsigned long n = path ? strlen(path) : 0;
+
+    return good_path(path) && n > 4 && strcmp(path + n - 4, ".ksh") == 0 && stat(path, &info) == 0 &&
+           info.type == FILE_TYPE_FILE;
+}
+
+static void show_script(const char *path)
+{
+    static char data[2048];
+    int fd = open(path, O_READ);
+    long got = fd < 0 ? 0 : read(fd, data, sizeof(data) - 1);
+
+    if (fd >= 0)
+    {
+        close(fd);
+    }
+
+    print("\n----- ");
+    print(path);
+    print(" -----\n");
+    write(FD_STDOUT, data, got > 0 ? (unsigned long)got : 0);
+
+    if (got > 0 && data[got - 1] != '\n')
+    {
+        print("\n");
+    }
+
+    print(got == (long)sizeof(data) - 1 ? "... (more)\n" : "");
+    print("-----\n[agent]");
+}
+
 static const tool_t tools[] = {
     {"list_folder", "List the files and folders in a folder", "path", "", RISK_READ, tool_list_folder},
     {"read_file", "Read a text file", "path", "", RISK_READ, tool_read_file},
@@ -675,6 +749,8 @@ static const tool_t tools[] = {
     {"lower_priority", "Move a running program to background priority", "name", "", RISK_CHANGE,
      tool_lower_priority},
     {"run_app", "Run a KnocOS app and read its output", "app,args", "", RISK_CHANGE, tool_run_app},
+    {"run_script", "Run a knocsh script (.ksh file) and read its output", "path,args", "", RISK_CHANGE,
+     tool_run_script},
 };
 
 #define TOOL_COUNT ((int)(sizeof(tools) / sizeof(tools[0])))
@@ -696,6 +772,7 @@ static int optional_param(const char *tool, const char *param)
 {
     return (strcmp(tool, "find_files") == 0 && strcmp(param, "folder") == 0) ||
            (strcmp(tool, "run_app") == 0 && strcmp(param, "args") == 0) ||
+           (strcmp(tool, "run_script") == 0 && strcmp(param, "args") == 0) ||
            (strcmp(tool, "write_file") == 0 && strcmp(param, "text") == 0);
 }
 
@@ -1197,6 +1274,12 @@ static void execute(const call_t *call, text_t *out)
         p = saved ? end + 1 : end;
     }
 
+    if (!missing && tool->run == tool_run_script && !script_ok(arg(call, "path")))
+    {
+        add(out, "error: path must be an existing .ksh script");
+        missing = 1;
+    }
+
     if (!missing && tool->run == tool_run_app && !find_app(arg(call, "app")))
     {
         add(out, "error: no such app (apps are described in /etc/apps)");
@@ -1218,6 +1301,11 @@ static void execute(const call_t *call, text_t *out)
 
     print("[agent] ");
     describe_call(call);
+
+    if (tool->run == tool_run_script)
+    {
+        show_script(arg(call, "path"));
+    }
 
     if (risk == RISK_CHANGE && !ask_user())
     {
@@ -1249,7 +1337,7 @@ static void execute(const call_t *call, text_t *out)
         graph_record(GRAPH_KIND_ACTOR, "agent", GRAPH_REL_ACTION, GRAPH_KIND_ACTION, action, 100);
     }
 
-    if (tool->run != tool_run_app)
+    if (tool->run != tool_run_app && tool->run != tool_run_script)
     {
         print(out->data);
         print("\n");
@@ -1550,9 +1638,9 @@ static int run_calls(call_t *calls, int count, int feed)
 {
     for (int i = 0; i < count; i++)
     {
-        text_t out = {output, 0, sizeof(output)};
+        text_t out = {tool_output, 0, sizeof(tool_output)};
 
-        output[0] = 0;
+        tool_output[0] = 0;
         execute(&calls[i], &out);
 
         if (feed)
@@ -1560,7 +1648,7 @@ static int run_calls(call_t *calls, int count, int feed)
             char observation[OBSERVATION_MAX + 1];
             int length = out.length < OBSERVATION_MAX ? out.length : OBSERVATION_MAX;
 
-            memcpy(observation, output, (unsigned long)length);
+            memcpy(observation, tool_output, (unsigned long)length);
             observation[length] = 0;
 
             if ((i == 0 && (llm_feed_special(LLM_IM_START) != 0 || llm_feed_text("user\n") != 0)) ||

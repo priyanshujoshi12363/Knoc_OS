@@ -2,6 +2,28 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.19.0] - 2026-09-26
+
+Shell scripts: you and the agent can automate tasks.
+
+### Added
+- knocsh runs scripts (`run FILE.ksh [ARGS]`, or a path / `.ksh` name as the command) and `knocsh FILE [ARGS]` runs one without a prompt
+  - Variables: `set NAME VALUE`, `$NAME`, `inc NAME [N]`, `set` alone lists them; `\$` for a plain dollar sign
+  - Arguments: `$1` to `$9`, `$#`; the last exit code: `$?`
+  - `if COND` / `else` / `end`, `for X in A B C` / `end`, `while COND` / `end`, `exit N`, `# comments`
+  - Conditions: `exists PATH`, `A == B`, `A != B`, `not COND`, or any command (true when it exits with 0)
+  - Safety: a `while` loop stops after 10,000 rounds, scripts nest at most 4 deep, and Ctrl-C on a program stops the whole script
+- `COMMAND > FILE` and `COMMAND >> FILE` for every built-in command and program
+- `copy FROM TO` (`cp`) and `move FROM TO` (`mv`); a folder as the target keeps the file name
+- `/etc/startup.ksh` runs when the shell starts
+- Built-in commands, unknown commands and programs set the exit code
+- Agent tool `run_script(path, args)`: shows the whole script, asks y/n, runs it with `knocsh FILE` and reads its output
+- Quiet output capture (`spawn_capture(name, args, quiet)`): the output goes only to the program that asked for it; the user library can switch where `print` writes (`set_output`)
+- `make test` Run 7: every script feature, redirection, the startup script and the agent running a script
+
+### Changed
+- A shell started with a script file doesn't take over the terminal
+
 ## [0.18.0] - 2026-09-25
 
 The agent: the LLM can use tools and apps, and asks before it changes anything.

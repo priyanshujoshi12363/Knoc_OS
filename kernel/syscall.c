@@ -222,8 +222,10 @@ static int64_t console_write(uintptr_t buffer, uint64_t length)
             return written > 0 ? (int64_t)written : E_FAULT;
         }
 
-        device_write(console, chunk, size);
-        process_capture(chunk, size);
+        if (!process_capture(chunk, size))
+        {
+            device_write(console, chunk, size);
+        }
         written += size;
     }
 
@@ -695,7 +697,7 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
     return knocfs_remove(path);
 }
 
-static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int capture)
+static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int capture, int quiet)
 {
     char name[PROCESS_NAME_MAX];
     char args[ARGS_MAX];
@@ -724,7 +726,7 @@ static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int cap
         return E_NOTFOUND;
     }
 
-    int pid = capture ? process_spawn_capture(program, args) : process_spawn_args(program, args);
+    int pid = capture ? process_spawn_capture(program, args, quiet) : process_spawn_args(program, args);
 
     return pid < 0 ? E_NOMEM : pid;
 }
@@ -815,7 +817,7 @@ int64_t syscall_handle(trap_frame_t *frame)
             return E_PERM;
         }
 
-        return sys_spawn(frame->a0, frame->a1, 0);
+        return sys_spawn(frame->a0, frame->a1, 0, 0);
 
     case SYS_SPAWN_CAPTURE:
         if (!allowed(number, CAP_SPAWN))
@@ -823,7 +825,7 @@ int64_t syscall_handle(trap_frame_t *frame)
             return E_PERM;
         }
 
-        return sys_spawn(frame->a0, frame->a1, 1);
+        return sys_spawn(frame->a0, frame->a1, 1, frame->a2 != 0);
 
     case SYS_CAPTURED:
     {

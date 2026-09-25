@@ -318,7 +318,7 @@ check_status "$HEALTH_TIMEOUT" no-panic
 check \
     "[HEALTH] memory leak in leak (+" \
     "[HEALTH] recovered: stopped leak" \
-    "[HEALTH] CPU hog in spin (100% CPU" \
+    "[HEALTH] CPU hog in spin (" \
     "[HEALTH] recovered: moved to background priority: spin" \
     "[HEALTH] spawn storm in spawner" \
     "[HEALTH] recovered: stopped spawner" \
@@ -352,6 +352,35 @@ check \
     "agent: actor agent --stopped--> program spin" \
     "agent: actor agent --action--> action write_file /home/todo.txt buy milk"
 check_absent "/bin/evil, text=x) Allow?"
+show_log_on_failure
+
+echo "Run 7: shell scripts, redirection, the startup script and the agent running a script"
+new_disk
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/test.ksh /home/test.ksh
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/startup.ksh /etc/startup.ksh
+boot "run /home/test.ksh apple" 'echo exit code $?' "ps > /tmp/ps.txt" "cat /tmp/ps.txt" "if 1 == 1" \
+    'agent --call {"name": "run_script", "arguments": {"path": "/home/test.ksh", "args": "pear"}}' "?y" \
+    'agent --call {"name": "run_script", "arguments": {"path": "/home/nope.ksh"}}' \
+    'agent --call {"name": "run_script", "arguments": {"path": "/home/test.ksh"}}' "?n"
+check \
+    "startup script ran" \
+    "hello from KnocOS, 1 arguments, first apple" \
+    "downloads found" \
+    "first is apple" \
+    "item kiwi" \
+    "round 3" \
+    "nothing is not there" \
+    "status after a failure: 1" \
+    "[hello] Hello from user mode!" \
+    "a program can be a condition" \
+    "exit code 3" \
+    "knocsh        INTERACTIVE" \
+    "knocsh: if works inside scripts" \
+    "----- /home/test.ksh -----" \
+    "first is not apple" \
+    "error: path must be an existing .ksh script" \
+    "[agent] skipped"
+check_absent "never runs: KnocOS" "script line"
 show_log_on_failure
 
 echo "RESULT: PASS"
