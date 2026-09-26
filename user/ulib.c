@@ -139,6 +139,16 @@ long random_bytes(void *buffer, unsigned long length)
     return syscall(SYS_GETRANDOM, (long)buffer, (long)length, 0);
 }
 
+int tcp_listen(unsigned int port)
+{
+    return (int)syscall(SYS_TCP_LISTEN, (long)port, 0, 0);
+}
+
+int tcp_accept(int listener, unsigned int *remote, unsigned long timeout)
+{
+    return (int)syscall(SYS_TCP_ACCEPT, listener, (long)remote, (long)timeout);
+}
+
 int chdir(const char *path)
 {
     return (int)syscall(SYS_CHDIR, (long)path, 0, 0);

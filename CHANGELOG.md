@@ -2,6 +2,23 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.29.0] - 2026-09-27
+
+KnocNet: KnocOS machines talk to each other over encrypted links.
+
+### Added
+- `knocnet`: `id`, `name`, `pair wait [CODE]` / `pair ADDRESS CODE`, `peers`, `unpair`, `ping`, `status`, `send`, `get`, `ask`, `selftest`
+- `knocnetd`, a daemon on an AI core that listens on port 7000 and serves trusted machines: status, files received into `/home/KnocNet/NAME/`, files fetched only from `/home/Shared/`, questions answered by the local AI (`ask`); every event is logged as `[KNOCNET] ...`
+- Each machine has its own identity: an ECDSA P-256 key made on first start (`/etc/knocnet/identity`), shown as a fingerprint
+- The link: a handshake with a fresh X25519 key exchange on every connection (forward secrecy), both machines prove their identity by signing the handshake, keys derived with HKDF-SHA256, every message encrypted and checked with ChaCha20-Poly1305; a changed message is rejected
+- Pairing with a one-time code: one machine opens a pairing window (`knocnet pair wait`), the other connects with the code; after that, machines know each other by key, and a machine that shows a different key is refused
+- The kernel can accept TCP connections: `tcp_listen` and `tcp_accept` system calls, a `SYN_RCVD` state, unaccepted connections are dropped after 30 s
+- App manifest for `knocnet`, so the agent can use other machines
+- `make test` Run 17: two KnocOS machines at once; refused before pairing, a wrong code refused, pairing, ping, status, sending and fetching files, a refused fetch outside `/home/Shared/`, a question to the other AI, and refused again after unpairing
+
+### Fixed
+- The network system calls use a buffer per call, so two programs sending and receiving at the same time can't mix their data
+
 ## [0.28.0] - 2026-09-27
 
 KnocOS runs on 8 cores: 4 for the kernel and programs, 4 for AI.

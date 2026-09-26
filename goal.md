@@ -132,18 +132,18 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.28.0)
+## 4. Where KnocOS Is Today (v0.29.0)
 
 | Area | What works |
 |---|---|
 | **Kernel** | Boot on RISC-V (QEMU `virt`, 8 cores: 4 general, 3 AI, 1 AI space, 2 GiB), a multi-core kernel with a big kernel lock and wake-up signals between cores, threads, Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, real-time clock, virtio disk, network and random numbers), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
 | **AI that survives crashes** | The AI space on core 4 (PMP-protected), a crash classifier NN inside it, black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
-| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 42 system calls, threads (`pthread`), capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
+| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 44 system calls, threads (`pthread`), capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | File organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing and a live permission watch (`healthd`), memory graph (KnocGraph) with your work context |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine, matrix math on the 3 AI cores; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Network** | virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP, `/etc/hosts`), HTTPS with BearSSL, `net`, `ping`, `fetch`, the `web` text browser, a `NET` capability |
-| **Quality** | `make test` (16 runs) in CI on every push |
+| **Network** | virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP, `/etc/hosts`), HTTPS with BearSSL, `net`, `ping`, `fetch`, the `web` text browser, a `NET` capability; KnocNet: paired machines, encrypted links, files and AI questions between KnocOS machines |
+| **Quality** | `make test` (17 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -181,6 +181,7 @@ People can move to KnocOS without losing their software.
 | v0.27.0 | 2026-09-26 | Networking: virtio-net, TCP/IP in the kernel, `net` / `ping` / `fetch` (v0.26.0 SMP comes later) |
 | v0.27.1 | 2026-09-27 | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts` |
 | v0.28.0 | 2026-09-27 | 8 cores: 4 kernel, AI space, 3 AI cores; big kernel lock, threads and `pthread`, the LLM on 3 cores, `cpus` |
+| v0.29.0 | 2026-09-27 | KnocNet: pairing with a code, encrypted links (X25519, ECDSA, ChaCha20-Poly1305), files and AI questions between machines, TCP servers in the kernel |
 
 ---
 
@@ -217,7 +218,7 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 |---|---|---|---|
 | **v0.27.0** ✅ | Networking | virtio-net driver, TCP/IP, downloading files and models | KnocOS is online |
 | **v0.27.1** ✅ | HTTPS + text browser | BearSSL TLS, certificate checks, `web` browser with search, clock and random devices | The whole web is readable from KnocOS |
-| v0.29.0 | KnocNet | Direct, encrypted links between KnocOS machines; shared files and AI jobs | OS-to-OS communication |
+| **v0.29.0** ✅ | KnocNet | Direct, encrypted links between KnocOS machines; shared files and AI jobs | OS-to-OS communication |
 | v0.30.0 | Semantic search | Embeddings on files and graph nodes, search by meaning | "Find the invoice from last month" |
 
 ### Phase 5: Other systems' apps

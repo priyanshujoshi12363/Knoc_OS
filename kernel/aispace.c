@@ -640,6 +640,8 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_GETRANDOM] = "getrandom",
         [SYS_CPUINFO] = "cpuinfo",
         [SYS_THREAD] = "thread",
+        [SYS_TCP_LISTEN] = "tcp_listen",
+        [SYS_TCP_ACCEPT] = "tcp_accept",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

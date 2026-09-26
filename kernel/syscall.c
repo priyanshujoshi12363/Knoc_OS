@@ -14,6 +14,7 @@
 #include "memgraph.h"
 #include "telemetry.h"
 #include "net.h"
+#include "heap.h"
 #include "rtc.h"
 #include "virtio_rng.h"
 
@@ -66,6 +67,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_GETRANDOM] = "getrandom",
     [SYS_CPUINFO] = "cpuinfo",
     [SYS_THREAD] = "thread",
+    [SYS_TCP_LISTEN] = "tcp_listen",
+    [SYS_TCP_ACCEPT] = "tcp_accept",
 };
 
 const char *syscall_name(uint64_t number)
@@ -171,8 +174,6 @@ static int allowed(uint64_t number, uint32_t capability);
 
 static int64_t sys_net(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2)
 {
-    static uint8_t chunk[NET_CHUNK];
-
     if (!allowed(number, CAP_NET))
     {
         return E_PERM;
@@ -221,26 +222,50 @@ static int64_t sys_net(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2)
         return net_close((int)a0);
     }
 
-    uint64_t length = a2 < NET_CHUNK ? a2 : NET_CHUNK;
-
-    if (number == SYS_TCP_SEND)
+    if (number == SYS_TCP_LISTEN)
     {
-        if (copy_from_user(chunk, a1, length) != 0)
+        return net_listen((uint32_t)a0);
+    }
+
+    if (number == SYS_TCP_ACCEPT)
+    {
+        uint32_t remote = 0;
+        int64_t handle = net_accept((int)a0, &remote, a2);
+
+        if (handle > 0 && a1 != 0 && copy_to_user(a1, &remote, sizeof(remote)) != 0)
         {
+            net_close((int)handle);
             return E_FAULT;
         }
 
-        return net_send((int)a0, chunk, length);
+        return handle;
     }
 
-    int64_t got = net_recv((int)a0, chunk, length);
+    uint64_t length = a2 < NET_CHUNK ? a2 : NET_CHUNK;
+    uint8_t *chunk = kmalloc(NET_CHUNK);
+    int64_t result;
 
-    if (got > 0 && copy_to_user(a1, chunk, (uint64_t)got) != 0)
+    if (!chunk)
     {
-        return E_FAULT;
+        return E_NOMEM;
     }
 
-    return got;
+    if (number == SYS_TCP_SEND)
+    {
+        result = copy_from_user(chunk, a1, length) != 0 ? E_FAULT : net_send((int)a0, chunk, length);
+    }
+    else
+    {
+        result = net_recv((int)a0, chunk, length);
+
+        if (result > 0 && copy_to_user(a1, chunk, (uint64_t)result) != 0)
+        {
+            result = E_FAULT;
+        }
+    }
+
+    kfree(chunk);
+    return result;
 }
 
 static int64_t sys_chdir(uintptr_t address)
@@ -1091,6 +1116,8 @@ int64_t syscall_handle(trap_frame_t *frame)
     case SYS_TCP_SEND:
     case SYS_TCP_RECV:
     case SYS_TCP_CLOSE:
+    case SYS_TCP_LISTEN:
+    case SYS_TCP_ACCEPT:
         return sys_net(number, frame->a0, frame->a1, frame->a2);
 
     case SYS_CHDIR:

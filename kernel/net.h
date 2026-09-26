@@ -15,5 +15,7 @@ int64_t net_connect(uint32_t address, uint32_t port);
 int64_t net_send(int handle, const uint8_t *data, uint64_t length);
 int64_t net_recv(int handle, uint8_t *data, uint64_t length);
 int64_t net_close(int handle);
+int64_t net_listen(uint32_t port);
+int64_t net_accept(int handle, uint32_t *remote, uint64_t timeout);
 
 #endif

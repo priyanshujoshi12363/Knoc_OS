@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.28.0-blue)
+![Version](https://img.shields.io/badge/version-v0.29.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.28.0 starting
+[INFO] KnocOS v0.29.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 8 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,31 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: 8 Cores, 4 for the Kernel and 4 for AI (v0.28.0)
+## ✅ Just Completed: KnocNet (v0.29.0)
+
+**KnocOS machines talk to each other, encrypted.** Pair two machines once with a code, then send files, fetch shared files, check each other's health, and ask the other machine's AI:
+
+```text
+beta$  knocnet pair wait
+Pairing code: 424242 (valid 120 s). On the other KnocOS run:
+  knocnet pair ADDRESS-OF-THIS-MACHINE 424242
+
+alpha$ knocnet pair 10.0.2.2:41523 424242
+paired with beta (e221-3f9e-6a35-96eb) at 10.0.2.2:41523
+alpha$ knocnet status beta
+beta: up 20 s, RAM 1787 of 2048 MiB free, disk 51 of 62 MiB free, AI space online, 0 kernel crashes, 0 warm restarts
+alpha$ knocnet send beta /home/note.txt
+sent note.txt (19 bytes) to beta: SAVED /home/KnocNet/alpha/note.txt 19
+alpha$ knocnet get beta /home/Shared/shared.txt /home/got.txt
+alpha$ knocnet ask beta what is 2+2
+```
+
+- Every machine has its own key (fingerprint shown by `knocnet id`); after pairing, machines trust each other by key, not by address
+- Every connection makes fresh keys (X25519), both sides sign the handshake (ECDSA P-256), and every message is encrypted and checked (ChaCha20-Poly1305)
+- `knocnetd` runs on an AI core and serves trusted machines: files arrive in `/home/KnocNet/NAME/`, only `/home/Shared/` can be fetched
+- Two machines under QEMU: start the second with a port forward (`-netdev user,id=net0,hostfwd=tcp::7001-:7000`) and pair to `10.0.2.2:7001`
+
+## 8 Cores, 4 for the Kernel and 4 for AI (v0.28.0)
 
 **KnocOS runs programs on several cores at the same time, and the AI has its own cores.**
 
@@ -485,7 +509,8 @@ Recent progress:
 | `a1f8493` | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
 | `677c7e7` | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
 | `3d801e2` | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
-| *(uncommitted)* | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
+| `6814f5d` | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
+| *(uncommitted)* | KnocNet: pairing, encrypted links, files and AI questions between machines, TCP servers, version `v0.29.0` |
 
 What works right now:
 
@@ -522,7 +547,8 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.27.0: networking
 - [x] v0.27.1: HTTPS + text browser
 - [x] v0.28.0: kernel on 8 cores (4 kernel + 4 AI)
-- [ ] v0.29.0 – v0.31.0: KnocNet, semantic search, Linux apps
+- [x] v0.29.0: KnocNet
+- [ ] v0.30.0 – v0.31.0: semantic search, Linux apps
 - [ ] v0.32.0 – v0.35.0: the GUI (last)
 
 ---

@@ -1494,7 +1494,7 @@ static void folder_part(const char *path, char *out)
 static int system_program(const char *name)
 {
     return strcmp(name, "knocsh") == 0 || strcmp(name, "healthd") == 0 || strcmp(name, "organized") == 0 ||
-           strcmp(name, "recorder") == 0;
+           strcmp(name, "recorder") == 0 || strcmp(name, "knocnetd") == 0;
 }
 
 static void tally_print(const char *title, tally_t *items, const char *unit)
@@ -1693,6 +1693,7 @@ static void cmd_help(void)
     print("Code:      tcc FILE.c -o NAME  then ./NAME   (C compiler with the standard C library)\n");
     print("Network:   net  ping HOST [COUNT]  fetch URL [FILE]  web URL  web -s WORDS  date\n");
     print("           (http:// and https://; KnocOS is 10.0.2.15, your PC is 10.0.2.2 = host)\n");
+    print("KnocNet:   knocnet id | pair wait | pair ADDRESS CODE | peers | ping | status | send | get | ask\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 

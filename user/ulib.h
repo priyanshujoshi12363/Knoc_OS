@@ -39,6 +39,8 @@ int tcp_connect(unsigned int address, unsigned int port);
 long tcp_send(int handle, const void *data, unsigned long length);
 long tcp_recv(int handle, void *data, unsigned long length);
 int tcp_close(int handle);
+int tcp_listen(unsigned int port);
+int tcp_accept(int listener, unsigned int *remote, unsigned long timeout);
 long realtime(void);
 long random_bytes(void *buffer, unsigned long length);
 long getcwd_raw(char *buffer, unsigned long length);

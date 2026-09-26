@@ -45,6 +45,8 @@
 #define CLOSE_TICKS 300
 #define DNS_PORT_BASE 53000
 #define EPHEMERAL_BASE 49152
+#define LISTEN_MAX 4
+#define ACCEPT_WAIT_TICKS 3000
 
 typedef enum
 {
@@ -54,8 +56,16 @@ typedef enum
     TCP_FIN_WAIT_1,
     TCP_FIN_WAIT_2,
     TCP_CLOSE_WAIT,
-    TCP_LAST_ACK
+    TCP_LAST_ACK,
+    TCP_SYN_RCVD
 } tcp_state_t;
+
+typedef struct listener
+{
+    int used;
+    int owner;
+    uint16_t port;
+} listener_t;
 
 typedef struct arp_entry
 {
@@ -87,6 +97,8 @@ typedef struct conn
     uint32_t rx_count;
     uint8_t tx[TX_SIZE];
     uint32_t tx_count;
+    int listener;
+    uint64_t created_at;
 } conn_t;
 
 static spinlock_t net_lock = SPINLOCK_INIT;
@@ -94,6 +106,7 @@ static uint8_t local_mac[6];
 static int up;
 static arp_entry_t arp_table[ARP_MAX];
 static conn_t conns[CONN_MAX];
+static listener_t listeners[LISTEN_MAX];
 static uint16_t next_port = EPHEMERAL_BASE;
 static uint16_t ip_id = 1;
 static uint64_t stats[4];
@@ -395,6 +408,65 @@ static void conn_free(conn_t *c)
     c->used = 0;
     c->state = TCP_CLOSED;
     c->owner = 0;
+    c->listener = 0;
+}
+
+static void conn_reset(conn_t *c)
+{
+    c->peer_window = MSS;
+    c->peer_closed = 0;
+    c->error = 0;
+    c->closed_at = 0;
+    c->retries = 0;
+    c->rx_head = 0;
+    c->rx_count = 0;
+    c->tx_count = 0;
+    c->listener = 0;
+    c->created_at = timer_ticks();
+}
+
+static void tcp_passive_open(uint32_t src, uint16_t sport, uint16_t dport, uint32_t seq)
+{
+    int listener = 0;
+
+    for (int i = 0; i < LISTEN_MAX; i++)
+    {
+        if (listeners[i].used && listeners[i].port == dport)
+        {
+            listener = i + 1;
+        }
+    }
+
+    if (!listener)
+    {
+        return;
+    }
+
+    for (int i = 0; i < CONN_MAX; i++)
+    {
+        conn_t *c = &conns[i];
+
+        if (c->used)
+        {
+            continue;
+        }
+
+        conn_reset(c);
+        c->used = 1;
+        c->owner = 0;
+        c->listener = listener;
+        c->state = TCP_SYN_RCVD;
+        c->remote_ip = src;
+        c->remote_port = sport;
+        c->local_port = dport;
+        c->iss = (uint32_t)(timer_read() * 2654435761UL);
+        c->snd_una = c->iss;
+        c->snd_nxt = c->iss + 1;
+        c->rcv_nxt = seq + 1;
+        c->last_send = timer_ticks();
+        tcp_send_segment(c, TCP_SYN | TCP_ACK, c->iss, 0, 0);
+        return;
+    }
 }
 
 static void tcp_input(uint32_t src, const uint8_t *seg, uint32_t length)
@@ -424,8 +496,18 @@ static void tcp_input(uint32_t src, const uint8_t *seg, uint32_t length)
         }
     }
 
-    if (!c || header < 20 || header > length)
+    if (header < 20 || header > length)
     {
+        return;
+    }
+
+    if (!c)
+    {
+        if ((flags & (TCP_SYN | TCP_ACK | TCP_RST)) == TCP_SYN)
+        {
+            tcp_passive_open(src, sport, dport, seq);
+        }
+
         return;
     }
 
@@ -445,6 +527,25 @@ static void tcp_input(uint32_t src, const uint8_t *seg, uint32_t length)
     }
 
     c->peer_window = get16(seg + 14);
+
+    if (c->state == TCP_SYN_RCVD)
+    {
+        if (flags & TCP_SYN)
+        {
+            tcp_send_segment(c, TCP_SYN | TCP_ACK, c->iss, 0, 0);
+            return;
+        }
+
+        if (!(flags & TCP_ACK) || ack != c->iss + 1)
+        {
+            return;
+        }
+
+        c->snd_una = ack;
+        c->state = TCP_ESTABLISHED;
+        c->retries = 0;
+        process_wake(&listeners[c->listener - 1]);
+    }
 
     if (c->state == TCP_SYN_SENT)
     {
@@ -727,6 +828,13 @@ void net_tick(void)
             continue;
         }
 
+        if (!c->owner && c->listener && now - c->created_at > ACCEPT_WAIT_TICKS)
+        {
+            tcp_send_segment(c, TCP_RST | TCP_ACK, c->snd_nxt, 0, 0);
+            conn_free(c);
+            continue;
+        }
+
         if (c->snd_una == c->snd_nxt || now - c->last_send < RTO_TICKS)
         {
             continue;
@@ -749,6 +857,10 @@ void net_tick(void)
         if (c->state == TCP_SYN_SENT)
         {
             tcp_send_segment(c, TCP_SYN, c->iss, 0, 0);
+        }
+        else if (c->state == TCP_SYN_RCVD)
+        {
+            tcp_send_segment(c, TCP_SYN | TCP_ACK, c->iss, 0, 0);
         }
         else if (c->state == TCP_FIN_WAIT_1 || c->state == TCP_LAST_ACK)
         {
@@ -791,7 +903,7 @@ static void close_locked(conn_t *c)
         tcp_send_segment(c, TCP_FIN | TCP_ACK, c->snd_nxt, 0, 0);
         c->snd_nxt++;
     }
-    else if (c->state == TCP_CLOSED || c->state == TCP_SYN_SENT)
+    else if (c->state == TCP_CLOSED || c->state == TCP_SYN_SENT || c->state == TCP_SYN_RCVD)
     {
         conn_free(c);
     }
@@ -809,7 +921,122 @@ void net_release(int pid)
         }
     }
 
+    for (int i = 0; i < LISTEN_MAX; i++)
+    {
+        if (listeners[i].used && listeners[i].owner == pid)
+        {
+            listeners[i].used = 0;
+
+            for (int j = 0; j < CONN_MAX; j++)
+            {
+                if (conns[j].used && !conns[j].owner && conns[j].listener == i + 1)
+                {
+                    tcp_send_segment(&conns[j], TCP_RST | TCP_ACK, conns[j].snd_nxt, 0, 0);
+                    conn_free(&conns[j]);
+                }
+            }
+        }
+    }
+
     spin_unlock(&net_lock, interrupts);
+}
+
+int64_t net_listen(uint32_t port)
+{
+    if (!up)
+    {
+        return E_NETDOWN;
+    }
+
+    if (port == 0 || port > 65535)
+    {
+        return E_INVAL;
+    }
+
+    uint64_t interrupts = spin_lock(&net_lock);
+    int64_t result = E_NOMEM;
+
+    for (int i = 0; i < LISTEN_MAX; i++)
+    {
+        if (listeners[i].used && listeners[i].port == port)
+        {
+            spin_unlock(&net_lock, interrupts);
+            return E_EXISTS;
+        }
+    }
+
+    for (int i = 0; i < LISTEN_MAX; i++)
+    {
+        if (!listeners[i].used)
+        {
+            listeners[i].used = 1;
+            listeners[i].owner = process_current_pid();
+            listeners[i].port = (uint16_t)port;
+            result = i + 1;
+            break;
+        }
+    }
+
+    spin_unlock(&net_lock, interrupts);
+    return result;
+}
+
+int64_t net_accept(int handle, uint32_t *remote, uint64_t timeout)
+{
+    if (handle < 1 || handle > LISTEN_MAX)
+    {
+        return E_BADF;
+    }
+
+    listener_t *l = &listeners[handle - 1];
+
+    if (!l->used || l->owner != process_current_pid())
+    {
+        return E_BADF;
+    }
+
+    uint64_t deadline = timeout ? timer_ticks() + timeout : 0;
+
+    while (1)
+    {
+        uint64_t interrupts = spin_lock(&net_lock);
+
+        for (int i = 0; i < CONN_MAX; i++)
+        {
+            conn_t *c = &conns[i];
+
+            if (c->used && !c->owner && c->listener == handle && c->state != TCP_SYN_RCVD)
+            {
+                c->owner = process_current_pid();
+                c->listener = 0;
+                *remote = c->remote_ip;
+                spin_unlock(&net_lock, interrupts);
+                return i + 1;
+            }
+        }
+
+        spin_unlock(&net_lock, interrupts);
+
+        if (deadline && timer_ticks() >= deadline)
+        {
+            return E_TIMEOUT;
+        }
+
+        uint64_t enabled = irq_save();
+        int ready = 0;
+
+        for (int i = 0; i < CONN_MAX; i++)
+        {
+            ready |= conns[i].used && !conns[i].owner && conns[i].listener == handle && conns[i].state != TCP_SYN_RCVD;
+        }
+
+        if (!ready)
+        {
+            process_block(l, deadline ? deadline - timer_ticks() : 100);
+        }
+
+        irq_restore(enabled);
+    }
 }
 
 void net_info(net_info_t *info)
@@ -1219,14 +1446,7 @@ int64_t net_connect(uint32_t address, uint32_t port)
     c->snd_una = c->iss;
     c->snd_nxt = c->iss + 1;
     c->rcv_nxt = 0;
-    c->peer_window = MSS;
-    c->peer_closed = 0;
-    c->error = 0;
-    c->closed_at = 0;
-    c->retries = 0;
-    c->rx_head = 0;
-    c->rx_count = 0;
-    c->tx_count = 0;
+    conn_reset(c);
     tcp_send_segment(c, TCP_SYN, c->iss, 0, 0);
     spin_unlock(&net_lock, interrupts);
 

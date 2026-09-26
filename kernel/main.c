@@ -465,6 +465,13 @@ static void console_process(void *arg)
         health_started = 1;
         process_spawn(program_find("healthd"));
         process_spawn(program_find("organized"));
+
+        const program_t *knocnetd = program_installed("knocnetd");
+
+        if (knocnetd)
+        {
+            process_spawn(knocnetd);
+        }
     }
 
     if (!tty_has_owner() && process_spawn(program_find("knocsh")) < 0)

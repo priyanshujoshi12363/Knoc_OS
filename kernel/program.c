@@ -175,6 +175,13 @@ static const program_t *install(const char *path)
     program->capabilities = INSTALLED_CAPABILITIES | (path[0] == '/' && path[1] == 'b' && path[2] == 'i' && path[3] == 'n' && path[4] == '/' ? CAP_NET : 0);
     program->flags = 0;
     program->path = installed_paths[installed_count];
+
+    if (names_equal(name, "knocnetd"))
+    {
+        program->process_class = PROCESS_CLASS_BACKGROUND;
+        program->capabilities |= CAP_SPAWN | CAP_SYSTEM | CAP_KNOWLEDGE;
+    }
+
     installed_count++;
     return program;
 }

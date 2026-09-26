@@ -47,7 +47,9 @@
 #define SYS_GETRANDOM 39
 #define SYS_CPUINFO 40
 #define SYS_THREAD 41
-#define SYS_COUNT 42
+#define SYS_TCP_LISTEN 42
+#define SYS_TCP_ACCEPT 43
+#define SYS_COUNT 44
 
 #define RANDOM_MAX 256
 

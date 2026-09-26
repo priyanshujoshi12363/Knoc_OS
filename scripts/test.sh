@@ -8,10 +8,12 @@ HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-80}
 LOG=$(mktemp)
 DISK=$(mktemp)
+LOG2=$(mktemp)
+DISK2=$(mktemp)
 WWW=$(mktemp -d)
 WEB_PID=""
 TLS_PID=""
-trap 'rm -f "$LOG" "$DISK"; rm -rf "$WWW"; [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null; [ -n "$TLS_PID" ] && kill "$TLS_PID" 2>/dev/null' EXIT
+trap 'rm -f "$LOG" "$DISK" "$LOG2" "$DISK2"; rm -rf "$WWW"; [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null; [ -n "$TLS_PID" ] && kill "$TLS_PID" 2>/dev/null' EXIT
 
 FAILED=0
 
@@ -137,7 +139,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocnetd knocnet knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -624,6 +626,66 @@ if [ "$ONLINE_TWICE" -ge 2 ]; then
 else
     echo "  MISS all kernel cores came back after the warm restart"
     FAILED=1
+fi
+show_log_on_failure
+
+echo "Run 17: KnocNet: two KnocOS machines pair, then talk over an encrypted link"
+new_disk
+./scripts/mkdisk.sh "$DISK2" > /dev/null
+python3 tools/knocfs.py mkdir "$DISK2" /home/Shared
+python3 tools/knocfs.py put-text "$DISK2" /home/Shared/shared.txt "a file shared by beta"
+KN_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+QEMU_NETDEV_EXTRA=",hostfwd=tcp:127.0.0.1:$KN_PORT-:7000" COMMAND_WAIT=150 \
+    python3 scripts/drive.py "$TIMEOUT" "$LOG2" "$DISK2" "$KERNEL" \
+    "knocnet name beta" "knocnet pair wait 424242" "sleep 40" "ls /home/KnocNet/alpha" \
+    "cat /home/KnocNet/alpha/note.txt" "knocnet peers" "knocnet unpair alpha" "sleep 40" &
+BETA_PID=$!
+sleep 15
+COMMAND_WAIT=90 boot "knocnet selftest" "knocnet name alpha" "knocnet ping 10.0.2.2:$KN_PORT" \
+    "knocnet pair 10.0.2.2:$KN_PORT 111111" "knocnet pair 10.0.2.2:$KN_PORT 424242" "knocnet peers" \
+    "knocnet ping beta" "knocnet status beta" "echo hello over knocnet > /home/note.txt" \
+    "knocnet send beta /home/note.txt" "knocnet get beta /home/Shared/shared.txt /home/got.txt" "cat /home/got.txt" \
+    "knocnet get beta /etc/hosts" "knocnet ask beta what is 2+2" "sleep 45" "knocnet ping beta"
+wait "$BETA_PID"
+BETA_STATUS=$?
+check \
+    "key exchange (X25519): both sides agree" \
+    "a changed signature is rejected" \
+    "a changed message is rejected" \
+    "refused: that machine doesn't trust this one (pair first)" \
+    "knocnet: pairing failed: wrong pairing code" \
+    "paired with beta (" \
+    "beta answered over an encrypted link" \
+    "beta: up " \
+    "SAVED /home/KnocNet/alpha/note.txt 19" \
+    "got /home/Shared/shared.txt from beta: 21 bytes saved to /home/got.txt" \
+    "a file shared by beta" \
+    "ERROR only files in /home/Shared/ can be fetched" \
+    "ask: cannot load /models/qwen.kllm"
+if [ "$(grep -c "refused: that machine doesn't trust this one" "$LOG")" -ge 2 ]; then
+    echo "  ok   after beta unpaired alpha, alpha is refused again"
+else
+    echo "  MISS after beta unpaired alpha, alpha is refused again"
+    FAILED=1
+fi
+for line in "[KNOCNET] ready: " "[KNOCNET] refused an unknown machine" "[KNOCNET] paired with alpha" \
+    "[KNOCNET] alpha sent note.txt (19 bytes) -> /home/KnocNet/alpha/note.txt" "hello over knocnet" \
+    "[KNOCNET] alpha fetched /home/Shared/shared.txt (21 bytes)" \
+    "[KNOCNET] alpha asked for /etc/hosts: refused" "alpha is no longer trusted"; do
+    if grep -qF -- "$line" "$LOG2"; then
+        echo "  ok   beta: $line"
+    else
+        echo "  MISS beta: $line"
+        FAILED=1
+    fi
+done
+if [ "$BETA_STATUS" -ne 0 ]; then
+    echo "  FAIL the second machine (beta) did not power off cleanly (status $BETA_STATUS)"
+    FAILED=1
+fi
+if [ "$FAILED" -ne 0 ]; then
+    echo "----- beta -----"
+    cat "$LOG2"
 fi
 show_log_on_failure
 
