@@ -67,6 +67,7 @@ typedef struct process
 
     uint64_t fp_state[33];
     char args[ARGS_MAX];
+    char cwd[PATH_MAX];
     uint64_t syscalls;
     uint64_t seen_cpu;
     uint64_t seen_syscalls;
@@ -397,6 +398,8 @@ static process_t *create_locked(const char *name,
     p->seen_spawned = 0;
     p->disk_bytes = 0;
     p->seen_disk_bytes = 0;
+    p->cwd[0] = '/';
+    p->cwd[1] = 0;
     p->capture_owner = 0;
     p->capture_pid = 0;
     p->capture_quiet = 0;
@@ -496,14 +499,27 @@ static void user_space_free(process_t *p)
    kernel is the fallback: no disk, no filesystem, or disk0 disabled */
 static void *load_from_disk(const program_t *program, uint64_t *size)
 {
-    char path[PROCESS_NAME_MAX + 8] = "/bin/";
+    char path[PATH_MAX] = "/bin/";
     uint32_t inode;
     knocfs_stat_t stat;
     int length = 5;
 
-    for (int i = 0; program->name[i] && length < (int)sizeof(path) - 1; i++)
+    if (program->path)
     {
-        path[length++] = program->name[i];
+        length = 0;
+
+        while (program->path[length] && length < (int)sizeof(path) - 1)
+        {
+            path[length] = program->path[length];
+            length++;
+        }
+    }
+    else
+    {
+        for (int i = 0; program->name[i] && length < (int)sizeof(path) - 1; i++)
+        {
+            path[length++] = program->name[i];
+        }
     }
 
     path[length] = 0;
@@ -650,6 +666,11 @@ static int spawn(const program_t *program, const char *args, int capture)
 
     p->args[length] = 0;
     p->capabilities = program->capabilities;
+
+    if (current != 0)
+    {
+        memcpy(p->cwd, current->cwd, PATH_MAX);
+    }
 
     if (capture && current != 0)
     {
@@ -803,6 +824,97 @@ void process_record_syscall(uint64_t number)
 }
 
 static process_t *find_live(int pid);
+
+int process_resolve_path(const char *path, char *out)
+{
+    char joined[PATH_MAX * 2];
+    unsigned long length = 0;
+
+    if (path[0] != '/')
+    {
+        for (int i = 0; current->cwd[i] && length < sizeof(joined) - 2; i++)
+        {
+            joined[length++] = current->cwd[i];
+        }
+
+        joined[length++] = '/';
+    }
+
+    for (int i = 0; path[i] && length < sizeof(joined) - 1; i++)
+    {
+        joined[length++] = path[i];
+    }
+
+    joined[length] = 0;
+
+    unsigned long out_length = 0;
+    unsigned long i = 0;
+
+    while (joined[i])
+    {
+        while (joined[i] == '/')
+        {
+            i++;
+        }
+
+        unsigned long start = i;
+
+        while (joined[i] && joined[i] != '/')
+        {
+            i++;
+        }
+
+        unsigned long part = i - start;
+
+        if (part == 0 || (part == 1 && joined[start] == '.'))
+        {
+            continue;
+        }
+
+        if (part == 2 && joined[start] == '.' && joined[start + 1] == '.')
+        {
+            while (out_length > 0 && out[out_length - 1] != '/')
+            {
+                out_length--;
+            }
+
+            if (out_length > 0)
+            {
+                out_length--;
+            }
+
+            continue;
+        }
+
+        if (out_length + part + 2 > PATH_MAX)
+        {
+            return E_INVAL;
+        }
+
+        out[out_length++] = '/';
+        memcpy(out + out_length, joined + start, part);
+        out_length += part;
+    }
+
+    if (out_length == 0)
+    {
+        out[out_length++] = '/';
+    }
+
+    out[out_length] = 0;
+    return 0;
+}
+
+int process_chdir(const char *path)
+{
+    memcpy(current->cwd, path, PATH_MAX);
+    return 0;
+}
+
+const char *process_cwd(void)
+{
+    return current->cwd;
+}
 
 int process_capture(const char *data, uint64_t length)
 {

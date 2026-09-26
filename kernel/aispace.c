@@ -49,7 +49,8 @@
 #define AI_FEATURE_RESTARTS (AI_FEATURE_DENIED + 1)
 #define AI_FEATURE_DAMAGE (AI_FEATURE_RESTARTS + 1)
 #define AI_FEATURE_TRACE (AI_FEATURE_DAMAGE + 1)
-#define AI_FEATURE_MESSAGE (AI_FEATURE_TRACE + SYS_COUNT)
+#define AI_TRACE_CALLS 29
+#define AI_FEATURE_MESSAGE (AI_FEATURE_TRACE + AI_TRACE_CALLS)
 #define AI_FEATURES (AI_FEATURE_MESSAGE + AI_FEATURE_WORDS)
 #define AI_NN_MIN_CONFIDENCE 0.8f
 #define AI_NN_WIDTH_MAX 256
@@ -625,6 +626,8 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_SETCLASS] = "setclass",
         [SYS_SPAWN_CAPTURE] = "spawn_capture",
         [SYS_CAPTURED] = "captured",
+        [SYS_CHDIR] = "chdir",
+        [SYS_GETCWD] = "getcwd",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";
@@ -759,7 +762,7 @@ static void ai_features(const blackbox_record_t *r, int user, uint32_t denied, u
 
     for (uint32_t i = 0; i < trace_count && i < MAILBOX_TRACE_MAX; i++)
     {
-        if (trace[i] < SYS_COUNT)
+        if (trace[i] < AI_TRACE_CALLS)
         {
             x[AI_FEATURE_TRACE + trace[i]] += 1.0f / MAILBOX_TRACE_MAX;
         }

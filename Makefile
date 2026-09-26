@@ -11,6 +11,8 @@ CFLAGS = -march=rv64g -mabi=lp64d -mcmodel=medany \
          -MMD -MP \
          -DKNOCOS_VERSION='"v$(VERSION)"'
 
+LIBGCC := $(shell $(CC) -march=rv64g -mabi=lp64d -print-libgcc-file-name)
+
 QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
 RAM ?= 2G
 QEMU_FLAGS = -machine virt -smp 2 -m $(RAM) -bios none -nographic
@@ -57,16 +59,82 @@ TIMER_OBJS = timer/timer.o
 
 USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat organized
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
-LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o
+LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/setjmp.o
+LIBC_CRT = user/libc/crt1.o
 LIBC_PROGRAMS = libctest calc
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
-USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
+USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
-.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls
+.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls tcc-sdk
 
-all: knocos.elf
+all: knocos.elf tcc-sdk
+
+TCC_DIR = third_party/tinycc
+TCC_BUILD = build/tcc
+TCC_SDK = $(TCC_BUILD)/sdk
+TCC_DEFS = -DONE_SOURCE=1 -DTCC_TARGET_RISCV64 -DTCC_KNOCOS -DCONFIG_TCC_STATIC -DCONFIG_TCC_SEMLOCK=0 \
+           -DCONFIG_TCC_BACKTRACE=0 -DCONFIG_TCC_BCHECK=0 '-DCONFIG_TCCDIR="/lib/tcc"' \
+           '-DCONFIG_TCC_SYSINCLUDEPATHS="{B}/include:/include"' '-DCONFIG_TCC_LIBPATHS="/lib"' \
+           '-DCONFIG_TCC_CRTPREFIX="/lib"' '-DCONFIG_TCC_ELFINTERP="-"'
+TCC_SOURCES = $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h)
+KNOC_TCC = $(TCC_BUILD)/knoc-tcc
+KNOC_TCC_FLAGS = -nostdinc -I $(TCC_DIR)/include -I user/libc/include
+LIBC_HEADERS = $(wildcard user/libc/include/*.h user/libc/include/sys/*.h)
+SDK_LIBC_OBJS = $(patsubst %,$(TCC_SDK)/%.o,stdio stdlib string ctype math misc posix setjmp ulib)
+SDK_TCC1_OBJS = $(patsubst %,$(TCC_SDK)/tcc1-%.o,lib-arm64 builtin stdatomic alloca atomic)
+SDK_FILES = $(TCC_SDK)/crt1.o $(TCC_SDK)/crti.o $(TCC_SDK)/crtn.o $(TCC_SDK)/libc.a $(TCC_SDK)/libtcc1.a
+
+$(TCC_BUILD)/tccdefs_.h: $(TCC_DIR)/include/tccdefs.h $(TCC_DIR)/conftest.c
+	@mkdir -p $(TCC_BUILD)
+	gcc -DC2STR -o $(TCC_BUILD)/c2str $(TCC_DIR)/conftest.c
+	$(TCC_BUILD)/c2str $< $@
+
+$(KNOC_TCC): $(TCC_SOURCES) $(TCC_BUILD)/tccdefs_.h
+	gcc -O2 -w -I$(TCC_BUILD) $(TCC_DEFS) -o $@ $(TCC_DIR)/tcc.c -lm
+
+$(TCC_BUILD)/tcc.o: $(TCC_SOURCES) $(TCC_BUILD)/tccdefs_.h $(LIBC_HEADERS)
+	$(CC) -march=rv64g -mabi=lp64d -mcmodel=medany -ffreestanding -fno-pie -fno-pic -nostdlib -O2 -w \
+		-isystem user/libc/include -I$(TCC_BUILD) $(TCC_DEFS) -c -o $@ $(TCC_DIR)/tcc.c
+
+user/tcc.elf: $(TCC_BUILD)/tcc.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $(TCC_BUILD)/tcc.o $(LIBC_OBJS) user/ulib.o $(LIBGCC)
+
+$(TCC_SDK)/%.o: user/libc/%.c $(KNOC_TCC) $(LIBC_HEADERS)
+	@mkdir -p $(TCC_SDK)
+	$(KNOC_TCC) $(KNOC_TCC_FLAGS) -c $< -o $@
+
+$(TCC_SDK)/setjmp.o: user/libc/setjmp.S $(KNOC_TCC)
+	@mkdir -p $(TCC_SDK)
+	$(KNOC_TCC) $(KNOC_TCC_FLAGS) -c $< -o $@
+
+$(TCC_SDK)/ulib.o: user/ulib.c user/ulib.h kernel/syscall_abi.h $(KNOC_TCC)
+	@mkdir -p $(TCC_SDK)
+	$(KNOC_TCC) $(KNOC_TCC_FLAGS) -c $< -o $@
+
+$(TCC_SDK)/tcc1-%.o: $(TCC_DIR)/lib/%.c $(KNOC_TCC)
+	@mkdir -p $(TCC_SDK)
+	$(KNOC_TCC) $(KNOC_TCC_FLAGS) -c $< -o $@
+
+$(TCC_SDK)/tcc1-%.o: $(TCC_DIR)/lib/%.S $(KNOC_TCC)
+	@mkdir -p $(TCC_SDK)
+	$(KNOC_TCC) $(KNOC_TCC_FLAGS) -c $< -o $@
+
+$(TCC_SDK)/crti.o $(TCC_SDK)/crtn.o: $(KNOC_TCC)
+	@mkdir -p $(TCC_SDK)
+	printf '\n' > $(TCC_BUILD)/empty.c
+	$(KNOC_TCC) -c $(TCC_BUILD)/empty.c -o $@
+
+$(TCC_SDK)/libc.a: $(SDK_LIBC_OBJS)
+	rm -f $@
+	$(KNOC_TCC) -ar rcs $@ $^
+
+$(TCC_SDK)/libtcc1.a: $(SDK_TCC1_OBJS)
+	rm -f $@
+	$(KNOC_TCC) -ar rcs $@ $^
+
+tcc-sdk: user/tcc.elf $(SDK_FILES)
 
 knocos.elf: $(KERNEL_OBJS) boot/linker.ld
 	$(LD) -T boot/linker.ld -o knocos.elf $(KERNEL_OBJS)
@@ -80,10 +148,10 @@ user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o
 
-$(LIBC_OBJS) $(LIBC_PROGRAMS:%=user/%.o): CFLAGS += -isystem user/libc/include
+$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o): CFLAGS += -isystem user/libc/include
 
-$(LIBC_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o $(LIBC_OBJS) user/ulib.o user/linker.ld
-	$(LD) -T user/linker.ld -s -o $@ $< $(LIBC_OBJS) user/ulib.o
+$(LIBC_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< $(LIBC_OBJS) user/ulib.o $(LIBGCC)
 
 user/organize.elf: user/organize.o user/learn.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/organize.o user/learn.o
@@ -109,21 +177,23 @@ user/ask.o user/llm.o: CFLAGS += -O3 -funroll-loops
 -include $(DEPS)
 
 clean:
-	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(USER_OBJS) $(USER_ELFS) $(DEPS)
+	rm -f knocos.elf timer.elf $(KERNEL_OBJS) $(TIMER_OBJS) $(USER_OBJS) $(USER_ELFS) $(DEPS) user/tcc.elf
+	rm -rf build
 
-$(DISK): | $(USER_ELFS)
+$(DISK): | $(USER_ELFS) tcc-sdk
 	./scripts/mkdisk.sh $(DISK) $(DISK_MB)
 
-reset-disk: $(USER_ELFS)
+reset-disk: $(USER_ELFS) tcc-sdk
 	./scripts/mkdisk.sh $(DISK) $(DISK_MB)
 
 # Copy freshly built programs into /bin, keeping every other file on the disk
-sync-programs: $(USER_ELFS) $(DISK)
+sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS); do \
 		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
 			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
 	done
 	@$(KNOCFS) mkdir $(DISK) /etc /etc/apps 2>/dev/null || true
+	@./scripts/sdk.sh $(DISK)
 	@for manifest in apps/*.app; do \
 		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done
@@ -139,7 +209,7 @@ ls: $(DISK)
 run: knocos.elf sync-programs
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISK_FLAGS) -kernel knocos.elf
 
-test: knocos.elf
+test: knocos.elf tcc-sdk
 	./scripts/test.sh
 
 timer-test: timer.elf

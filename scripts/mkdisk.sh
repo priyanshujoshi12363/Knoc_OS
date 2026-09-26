@@ -30,6 +30,8 @@ for program in user/*.elf; do
     $KNOCFS put "$DISK" "$program" "/bin/$(basename "$program" .elf)"
 done
 
+./scripts/sdk.sh "$DISK"
+
 $KNOCFS mkdir "$DISK" /etc /etc/apps
 for manifest in apps/*.app; do
     $KNOCFS put "$DISK" "$manifest" "/etc/apps/$(basename "$manifest")"

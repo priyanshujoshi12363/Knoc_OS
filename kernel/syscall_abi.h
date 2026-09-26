@@ -34,7 +34,9 @@
 #define SYS_SETCLASS 26
 #define SYS_SPAWN_CAPTURE 27
 #define SYS_CAPTURED 28
-#define SYS_COUNT 29
+#define SYS_CHDIR 29
+#define SYS_GETCWD 30
+#define SYS_COUNT 31
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0

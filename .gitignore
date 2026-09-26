@@ -16,3 +16,4 @@ models/llm/qwen/
 models/llm/*.kllm
 models/health/data/
 models/crash/data/
+build/

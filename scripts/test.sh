@@ -132,7 +132,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload files filler healthd hello hog knocsh leak libctest modelcheck noperm organized organize quiet recorder spawner spin spy" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload files filler healthd hello hog knocsh leak libctest modelcheck noperm organized organize quiet recorder spawner spin spy tcc" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -465,6 +465,23 @@ check \
     "= 1.41421" \
     "?  try 2 + 3 or sqrt 2"
 check_absent "  FAIL "
+show_log_on_failure
+
+echo "Run 13: the C compiler inside KnocOS compiles and runs programs"
+new_disk
+python3 tools/knocfs.py put-many "$DISK" /home/code scripts/fixtures/prog.c scripts/fixtures/util.c \
+    scripts/fixtures/main2.c scripts/fixtures/bad.c
+boot "cd /home/code" "tcc -v" "tcc prog.c -o prog" "./prog 20" "tcc main2.c util.c -o two" "./two" \
+    "tcc bad.c -o bad" 'echo compile status $?' \
+    'agent --call {"name": "run_app", "arguments": {"app": "tcc", "args": "bad.c -o bad"}}' "?y"
+check \
+    "tcc version 0.9.28rc" \
+    "fibonacci(20) = 6765" \
+    "closest first: near mid far" \
+    "file says: compiled inside KnocOS" \
+    "two files: square(12) = 144" \
+    "bad.c:6: error: ';' expected (got 'return')" \
+    "compile status 1"
 show_log_on_failure
 
 echo "RESULT: PASS"

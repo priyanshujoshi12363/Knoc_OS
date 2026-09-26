@@ -9,6 +9,7 @@ Usage:
   knocfs.py format IMAGE
   knocfs.py mkdir IMAGE PATH...
   knocfs.py put IMAGE SOURCE DEST          copy a host file (replaces DEST)
+  knocfs.py put-many IMAGE DEST_DIR FILE... copy several host files into one folder
   knocfs.py put-text IMAGE DEST TEXT
   knocfs.py make-test-model IMAGE DEST MIB  a file with a known byte pattern
   knocfs.py ls IMAGE [PATH]
@@ -265,6 +266,12 @@ def main(argv):
         elif command == "put":
             with open(args[0], "rb") as source:
                 fs.put(args[1], source.read())
+        elif command == "put-many":
+            if fs.lookup(args[0]) is None:
+                fs.create(args[0], TYPE_DIR)
+            for source_path in args[1:]:
+                with open(source_path, "rb") as source:
+                    fs.put(args[0].rstrip("/") + "/" + os.path.basename(source_path), source.read())
         elif command == "put-text":
             fs.put(args[0], args[1].encode())
         elif command == "make-test-model":

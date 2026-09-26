@@ -356,6 +356,7 @@ static void cmd_cd(int argc, char **args)
     else
     {
         strcpy(cwd, path);
+        chdir(path);
         graph_record(GRAPH_KIND_ACTOR, "user", GRAPH_REL_WORKED_IN, GRAPH_KIND_FOLDER, path, 100);
     }
 }
@@ -1618,6 +1619,7 @@ static void cmd_help(void)
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Organize:  organize auto on|off  organize learn  organize personal  organize forget\n");
+    print("Code:      tcc FILE.c -o NAME  then ./NAME   (C compiler with the standard C library)\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 
@@ -2115,6 +2117,38 @@ static void run_script(const char *path, int argc, char **args, int first)
     }
 }
 
+static int strchr_char(const char *text, char c)
+{
+    for (; *text; text++)
+    {
+        if (*text == c)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int executable_path(const char *word, char *path)
+{
+    unsigned char magic[4];
+
+    resolve(word, path);
+
+    int fd = open(path, O_READ);
+
+    if (fd < 0)
+    {
+        return 0;
+    }
+
+    long got = read(fd, magic, 4);
+
+    close(fd);
+    return got == 4 && magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+}
+
 static int script_path(const char *word, char *path)
 {
     unsigned long n = strlen(word);
@@ -2281,6 +2315,10 @@ static int execute(int argc, char **args)
     else if (strcmp(command, "exit") == 0)
     {
         return 1;
+    }
+    else if (strchr_char(command, '/') && executable_path(command, path))
+    {
+        run_program(path, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
     }
     else if (script_path(command, path))
     {

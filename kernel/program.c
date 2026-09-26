@@ -32,7 +32,7 @@ PROGRAM(chat)
 PROGRAM(organized)
 
 #define ENTRY(name, class, caps, flags) \
-    {#name, program_##name##_start, program_##name##_end, class, caps, flags}
+    {#name, program_##name##_start, program_##name##_end, class, caps, flags, 0}
 
 static const program_t programs[] = {
     ENTRY(hello, PROCESS_CLASS_NORMAL, CAP_CONSOLE | CAP_SPAWN | CAP_MEMORY, 0),
@@ -98,6 +98,7 @@ const program_t *program_find(const char *name)
 
 static program_t installed[INSTALLED_MAX];
 static char installed_names[INSTALLED_MAX][PROCESS_NAME_MAX];
+static char installed_paths[INSTALLED_MAX][PATH_MAX];
 static uint32_t installed_count;
 
 static int valid_name(const char *name)
@@ -118,22 +119,73 @@ static int valid_name(const char *name)
     return length > 0 && length < PROCESS_NAME_MAX;
 }
 
-const program_t *program_installed(const char *name)
+static const program_t *install(const char *path)
 {
-    char path[PROCESS_NAME_MAX + 8] = "/bin/";
     uint32_t inode;
+    knocfs_stat_t stat;
 
-    if (!valid_name(name))
+    for (uint32_t i = 0; i < installed_count; i++)
+    {
+        if (names_equal(installed_paths[i], path))
+        {
+            return &installed[i];
+        }
+    }
+
+    if (installed_count >= INSTALLED_MAX || !knocfs_mounted() || knocfs_lookup(path, &inode) != 0 ||
+        knocfs_stat(inode, &stat) != 0 || stat.type != KNOCFS_TYPE_FILE)
     {
         return 0;
     }
 
-    for (uint32_t i = 0; i < installed_count; i++)
+    const char *base = path;
+
+    for (int i = 0; path[i]; i++)
     {
-        if (names_equal(installed_names[i], name))
+        if (path[i] == '/' && path[i + 1])
         {
-            return &installed[i];
+            base = path + i + 1;
         }
+    }
+
+    char *name = installed_names[installed_count];
+    int n = 0;
+
+    while (base[n] && n < PROCESS_NAME_MAX - 1)
+    {
+        name[n] = base[n];
+        n++;
+    }
+
+    name[n] = 0;
+
+    for (n = 0; path[n] && n < PATH_MAX - 1; n++)
+    {
+        installed_paths[installed_count][n] = path[n];
+    }
+
+    installed_paths[installed_count][n] = 0;
+
+    program_t *program = &installed[installed_count];
+
+    program->name = name;
+    program->start = 0;
+    program->end = 0;
+    program->process_class = PROCESS_CLASS_NORMAL;
+    program->capabilities = INSTALLED_CAPABILITIES;
+    program->flags = 0;
+    program->path = installed_paths[installed_count];
+    installed_count++;
+    return program;
+}
+
+const program_t *program_installed(const char *name)
+{
+    char path[PROCESS_NAME_MAX + 8] = "/bin/";
+
+    if (!valid_name(name))
+    {
+        return 0;
     }
 
     for (int i = 0; name[i]; i++)
@@ -142,31 +194,12 @@ const program_t *program_installed(const char *name)
         path[6 + i] = 0;
     }
 
-    if (installed_count >= INSTALLED_MAX || !knocfs_mounted() || knocfs_lookup(path, &inode) != 0)
-    {
-        return 0;
-    }
+    return install(path);
+}
 
-    program_t *program = &installed[installed_count];
-
-    for (int i = 0; i < PROCESS_NAME_MAX; i++)
-    {
-        installed_names[installed_count][i] = name[i];
-
-        if (name[i] == 0)
-        {
-            break;
-        }
-    }
-
-    program->name = installed_names[installed_count];
-    program->start = 0;
-    program->end = 0;
-    program->process_class = PROCESS_CLASS_NORMAL;
-    program->capabilities = INSTALLED_CAPABILITIES;
-    program->flags = 0;
-    installed_count++;
-    return program;
+const program_t *program_at_path(const char *path)
+{
+    return path[0] == '/' ? install(path) : 0;
 }
 
 uint32_t program_count(void)

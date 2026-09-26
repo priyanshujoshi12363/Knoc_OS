@@ -29,6 +29,8 @@ unsigned long uptime(void);
 int spawn(const char *name);
 int spawn_args(const char *name, const char *args);
 int spawn_capture(const char *name, const char *args, int quiet);
+int chdir(const char *path);
+long getcwd_raw(char *buffer, unsigned long length);
 void set_output(int fd);
 int output(void);
 long captured(char *buffer, unsigned long length);

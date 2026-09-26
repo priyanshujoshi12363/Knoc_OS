@@ -5,6 +5,9 @@
 #include <errno.h>
 #include "../ulib.h"
 
+int __knoc_open(const char *path, int flags);
+long __knoc_size_of(const char *path);
+
 #define FILES_MAX 16
 #define FLAG_READ 1
 #define FLAG_WRITE 2
@@ -140,7 +143,7 @@ FILE *fopen(const char *path, const char *mode)
             continue;
         }
 
-        int fd = open(path, open_flags);
+        int fd = __knoc_open(path, open_flags);
 
         if (fd < 0)
         {
@@ -158,11 +161,11 @@ FILE *fopen(const char *path, const char *mode)
 
         if (append)
         {
-            file_stat_t info;
+            long size = __knoc_size_of(path);
 
-            if (stat(path, &info) == 0)
+            if (size >= 0)
             {
-                seek(fd, info.size);
+                seek(fd, (unsigned long)size);
             }
         }
 
@@ -171,6 +174,53 @@ FILE *fopen(const char *path, const char *mode)
 
     errno = ENOMEM;
     return NULL;
+}
+
+FILE *fdopen(int fd, const char *mode)
+{
+    for (int i = 3; i < FILES_MAX; i++)
+    {
+        if (files[i].used)
+        {
+            continue;
+        }
+
+        FILE *f = &files[i];
+
+        memset(f, 0, sizeof(*f));
+        f->fd = fd;
+        f->flags = (mode[0] == 'r' ? FLAG_READ : FLAG_WRITE) | (strchr(mode, '+') ? FLAG_READ | FLAG_WRITE : 0);
+        f->used = 1;
+        f->unget = EOF;
+        return f;
+    }
+
+    errno = ENOMEM;
+    return NULL;
+}
+
+FILE *freopen(const char *path, const char *mode, FILE *stream)
+{
+    if (stream)
+    {
+        fclose(stream);
+    }
+
+    return path ? fopen(path, mode) : NULL;
+}
+
+int fileno(FILE *stream)
+{
+    return stream->fd;
+}
+
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size)
+{
+    (void)buffer;
+    (void)size;
+    stream->flags &= ~(FLAG_LINE | FLAG_UNBUFFERED);
+    stream->flags |= mode == _IONBF ? FLAG_UNBUFFERED : mode == _IOLBF ? FLAG_LINE : 0;
+    return 0;
 }
 
 int fclose(FILE *stream)

@@ -34,7 +34,7 @@ long read(int fd, void *buffer, unsigned long length)
     return syscall(SYS_READ, fd, (long)buffer, (long)length);
 }
 
-int open(const char *path, int flags)
+__attribute__((weak)) int open(const char *path, int flags)
 {
     return (int)syscall(SYS_OPEN, (long)path, flags, 0);
 }
@@ -49,7 +49,7 @@ long seek(int fd, unsigned long offset)
     return syscall(SYS_SEEK, fd, (long)offset, 0);
 }
 
-int stat(const char *path, file_stat_t *result)
+__attribute__((weak)) int stat(const char *path, file_stat_t *result)
 {
     return (int)syscall(SYS_STAT, (long)path, (long)result, 0);
 }
@@ -92,6 +92,16 @@ unsigned long uptime(void)
 int spawn(const char *name)
 {
     return (int)syscall(SYS_SPAWN, (long)name, 0, 0);
+}
+
+int chdir(const char *path)
+{
+    return (int)syscall(SYS_CHDIR, (long)path, 0, 0);
+}
+
+long getcwd_raw(char *buffer, unsigned long length)
+{
+    return syscall(SYS_GETCWD, (long)buffer, (long)length, 0);
 }
 
 int spawn_capture(const char *name, const char *args, int quiet)

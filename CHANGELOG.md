@@ -2,6 +2,23 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.25.0] - 2026-09-26
+
+A C compiler inside KnocOS: KnocOS builds its own programs.
+
+### Added
+- TinyCC 0.9.28rc (`third_party/tinycc`, LGPL 2.1) as `/bin/tcc`: `tcc hello.c -o hello`, several files at once, `-c`, errors with file and line numbers
+- The build makes a host cross compiler (`build/tcc/knoc-tcc`) and uses it to compile the SDK that programs are linked against inside KnocOS: `/lib/crt1.o`, `crti.o`, `crtn.o`, `libc.a` (libknoc + ulib), `libtcc1.a` (128-bit long double, alloca, atomics), with headers in `/include` and `/lib/tcc/include`; `scripts/sdk.sh` puts it on the disk (`mkdisk` and `make run`)
+- Working directories in the kernel: every program has a current folder (inherited from the program that started it), relative paths in every file system call are resolved against it, `chdir` and `getcwd` system calls; `cd` in the shell sets it
+- Programs can be started by path (`./hello`, `/home/code/hello`), not only from `/bin`; the shell recognizes programs by their ELF header
+- C library: POSIX `open` flags, `lseek`, `unlink`, `rmdir`, `stat`, `fstat`, `access`, `getcwd`, `chdir`, `realpath`, `isatty`, `_exit`, `creat`, `gettimeofday`, `setjmp` / `longjmp`, `fdopen`, `freopen`, `fileno`, `setvbuf`, `strtof`, `strtold`, `ldexp`, `frexp`, `modf`, `strtoimax`; new headers `stdint.h`, `limits.h`, `inttypes.h`, `unistd.h`, `fcntl.h`, `setjmp.h`, `alloca.h`, `sys/types.h`, `sys/stat.h`, `sys/time.h`; the program startup moved to `crt1.c`
+- App manifest for `tcc`, so the agent can compile code and read the compiler's errors
+- `knocfs.py put-many` copies several files into one folder in one run
+- `make test` Run 13: a real program, two files linked together, and a syntax error, all compiled inside KnocOS
+
+### Changed
+- The crash classifier's system-call features stay at the 29 calls it was trained on, so new system calls don't change the model's input
+
 ## [0.24.0] - 2026-09-26
 
 The C library: normal C programs for KnocOS.

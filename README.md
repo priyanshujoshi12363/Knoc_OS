@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.24.0-blue)
+![Version](https://img.shields.io/badge/version-v0.25.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.24.0 starting
+[INFO] KnocOS v0.25.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,24 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: The C Library (v0.24.0)
+## ✅ Just Completed: A C Compiler Inside KnocOS (v0.25.0)
+
+**KnocOS builds its own programs.** TinyCC runs inside KnocOS, with the KnocOS C library as its standard library:
+
+```text
+knoc:/$ cd /home/code
+knoc:/home/code$ tcc prog.c -o prog
+knoc:/home/code$ ./prog 20
+fibonacci(20) = 6765
+knoc:/home/code$ tcc bad.c -o bad
+/home/code/bad.c:6: error: ';' expected (got 'return')
+```
+
+- Several source files at once, errors with line numbers, programs run by path (`./prog`)
+- Every program now has a working directory, so relative paths work everywhere
+- The agent can use the compiler too (`run_app` with `tcc`) and reads the errors, the base of a coding agent
+
+## The C Library (v0.24.0)
 
 **KnocOS programs can be written in normal C.** `libknoc` gives them `printf`, `malloc` / `free`, `fopen`, `string.h`, `math.h`, `time.h` and the rest of the usual standard library:
 
@@ -363,7 +380,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** a C compiler inside KnocOS (TinyCC), so KnocOS can build programs itself.
+**Next up:** the kernel on several cores.
 
 Recent progress:
 
@@ -395,7 +412,8 @@ Recent progress:
 | `4dcc139` | Auto-organize daemon, learning from corrections (personal model), version `v0.21.0` |
 | `63e18bb` | Crash classifier NN in the AI space, crash scenarios and data collection, version `v0.22.0` |
 | `6bf2439` | Context tracker, live permission watch, version `v0.23.0` |
-| *(uncommitted)* | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
+| `0ab4247` | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
+| *(uncommitted)* | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
 
 What works right now:
 
@@ -428,7 +446,8 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.22.0: crash classifier NN in the AI space
 - [x] v0.23.0: context tracker + live permission watch
 - [x] v0.24.0: the C library
-- [ ] v0.25.0 – v0.26.0: compiler inside KnocOS, kernel on several cores
+- [x] v0.25.0: a C compiler inside KnocOS
+- [ ] v0.26.0: kernel on several cores
 - [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)
 

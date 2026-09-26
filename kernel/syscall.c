@@ -50,6 +50,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_SETCLASS] = "setclass",
     [SYS_SPAWN_CAPTURE] = "spawn_capture",
     [SYS_CAPTURED] = "captured",
+    [SYS_CHDIR] = "chdir",
+    [SYS_GETCWD] = "getcwd",
 };
 
 const char *syscall_name(uint64_t number)
@@ -135,6 +137,61 @@ static int copy_string_from_user(char *destination, uintptr_t source, uint64_t m
     }
 
     return -1;
+}
+
+static int64_t user_path(char *out, uintptr_t address)
+{
+    char raw[PATH_MAX];
+
+    if (copy_string_from_user(raw, address, PATH_MAX) != 0)
+    {
+        return E_FAULT;
+    }
+
+    return process_resolve_path(raw, out) == 0 ? 0 : E_INVAL;
+}
+
+static int64_t sys_chdir(uintptr_t address)
+{
+    char path[PATH_MAX];
+    uint32_t inode;
+    knocfs_stat_t stat;
+    int64_t result = user_path(path, address);
+
+    if (result != 0)
+    {
+        return result;
+    }
+
+    if (knocfs_lookup(path, &inode) != 0 || knocfs_stat(inode, &stat) != 0)
+    {
+        return E_NOTFOUND;
+    }
+
+    if (stat.type != KNOCFS_TYPE_DIR)
+    {
+        return E_NOTDIR;
+    }
+
+    return process_chdir(path);
+}
+
+static int64_t sys_getcwd(uintptr_t buffer, uint64_t length)
+{
+    const char *cwd = process_cwd();
+    uint64_t size = 0;
+
+    while (cwd[size])
+    {
+        size++;
+    }
+
+    if (size + 1 > length)
+    {
+        return E_INVAL;
+    }
+
+    return copy_to_user(buffer, cwd, size + 1) == 0 ? (int64_t)size : E_FAULT;
 }
 
 static const char *capability_name(uint32_t capability)
@@ -379,9 +436,11 @@ static int64_t sys_open(uintptr_t path_address, uint64_t flags)
         return E_PERM;
     }
 
-    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    int64_t path_result = user_path(path, path_address);
+
+    if (path_result != 0)
     {
-        return E_FAULT;
+        return path_result;
     }
 
     int result = knocfs_lookup(path, &inode);
@@ -466,9 +525,11 @@ static int64_t sys_stat(uintptr_t path_address, uintptr_t out)
         return E_PERM;
     }
 
-    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    int64_t path_result = user_path(path, path_address);
+
+    if (path_result != 0)
     {
-        return E_FAULT;
+        return path_result;
     }
 
     int error = knocfs_lookup(path, &inode);
@@ -503,9 +564,11 @@ static int64_t sys_readdir(uintptr_t path_address, uint64_t index, uintptr_t out
         return E_PERM;
     }
 
-    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    int64_t path_result = user_path(path, path_address);
+
+    if (path_result != 0)
     {
-        return E_FAULT;
+        return path_result;
     }
 
     int error = knocfs_lookup(path, &directory);
@@ -696,9 +759,11 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
         return E_PERM;
     }
 
-    if (copy_string_from_user(path, path_address, PATH_MAX) != 0)
+    int64_t path_result = user_path(path, path_address);
+
+    if (path_result != 0)
     {
-        return E_FAULT;
+        return path_result;
     }
 
     if (number == SYS_MKDIR)
@@ -711,10 +776,10 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
 
 static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int capture, int quiet)
 {
-    char name[PROCESS_NAME_MAX];
+    char name[PATH_MAX];
     char args[ARGS_MAX];
 
-    if (copy_string_from_user(name, name_address, PROCESS_NAME_MAX) != 0)
+    if (copy_string_from_user(name, name_address, PATH_MAX) != 0)
     {
         return E_FAULT;
     }
@@ -726,11 +791,34 @@ static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int cap
         return E_FAULT;
     }
 
-    const program_t *program = program_find(name);
+    int by_path = 0;
 
-    if (program == 0)
+    for (int i = 0; name[i]; i++)
     {
-        program = program_installed(name);
+        by_path |= name[i] == '/';
+    }
+
+    const program_t *program = 0;
+
+    if (by_path)
+    {
+        char path[PATH_MAX];
+
+        if (process_resolve_path(name, path) != 0)
+        {
+            return E_INVAL;
+        }
+
+        program = program_at_path(path);
+    }
+    else
+    {
+        program = program_find(name);
+
+        if (program == 0)
+        {
+            program = program_installed(name);
+        }
     }
 
     if (program == 0)
@@ -783,10 +871,16 @@ static int64_t sys_rename(uintptr_t from_address, uintptr_t to_address)
         return E_PERM;
     }
 
-    if (copy_string_from_user(from, from_address, PATH_MAX) != 0 ||
-        copy_string_from_user(to, to_address, PATH_MAX) != 0)
+    int64_t path_result = user_path(from, from_address);
+
+    if (path_result == 0)
     {
-        return E_FAULT;
+        path_result = user_path(to, to_address);
+    }
+
+    if (path_result != 0)
+    {
+        return path_result;
     }
 
     return knocfs_rename(from, to);
@@ -838,6 +932,12 @@ int64_t syscall_handle(trap_frame_t *frame)
         }
 
         return sys_spawn(frame->a0, frame->a1, 1, frame->a2 != 0);
+
+    case SYS_CHDIR:
+        return sys_chdir(frame->a0);
+
+    case SYS_GETCWD:
+        return sys_getcwd(frame->a0, frame->a1);
 
     case SYS_CAPTURED:
     {

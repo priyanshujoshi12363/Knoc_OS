@@ -379,6 +379,16 @@ double strtod(const char *text, char **end)
     return negative ? -value : value;
 }
 
+float strtof(const char *text, char **end)
+{
+    return (float)strtod(text, end);
+}
+
+long double strtold(const char *text, char **end)
+{
+    return (long double)strtod(text, end);
+}
+
 double atof(const char *text)
 {
     return strtod(text, NULL);

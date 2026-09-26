@@ -18,6 +18,13 @@ extern FILE *stdout;
 extern FILE *stderr;
 
 FILE *fopen(const char *path, const char *mode);
+FILE *fdopen(int fd, const char *mode);
+FILE *freopen(const char *path, const char *mode, FILE *stream);
+int fileno(FILE *stream);
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size);
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
 int fclose(FILE *stream);
 int fflush(FILE *stream);
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream);

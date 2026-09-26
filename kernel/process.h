@@ -148,6 +148,9 @@ void process_record_syscall(uint64_t number);
 void process_note_denied(void);
 void process_note_disk(uint64_t bytes);
 int process_capture(const char *data, uint64_t length);
+int process_resolve_path(const char *path, char *out);
+int process_chdir(const char *path);
+const char *process_cwd(void);
 uint64_t process_captured(char *out, uint64_t length);
 int64_t process_mem_alloc(uint64_t bytes);
 

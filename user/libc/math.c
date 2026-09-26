@@ -376,6 +376,74 @@ double tanh(double x)
     return (e - 1) / (e + 1);
 }
 
+double ldexp(double x, int exponent)
+{
+    while (exponent > 0)
+    {
+        x *= 2;
+        exponent--;
+    }
+
+    while (exponent < 0)
+    {
+        x *= 0.5;
+        exponent++;
+    }
+
+    return x;
+}
+
+long double ldexpl(long double x, int exponent)
+{
+    while (exponent > 0)
+    {
+        x *= 2;
+        exponent--;
+    }
+
+    while (exponent < 0)
+    {
+        x *= 0.5;
+        exponent++;
+    }
+
+    return x;
+}
+
+double frexp(double x, int *exponent)
+{
+    int e = 0;
+
+    if (x == 0 || x != x || isinf(x))
+    {
+        *exponent = 0;
+        return x;
+    }
+
+    double magnitude = x < 0 ? -x : x;
+
+    while (magnitude >= 1)
+    {
+        magnitude *= 0.5;
+        e++;
+    }
+
+    while (magnitude < 0.5)
+    {
+        magnitude *= 2;
+        e--;
+    }
+
+    *exponent = e;
+    return x < 0 ? -magnitude : magnitude;
+}
+
+double modf(double x, double *whole)
+{
+    *whole = trunc(x);
+    return x - *whole;
+}
+
 double hypot(double x, double y)
 {
     return sqrt(x * x + y * y);
