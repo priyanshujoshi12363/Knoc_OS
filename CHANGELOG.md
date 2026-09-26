@@ -2,6 +2,25 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.27.0] - 2026-09-26
+
+Networking: KnocOS is online.
+
+### Added
+- virtio-net driver (`net0`, virtio-mmio slot 1, IRQ 2): 16 receive buffers filled by interrupts, polled sending, the MAC address read from the device
+- A TCP/IP stack in the kernel (`kernel/net.c`): Ethernet, ARP (8-entry table), IPv4, ICMP echo (answers pings and sends them), UDP for a DNS client, and a TCP client (handshake, in-order data, acknowledgements, retransmission every second up to 8 times, 32 KiB receive and 16 KiB send buffers, FIN close, reset handling), up to 8 connections, freed when their program exits or crashes
+- Network system calls: `net_info`, `net_resolve` (dotted addresses or DNS), `net_ping`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`, and the errors `E_TIMEOUT`, `E_REFUSED`, `E_NETDOWN` (`ETIMEDOUT`, `ECONNREFUSED`, `ENETDOWN` in the C library)
+- A `NET` capability: installed programs in `/bin` get it, programs run by path don't
+- `net` (network status), `ping HOST [COUNT]` and `fetch URL [FILE]` (HTTP/1.0 downloads with redirects; `https://` says it isn't supported yet), all normal C library programs
+- App manifest for `fetch`, so the agent can download files
+- `make run` and the tests give QEMU a network card with user networking: KnocOS is `10.0.2.15`, your PC is `10.0.2.2`, DNS is `10.0.2.3`
+- `sscanf` supports `*` (read a field without storing it)
+- `make test` Run 14: `net`, pinging the host, downloading from a web server on the host (a 200000 byte file compared byte for byte), a 404 and a refused connection
+
+### Fixed
+- The kernel maps every virtio-mmio slot, not only the disk's
+- Without a network card, `net0` is marked failed and the network commands say so; the rest of KnocOS runs normally
+
 ## [0.25.0] - 2026-09-26
 
 A C compiler inside KnocOS: KnocOS builds its own programs.

@@ -36,7 +36,14 @@
 #define SYS_CAPTURED 28
 #define SYS_CHDIR 29
 #define SYS_GETCWD 30
-#define SYS_COUNT 31
+#define SYS_NET_INFO 31
+#define SYS_NET_RESOLVE 32
+#define SYS_NET_PING 33
+#define SYS_TCP_CONNECT 34
+#define SYS_TCP_SEND 35
+#define SYS_TCP_RECV 36
+#define SYS_TCP_CLOSE 37
+#define SYS_COUNT 38
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -72,6 +79,9 @@
 #define E_IO -13
 #define E_CRASHED -14
 #define E_KILLED -15
+#define E_TIMEOUT -16
+#define E_REFUSED -17
+#define E_NETDOWN -18
 
 /* Capabilities: what a program is allowed to ask the kernel for */
 #define CAP_CONSOLE 0x1
@@ -81,6 +91,7 @@
 #define CAP_FILES_WRITE 0x10
 #define CAP_SYSTEM 0x20
 #define CAP_KNOWLEDGE 0x40
+#define CAP_NET 0x80
 
 /* User address space (Sv39 root slots 64-127, never used by the kernel) */
 #define USER_BASE 0x1000000000UL
@@ -271,6 +282,21 @@ typedef struct graph_stats
     uint32_t reserved;
     uint32_t by_kind[GRAPH_KIND_COUNT];
 } graph_stats_t;
+
+typedef struct net_info
+{
+    uint32_t up;
+    uint32_t address;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns;
+    uint32_t connections;
+    uint8_t mac[8];
+    uint64_t frames_in;
+    uint64_t frames_out;
+    uint64_t bytes_in;
+    uint64_t bytes_out;
+} net_info_t;
 
 #define TELEMETRY_NAME_MAX 16
 

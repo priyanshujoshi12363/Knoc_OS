@@ -172,7 +172,7 @@ static const program_t *install(const char *path)
     program->start = 0;
     program->end = 0;
     program->process_class = PROCESS_CLASS_NORMAL;
-    program->capabilities = INSTALLED_CAPABILITIES;
+    program->capabilities = INSTALLED_CAPABILITIES | (path[0] == '/' && path[1] == 'b' && path[2] == 'i' && path[3] == 'n' && path[4] == '/' ? CAP_NET : 0);
     program->flags = 0;
     program->path = installed_paths[installed_count];
     installed_count++;

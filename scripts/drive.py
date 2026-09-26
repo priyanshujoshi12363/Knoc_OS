@@ -22,6 +22,8 @@ def main():
          "-global", "virtio-mmio.force-legacy=false",
          "-drive", f"file={disk},if=none,format=raw,id=disk0",
          "-device", "virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0",
+         "-netdev", "user,id=net0" + os.environ.get("QEMU_NETDEV_EXTRA", ""),
+         "-device", "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1",
          "-kernel", kernel] + (["-append", os.environ["QEMU_APPEND"]] if os.environ.get("QEMU_APPEND") else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output = bytearray()

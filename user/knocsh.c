@@ -1620,6 +1620,7 @@ static void cmd_help(void)
     print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Organize:  organize auto on|off  organize learn  organize personal  organize forget\n");
     print("Code:      tcc FILE.c -o NAME  then ./NAME   (C compiler with the standard C library)\n");
+    print("Network:   net  ping HOST [COUNT]  fetch URL [FILE]   (http://; KnocOS is 10.0.2.15, your PC is 10.0.2.2)\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
 

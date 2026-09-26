@@ -1071,6 +1071,13 @@ int sscanf(const char *text, const char *f, ...)
 
         int width = 0;
         int size = 0;
+        int skip = 0;
+
+        if (*f == '*')
+        {
+            skip = 1;
+            f++;
+        }
 
         while (isdigit((unsigned char)*f))
         {
@@ -1102,7 +1109,10 @@ int sscanf(const char *text, const char *f, ...)
                 break;
             }
 
-            if (size >= 2)
+            if (skip)
+            {
+            }
+            else if (size >= 2)
             {
                 *va_arg(args, long long *) = value;
             }
@@ -1124,7 +1134,10 @@ int sscanf(const char *text, const char *f, ...)
                 break;
             }
 
-            if (size >= 1)
+            if (skip)
+            {
+            }
+            else if (size >= 1)
             {
                 *va_arg(args, double *) = value;
             }
@@ -1135,16 +1148,24 @@ int sscanf(const char *text, const char *f, ...)
         }
         else if (*f == 's')
         {
-            char *out = va_arg(args, char *);
+            char *out = skip ? 0 : va_arg(args, char *);
             int taken = 0;
 
             while (*end && !isspace((unsigned char)*end) && (width == 0 || taken < width))
             {
-                *out++ = *end++;
+                if (out)
+                {
+                    *out++ = *end;
+                }
+
+                end++;
                 taken++;
             }
 
-            *out = 0;
+            if (out)
+            {
+                *out = 0;
+            }
 
             if (end == p)
             {
@@ -1158,7 +1179,14 @@ int sscanf(const char *text, const char *f, ...)
                 break;
             }
 
-            *va_arg(args, char *) = *end++;
+            if (skip)
+            {
+                end++;
+            }
+            else
+            {
+                *va_arg(args, char *) = *end++;
+            }
         }
         else
         {
@@ -1166,7 +1194,7 @@ int sscanf(const char *text, const char *f, ...)
         }
 
         p = end;
-        assigned++;
+        assigned += skip ? 0 : 1;
     }
 
     va_end(args);

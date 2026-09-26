@@ -13,6 +13,7 @@
 #include "guardian.h"
 #include "memgraph.h"
 #include "telemetry.h"
+#include "net.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -52,6 +53,13 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_CAPTURED] = "captured",
     [SYS_CHDIR] = "chdir",
     [SYS_GETCWD] = "getcwd",
+    [SYS_NET_INFO] = "net_info",
+    [SYS_NET_RESOLVE] = "net_resolve",
+    [SYS_NET_PING] = "net_ping",
+    [SYS_TCP_CONNECT] = "tcp_connect",
+    [SYS_TCP_SEND] = "tcp_send",
+    [SYS_TCP_RECV] = "tcp_recv",
+    [SYS_TCP_CLOSE] = "tcp_close",
 };
 
 const char *syscall_name(uint64_t number)
@@ -151,6 +159,84 @@ static int64_t user_path(char *out, uintptr_t address)
     return process_resolve_path(raw, out) == 0 ? 0 : E_INVAL;
 }
 
+#define NET_CHUNK 4096
+
+static int allowed(uint64_t number, uint32_t capability);
+
+static int64_t sys_net(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2)
+{
+    static uint8_t chunk[NET_CHUNK];
+
+    if (!allowed(number, CAP_NET))
+    {
+        return E_PERM;
+    }
+
+    if (number == SYS_NET_INFO)
+    {
+        net_info_t info;
+
+        net_info(&info);
+        return copy_to_user(a0, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+    }
+
+    if (number == SYS_NET_RESOLVE)
+    {
+        char name[PATH_MAX];
+        uint32_t address;
+
+        if (copy_string_from_user(name, a0, PATH_MAX) != 0)
+        {
+            return E_FAULT;
+        }
+
+        int64_t result = net_resolve(name, &address);
+
+        if (result != 0)
+        {
+            return result;
+        }
+
+        return copy_to_user(a1, &address, sizeof(address)) == 0 ? 0 : E_FAULT;
+    }
+
+    if (number == SYS_NET_PING)
+    {
+        return net_ping((uint32_t)a0, (uint32_t)a1);
+    }
+
+    if (number == SYS_TCP_CONNECT)
+    {
+        return net_connect((uint32_t)a0, (uint32_t)a1);
+    }
+
+    if (number == SYS_TCP_CLOSE)
+    {
+        return net_close((int)a0);
+    }
+
+    uint64_t length = a2 < NET_CHUNK ? a2 : NET_CHUNK;
+
+    if (number == SYS_TCP_SEND)
+    {
+        if (copy_from_user(chunk, a1, length) != 0)
+        {
+            return E_FAULT;
+        }
+
+        return net_send((int)a0, chunk, length);
+    }
+
+    int64_t got = net_recv((int)a0, chunk, length);
+
+    if (got > 0 && copy_to_user(a1, chunk, (uint64_t)got) != 0)
+    {
+        return E_FAULT;
+    }
+
+    return got;
+}
+
 static int64_t sys_chdir(uintptr_t address)
 {
     char path[PATH_MAX];
@@ -196,6 +282,11 @@ static int64_t sys_getcwd(uintptr_t buffer, uint64_t length)
 
 static const char *capability_name(uint32_t capability)
 {
+    if (capability == CAP_NET)
+    {
+        return "NET";
+    }
+
     if (capability == CAP_CONSOLE)
     {
         return "CONSOLE";
@@ -932,6 +1023,15 @@ int64_t syscall_handle(trap_frame_t *frame)
         }
 
         return sys_spawn(frame->a0, frame->a1, 1, frame->a2 != 0);
+
+    case SYS_NET_INFO:
+    case SYS_NET_RESOLVE:
+    case SYS_NET_PING:
+    case SYS_TCP_CONNECT:
+    case SYS_TCP_SEND:
+    case SYS_TCP_RECV:
+    case SYS_TCP_CLOSE:
+        return sys_net(number, frame->a0, frame->a1, frame->a2);
 
     case SYS_CHDIR:
         return sys_chdir(frame->a0);

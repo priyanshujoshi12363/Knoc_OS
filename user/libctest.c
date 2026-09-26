@@ -234,6 +234,8 @@ static void test_numbers(void)
               strcmp(word, "knoc") == 0,
           "sscanf");
 
+    check(sscanf("HTTP/1.0 404 Not Found", "HTTP/%*s %d", &x) == 1 && x == 404, "sscanf with %*s");
+
     char small[4];
 
     check(sscanf("sqrt 2", "%3s", small) == 1 && strcmp(small, "sqr") == 0 &&

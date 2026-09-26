@@ -15,6 +15,7 @@
 #include "knocfs.h"
 #include "tty.h"
 #include "memgraph.h"
+#include "net.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -1006,6 +1007,11 @@ void scheduler_tick(void)
         return;
     }
 
+    if (timer_ticks() % 10 == 0)
+    {
+        net_tick();
+    }
+
     uint64_t now = timer_ticks();
 
     current->cpu_ticks++;
@@ -1277,6 +1283,7 @@ void process_exit_code(int code)
     {
         /* Leave the program's page table before freeing it */
         vm_switch(vm_kernel_satp());
+        net_release(current->pid);
         user_space_free(current);
     }
 
@@ -1310,6 +1317,8 @@ static void release_locks(process_t *p)
 
 static int kill_locked(process_t *p)
 {
+    net_release(p->pid);
+
     if (p->user)
     {
         user_space_free(p);
@@ -1583,6 +1592,7 @@ void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval, uint64_t sp)
     interrupts_disable();
 
     count_crashes++;
+    net_release(current->pid);
     current->state = PROCESS_CRASHED;
     current->fault_reported = 0;
 

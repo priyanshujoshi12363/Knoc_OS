@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.25.0-blue)
+![Version](https://img.shields.io/badge/version-v0.27.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.25.0 starting
+[INFO] KnocOS v0.27.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,30 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: A C Compiler Inside KnocOS (v0.25.0)
+## ✅ Just Completed: Networking (v0.27.0)
+
+**KnocOS is online.** A virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP), with three new commands:
+
+```text
+knoc:/$ net
+net0: up
+mac        52:54:00:12:34:56
+address    10.0.2.15
+netmask    255.255.255.0
+gateway    10.0.2.2
+dns        10.0.2.3
+...
+knoc:/$ ping 10.0.2.2
+knoc:/$ fetch http://example.com/
+knoc:/$ fetch http://10.0.2.2:8000/model.bin /models/model.bin
+```
+
+- `make run` gives KnocOS a network card through QEMU user networking: KnocOS is `10.0.2.15`, your PC is `10.0.2.2` (start `python3 -m http.server` on your PC to send it files)
+- `fetch` downloads over HTTP and follows redirects; `https://` isn't supported yet (no TLS)
+- Only installed programs in `/bin` get the new `NET` capability, and the agent can download through the `fetch` app
+- Pinging internet hosts gets no answer under QEMU user networking; downloads from the internet work
+
+## A C Compiler Inside KnocOS (v0.25.0)
 
 **KnocOS builds its own programs.** TinyCC runs inside KnocOS, with the KnocOS C library as its standard library:
 
@@ -413,7 +436,8 @@ Recent progress:
 | `63e18bb` | Crash classifier NN in the AI space, crash scenarios and data collection, version `v0.22.0` |
 | `6bf2439` | Context tracker, live permission watch, version `v0.23.0` |
 | `0ab4247` | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
-| *(uncommitted)* | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
+| `a1f8493` | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
+| *(uncommitted)* | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
 
 What works right now:
 
@@ -447,8 +471,9 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.23.0: context tracker + live permission watch
 - [x] v0.24.0: the C library
 - [x] v0.25.0: a C compiler inside KnocOS
+- [x] v0.27.0: networking
 - [ ] v0.26.0: kernel on several cores
-- [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
+- [ ] v0.28.0 – v0.30.0: KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)
 
 ---

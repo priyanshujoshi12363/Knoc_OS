@@ -94,6 +94,41 @@ int spawn(const char *name)
     return (int)syscall(SYS_SPAWN, (long)name, 0, 0);
 }
 
+int net_info(net_info_t *info)
+{
+    return (int)syscall(SYS_NET_INFO, (long)info, 0, 0);
+}
+
+int net_resolve(const char *name, unsigned int *address)
+{
+    return (int)syscall(SYS_NET_RESOLVE, (long)name, (long)address, 0);
+}
+
+long net_ping(unsigned int address, unsigned int sequence)
+{
+    return syscall(SYS_NET_PING, (long)address, (long)sequence, 0);
+}
+
+int tcp_connect(unsigned int address, unsigned int port)
+{
+    return (int)syscall(SYS_TCP_CONNECT, (long)address, (long)port, 0);
+}
+
+long tcp_send(int handle, const void *data, unsigned long length)
+{
+    return syscall(SYS_TCP_SEND, handle, (long)data, (long)length);
+}
+
+long tcp_recv(int handle, void *data, unsigned long length)
+{
+    return syscall(SYS_TCP_RECV, handle, (long)data, (long)length);
+}
+
+int tcp_close(int handle)
+{
+    return (int)syscall(SYS_TCP_CLOSE, handle, 0, 0);
+}
+
 int chdir(const char *path)
 {
     return (int)syscall(SYS_CHDIR, (long)path, 0, 0);

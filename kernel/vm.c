@@ -77,7 +77,7 @@ void vm_init(uintptr_t ram_start, uintptr_t ram_end)
 
     if (vm_map_range(VIRTIO0_BASE,
                      VIRTIO0_BASE,
-                     VM_PAGE_SIZE,
+                     VM_PAGE_SIZE * 8,
                      PTE_R | PTE_W) != 0)
     {
         root_page_table = 0;

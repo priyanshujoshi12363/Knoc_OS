@@ -8,7 +8,9 @@ HALT_TIMEOUT=${HALT_TIMEOUT:-12}
 HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-80}
 LOG=$(mktemp)
 DISK=$(mktemp)
-trap 'rm -f "$LOG" "$DISK"' EXIT
+WWW=$(mktemp -d)
+WEB_PID=""
+trap 'rm -f "$LOG" "$DISK"; rm -rf "$WWW"; [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null' EXIT
 
 FAILED=0
 
@@ -22,6 +24,7 @@ qemu() {
         -global virtio-mmio.force-legacy=false \
         -drive file="$DISK",if=none,format=raw,id=disk0 \
         -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
+        -netdev user,id=net0 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1 \
         -kernel "$KERNEL" > "$LOG" 2>&1
 }
 
@@ -132,7 +135,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload files filler healthd hello hog knocsh leak libctest modelcheck noperm organized organize quiet recorder spawner spin spy tcc" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -482,6 +485,38 @@ check \
     "two files: square(12) = 144" \
     "bad.c:6: error: ';' expected (got 'return')" \
     "compile status 1"
+show_log_on_failure
+
+echo "Run 14: networking: ping, DNS-free downloads from a web server on the host, errors"
+new_disk
+echo "hello from the host web server" > "$WWW/hello.txt"
+head -c 200000 /dev/urandom > "$WWW/big.bin"
+PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+(cd "$WWW" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 > /dev/null 2>&1) &
+WEB_PID=$!
+sleep 1
+boot "net" "ping 10.0.2.2 2" "fetch http://10.0.2.2:$PORT/hello.txt /home/hello.txt" "cat /home/hello.txt" \
+    "fetch http://10.0.2.2:$PORT/big.bin /home/big.bin" "fetch http://10.0.2.2:$PORT/missing.txt" \
+    "fetch http://10.0.2.2:1/x" "fetch https://example.com/" "net"
+check \
+    "net0: up" \
+    "address    10.0.2.15" \
+    "reply from 10.0.2.2: seq=2" \
+    "fetch: 200 OK, 31 bytes saved to /home/hello.txt" \
+    "hello from the host web server" \
+    "fetch: 200 OK, 200000 bytes saved to /home/big.bin" \
+    "fetch: the server answered 404" \
+    "fetch: cannot connect to 10.0.2.2:1 (refused)" \
+    "fetch: https needs encryption (TLS)" \
+    "0 open connections"
+if python3 tools/knocfs.py cat "$DISK" /home/big.bin | cmp -s - "$WWW/big.bin"; then
+    echo "  ok   the 200000 byte download is identical to the original"
+else
+    echo "  MISS the downloaded file differs from the original"
+    FAILED=1
+fi
+kill "$WEB_PID" 2>/dev/null
+WEB_PID=""
 show_log_on_failure
 
 echo "RESULT: PASS"

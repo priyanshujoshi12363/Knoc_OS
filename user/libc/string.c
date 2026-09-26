@@ -328,6 +328,12 @@ char *strerror(int code)
         return "result out of range";
     case ENOTEMPTY:
         return "folder not empty";
+    case ENETDOWN:
+        return "network is down";
+    case ETIMEDOUT:
+        return "timed out";
+    case ECONNREFUSED:
+        return "connection refused";
     default:
         return "unknown error";
     }

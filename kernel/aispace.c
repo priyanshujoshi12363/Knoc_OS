@@ -628,6 +628,13 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_CAPTURED] = "captured",
         [SYS_CHDIR] = "chdir",
         [SYS_GETCWD] = "getcwd",
+        [SYS_NET_INFO] = "net_info",
+        [SYS_NET_RESOLVE] = "net_resolve",
+        [SYS_NET_PING] = "net_ping",
+        [SYS_TCP_CONNECT] = "tcp_connect",
+        [SYS_TCP_SEND] = "tcp_send",
+        [SYS_TCP_RECV] = "tcp_recv",
+        [SYS_TCP_CLOSE] = "tcp_close",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

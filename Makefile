@@ -22,7 +22,8 @@ DISK_MB ?= 64
 KNOCFS = python3 tools/knocfs.py
 QEMU_DISK_FLAGS = -global virtio-mmio.force-legacy=false \
                   -drive file=$(DISK),if=none,format=raw,id=disk0 \
-                  -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0
+                  -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
+                  -netdev user,id=net0 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1
 
 KERNEL_OBJS = boot/boot.o \
               kernel/main.o \
@@ -53,6 +54,8 @@ KERNEL_OBJS = boot/boot.o \
               kernel/tty.o \
               kernel/memgraph.o \
               kernel/telemetry.o \
+              kernel/virtio_net.o \
+              kernel/net.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
@@ -61,7 +64,7 @@ USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocs
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/setjmp.o
 LIBC_CRT = user/libc/crt1.o
-LIBC_PROGRAMS = libctest calc
+LIBC_PROGRAMS = libctest calc net ping fetch
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
