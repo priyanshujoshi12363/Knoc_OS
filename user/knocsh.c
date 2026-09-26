@@ -356,6 +356,7 @@ static void cmd_cd(int argc, char **args)
     else
     {
         strcpy(cwd, path);
+        graph_record(GRAPH_KIND_ACTOR, "user", GRAPH_REL_WORKED_IN, GRAPH_KIND_FOLDER, path, 100);
     }
 }
 
@@ -1431,6 +1432,169 @@ static void cmd_health(void)
     }
 }
 
+#define CONTEXT_SCAN 600
+#define CONTEXT_ITEMS 24
+#define CONTEXT_SHOWN 5
+
+typedef struct tally
+{
+    char name[GRAPH_NAME_MAX];
+    unsigned int count;
+} tally_t;
+
+static tally_t context_folders[CONTEXT_ITEMS];
+static tally_t context_programs[CONTEXT_ITEMS];
+
+static void tally_add(tally_t *items, const char *name, unsigned int weight)
+{
+    int free_slot = -1;
+
+    for (int i = 0; i < CONTEXT_ITEMS; i++)
+    {
+        if (items[i].count && strcmp(items[i].name, name) == 0)
+        {
+            items[i].count += weight;
+            return;
+        }
+
+        if (!items[i].count && free_slot < 0)
+        {
+            free_slot = i;
+        }
+    }
+
+    if (free_slot >= 0)
+    {
+        copy_text(items[free_slot].name, name, GRAPH_NAME_MAX);
+        items[free_slot].count = weight;
+    }
+}
+
+static void folder_part(const char *path, char *out)
+{
+    unsigned long length = strlen(path);
+
+    while (length > 1 && path[length - 1] != '/')
+    {
+        length--;
+    }
+
+    length = length > 1 ? length - 1 : 1;
+    memcpy(out, path, length);
+    out[length] = 0;
+}
+
+static int system_program(const char *name)
+{
+    return strcmp(name, "knocsh") == 0 || strcmp(name, "healthd") == 0 || strcmp(name, "organized") == 0 ||
+           strcmp(name, "recorder") == 0;
+}
+
+static void tally_print(const char *title, tally_t *items, const char *unit)
+{
+    int shown = 0;
+
+    print(title);
+
+    for (int n = 0; n < CONTEXT_SHOWN; n++)
+    {
+        int best = -1;
+
+        for (int i = 0; i < CONTEXT_ITEMS; i++)
+        {
+            if (items[i].count && (best < 0 || items[i].count > items[best].count))
+            {
+                best = i;
+            }
+        }
+
+        if (best < 0)
+        {
+            break;
+        }
+
+        print(shown ? ", " : " ");
+        print(items[best].name);
+        print(" (");
+        print_uint(items[best].count);
+        print(unit);
+        print(")");
+        items[best].count = 0;
+        shown++;
+    }
+
+    print(shown ? "\n" : " nothing yet\n");
+}
+
+static void cmd_context(void)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+    char folder[PATH_MAX];
+    unsigned int problems = 0;
+    unsigned int actions = 0;
+    unsigned int boot = 0;
+
+    memset(context_folders, 0, sizeof(context_folders));
+    memset(context_programs, 0, sizeof(context_programs));
+
+    for (unsigned long i = 0; i < CONTEXT_SCAN; i++)
+    {
+        graph_request_init(&request, GRAPH_OP_RECENT, i);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        if (i == 0)
+        {
+            boot = edge.boot;
+        }
+
+        if (edge.relation == GRAPH_REL_WORKED_IN)
+        {
+            if (edge.to_kind == GRAPH_KIND_FOLDER)
+            {
+                tally_add(context_folders, edge.to, 3);
+            }
+            else
+            {
+                folder_part(edge.to, folder);
+                tally_add(context_folders, folder, 1);
+            }
+
+            actions++;
+        }
+        else if (edge.relation == GRAPH_REL_MOVED_TO && strcmp(edge.actor, "organize") != 0)
+        {
+            folder_part(edge.to, folder);
+            tally_add(context_folders, folder, 1);
+            actions++;
+        }
+        else if (edge.relation == GRAPH_REL_STARTED && strcmp(edge.from, "knocsh") == 0 && !system_program(edge.to))
+        {
+            tally_add(context_programs, edge.to, 1);
+            actions++;
+        }
+        else if (edge.relation == GRAPH_REL_ANOMALY)
+        {
+            problems++;
+        }
+    }
+
+    print("Your recent work (from the memory graph, boot ");
+    print_uint(boot);
+    print("):\n");
+    tally_print("  Folders you work in:", context_folders, "");
+    tally_print("  Programs you use:   ", context_programs, "x");
+    print("  Actions counted: ");
+    print_uint(actions);
+    print(", problems healthd found: ");
+    print_uint(problems);
+    print("\n");
+}
+
 static void cmd_uptime(void)
 {
     unsigned long ticks = uptime();
@@ -1450,7 +1614,7 @@ static void cmd_help(void)
     print("           if COND / else / end  for X in A B C / end  while COND / end  exit N\n");
     print("           COND: exists PATH, A == B, A != B, not COND, or any command (true when it exits with 0)\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
-    print("System:    mem  devices  crashes  ai  health [watch|recover]  uptime  sleep N  clear  exit\n");
+    print("System:    mem  devices  crashes  ai  health [watch|recover]  context  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Organize:  organize auto on|off  organize learn  organize personal  organize forget\n");
@@ -1584,6 +1748,8 @@ static int open_redirect(int argc, char **args, int *fd)
         fail(path, *fd);
         return -1;
     }
+
+    graph_record(GRAPH_KIND_ACTOR, "user", GRAPH_REL_WORKED_IN, GRAPH_KIND_FILE, path, 100);
 
     if (append)
     {
@@ -2103,6 +2269,10 @@ static int execute(int argc, char **args)
     else if (strcmp(command, "uptime") == 0)
     {
         cmd_uptime();
+    }
+    else if (strcmp(command, "context") == 0)
+    {
+        cmd_context();
     }
     else if (strcmp(command, "clear") == 0)
     {

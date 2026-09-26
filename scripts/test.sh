@@ -441,4 +441,17 @@ check \
 check_absent "decided by: rules (the crash classifier NN was unsure)"
 show_log_on_failure
 
+echo "Run 11: the context tracker and the live permission watch"
+new_disk
+boot "noperm repeat &" "sleep 5" "mkdir /home/code" "cd /home/code" "echo int main > main.c" "echo notes > todo.txt" \
+    "cd /home/Downloads" "hello" "cd /home/code" "context" "health" "ask what was I working on?"
+check \
+    "[SECURITY] noperm keeps asking for things it has no permission for" \
+    "[SECURITY] recovered: stopped noperm" \
+    "healthd: program noperm --anomaly--> diagnosis repeated permission denials" \
+    "Folders you work in: /home/code" \
+    "Programs you use:" \
+    "- Recently the user worked most in: /home/code"
+show_log_on_failure
+
 echo "RESULT: PASS"

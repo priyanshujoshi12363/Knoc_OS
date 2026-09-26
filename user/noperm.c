@@ -2,6 +2,23 @@
 
 int main(void)
 {
+    char args[ARGS_MAX];
+
+    getargs(args, sizeof(args));
+
+    if (strcmp(args, "repeat") == 0)
+    {
+        print("[noperm] retrying a file it has no permission to read\n");
+
+        for (int i = 0; i < 40; i++)
+        {
+            open("/hello.txt", O_READ);
+            sleep(25);
+        }
+
+        return 0;
+    }
+
     int result = spawn("hello");
 
     if (result != E_PERM)

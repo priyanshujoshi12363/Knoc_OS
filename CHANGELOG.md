@@ -2,6 +2,18 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.23.0] - 2026-09-26
+
+Context and live permission watching.
+
+### Added
+- Context tracker: `cd` and every file you write (`>` / `>>`) record `worked_in` in the memory graph; `context` in the shell shows the folders you work in and the programs you use, from the recent memory graph
+- `ask`, `chat` and `agent` get your context as facts when a question is about your work ("what was I working on?", "my project", "recently")
+- Live permission watch in `healthd`: a running program with 3 or more denied system calls within 10 s is reported (`[SECURITY] NAME keeps asking for things it has no permission for`), recorded in the memory graph, and in recover mode stopped; before, repeated denials were only judged after a crash
+- `ps` information includes each program's denied calls
+- `noperm repeat`: a program without file permission that keeps retrying (for the test)
+- `make test` Run 11: the context tracker and the permission watch
+
 ## [0.22.0] - 2026-09-26
 
 The crash classifier: a neural network in the AI space diagnoses crashes.

@@ -122,6 +122,8 @@ typedef struct process_info
     uint32_t flags;
     uint64_t cpu_ticks;
     uint64_t memory;
+    uint32_t denied;
+    uint32_t reserved;
     char name[INFO_NAME_MAX];
 } process_info_t;
 
@@ -203,12 +205,13 @@ typedef struct crash_info
 #define GRAPH_REL_IN_PROCESS 14
 #define GRAPH_REL_ANOMALY 15
 #define GRAPH_REL_LOWERED 16
-#define GRAPH_REL_COUNT 17
+#define GRAPH_REL_WORKED_IN 17
+#define GRAPH_REL_COUNT 18
 
 #define GRAPH_REL_NAMES \
     {"?", "classified_as", "came_from", "moved_to", "restored_to", "started", "crashed", \
      "crashed_in", "diagnosed_as", "action", "disabled", "denied", "restarted", "stopped", "in_process", \
-     "anomaly", "lowered"}
+     "anomaly", "lowered", "worked_in"}
 
 #define GRAPH_OP_RECORD 1
 #define GRAPH_OP_STATS 2

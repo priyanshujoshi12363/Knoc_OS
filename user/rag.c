@@ -53,6 +53,11 @@ static const char *crash_words[] = {
     "restarted", "safe", "guardian", "reboot",
 };
 
+static const char *context_words[] = {
+    "working", "work", "project", "projects", "context", "doing", "did", "recently", "recent", "yesterday",
+    "today", "busy", "focus", "continue",
+};
+
 static const char *file_words[] = {
     "moved", "move", "organize", "organized", "organizer", "download", "downloads", "folder", "sorted",
     "sort", "classified",
@@ -580,6 +585,11 @@ static const char *problem_phrase(const char *diagnosis)
         return " was starting too many programs";
     }
 
+    if (strcmp(diagnosis, "repeated permission denials") == 0)
+    {
+        return " kept asking for things it has no permission for";
+    }
+
     return " was filling up the disk";
 }
 
@@ -750,6 +760,156 @@ static void crash_facts(rag_facts_t *facts)
     }
 }
 
+#define CONTEXT_ITEMS 16
+
+typedef struct tally
+{
+    char name[GRAPH_NAME_MAX];
+    unsigned int count;
+} tally_t;
+
+static tally_t folder_tally[CONTEXT_ITEMS];
+static tally_t program_tally[CONTEXT_ITEMS];
+
+static void tally_add(tally_t *items, const char *name, unsigned int weight)
+{
+    int free_slot = -1;
+
+    for (int i = 0; i < CONTEXT_ITEMS; i++)
+    {
+        if (items[i].count && strcmp(items[i].name, name) == 0)
+        {
+            items[i].count += weight;
+            return;
+        }
+
+        if (!items[i].count && free_slot < 0)
+        {
+            free_slot = i;
+        }
+    }
+
+    if (free_slot >= 0)
+    {
+        copy_text(items[free_slot].name, name, GRAPH_NAME_MAX);
+        items[free_slot].count = weight;
+    }
+}
+
+static void folder_part(const char *path, char *out)
+{
+    unsigned long length = strlen(path);
+
+    while (length > 1 && path[length - 1] != '/')
+    {
+        length--;
+    }
+
+    length = length > 1 ? length - 1 : 1;
+    memcpy(out, path, length);
+    out[length] = 0;
+}
+
+static int tally_top(tally_t *items, builder_t *b, int limit)
+{
+    int shown = 0;
+
+    for (int n = 0; n < limit; n++)
+    {
+        int best = -1;
+
+        for (int i = 0; i < CONTEXT_ITEMS; i++)
+        {
+            if (items[i].count && (best < 0 || items[i].count > items[best].count))
+            {
+                best = i;
+            }
+        }
+
+        if (best < 0)
+        {
+            break;
+        }
+
+        put(b, shown ? ", " : " ");
+        put(b, items[best].name);
+        items[best].count = 0;
+        shown++;
+    }
+
+    return shown;
+}
+
+static void context_facts(rag_facts_t *facts)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+    char folder[PATH_MAX];
+
+    memset(folder_tally, 0, sizeof(folder_tally));
+    memset(program_tally, 0, sizeof(program_tally));
+
+    for (unsigned long i = 0; i < RECENT_SCAN * 2; i++)
+    {
+        request_init(&request, GRAPH_OP_RECENT, i);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        if (edge.relation == GRAPH_REL_WORKED_IN)
+        {
+            if (edge.to_kind == GRAPH_KIND_FOLDER)
+            {
+                tally_add(folder_tally, edge.to, 3);
+            }
+            else
+            {
+                folder_part(edge.to, folder);
+                tally_add(folder_tally, folder, 1);
+            }
+        }
+        else if (edge.relation == GRAPH_REL_MOVED_TO && strcmp(edge.actor, "organize") != 0)
+        {
+            folder_part(edge.to, folder);
+            tally_add(folder_tally, folder, 1);
+        }
+        else if (edge.relation == GRAPH_REL_STARTED && strcmp(edge.from, "knocsh") == 0 &&
+                 strcmp(edge.to, "knocsh") != 0 && strcmp(edge.to, "healthd") != 0 &&
+                 strcmp(edge.to, "organized") != 0)
+        {
+            tally_add(program_tally, edge.to, 1);
+        }
+    }
+
+    if (facts->count < RAG_FACTS_MAX)
+    {
+        builder_t b = start_fact(facts);
+
+        put(&b, "Recently the user worked most in:");
+
+        if (tally_top(folder_tally, &b, 3))
+        {
+            put(&b, ".");
+            finish_fact(facts, &b);
+        }
+    }
+
+    if (facts->count < RAG_FACTS_MAX)
+    {
+        builder_t b = start_fact(facts);
+
+        put(&b, "Programs the user ran recently:");
+
+        if (tally_top(program_tally, &b, 4))
+        {
+            put(&b, ".");
+            finish_fact(facts, &b);
+        }
+    }
+}
+
 void rag_collect(const char *question, rag_facts_t *facts)
 {
     facts->count = 0;
@@ -780,5 +940,10 @@ void rag_collect(const char *question, rag_facts_t *facts)
     if (want_health || want_crash || want_files)
     {
         recent_facts(facts, want_health, want_crash, want_files);
+    }
+
+    if (ASKS(context_words))
+    {
+        context_facts(facts);
     }
 }

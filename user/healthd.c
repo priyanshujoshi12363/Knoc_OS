@@ -16,6 +16,9 @@
 #define DISK_FULL_SECONDS 60
 #define MODE_PATH "/etc/health.mode"
 #define COOLDOWN_SECONDS 60
+#define WATCH_MAX 16
+#define DENIED_WINDOW 20
+#define DENIED_ALERT 3
 
 static const char *label_text[LABELS] = {"normal", "memory leak", "CPU hog", "disk thrashing",
                                          "spawn storm", "disk filling up"};
@@ -416,6 +419,121 @@ static void act(int label, const char *name, int pid)
     }
 }
 
+typedef struct watched
+{
+    int pid;
+    char name[INFO_NAME_MAX];
+    unsigned int last;
+    unsigned int history[DENIED_WINDOW];
+    int alerted;
+    int seen;
+} watched_t;
+
+static watched_t watched[WATCH_MAX];
+static unsigned int watch_tick;
+
+static watched_t *watch_slot(const process_info_t *info)
+{
+    watched_t *free_slot = 0;
+
+    for (int i = 0; i < WATCH_MAX; i++)
+    {
+        if (watched[i].pid == info->pid)
+        {
+            return &watched[i];
+        }
+
+        if (watched[i].pid == 0 && !free_slot)
+        {
+            free_slot = &watched[i];
+        }
+    }
+
+    if (free_slot)
+    {
+        memset(free_slot, 0, sizeof(*free_slot));
+        free_slot->pid = info->pid;
+        strcpy(free_slot->name, info->name);
+        free_slot->last = info->denied;
+    }
+
+    return free_slot;
+}
+
+static void permission_watch(void)
+{
+    process_info_t info;
+    unsigned int slot = watch_tick++ % DENIED_WINDOW;
+
+    for (int i = 0; i < WATCH_MAX; i++)
+    {
+        watched[i].seen = 0;
+    }
+
+    for (unsigned long i = 0; ps(i, &info) == 0; i++)
+    {
+        if (!info.user)
+        {
+            continue;
+        }
+
+        watched_t *w = watch_slot(&info);
+
+        if (!w)
+        {
+            continue;
+        }
+
+        unsigned int total = 0;
+
+        w->seen = 1;
+        w->history[slot] = info.denied - w->last;
+        w->last = info.denied;
+
+        for (int h = 0; h < DENIED_WINDOW; h++)
+        {
+            total += w->history[h];
+        }
+
+        if (total < DENIED_ALERT || w->alerted)
+        {
+            continue;
+        }
+
+        w->alerted = 1;
+        print("[SECURITY] ");
+        print(w->name);
+        print(" keeps asking for things it has no permission for (");
+        print_uint(total);
+        print(" denied calls in 10 s)\n");
+        graph_record(GRAPH_KIND_PROGRAM, w->name, GRAPH_REL_ANOMALY, GRAPH_KIND_DIAGNOSIS,
+                     "repeated permission denials", 100);
+
+        if (!recover_mode() || protected_program(w->name))
+        {
+            continue;
+        }
+
+        if (kill(w->pid) == 0)
+        {
+            print("[SECURITY] recovered: stopped ");
+            print(w->name);
+            print(" (pid ");
+            print_uint((unsigned long)w->pid);
+            print(")\n");
+            graph_record(GRAPH_KIND_ACTOR, "healthd", GRAPH_REL_STOPPED, GRAPH_KIND_PROGRAM, w->name, 100);
+        }
+    }
+
+    for (int i = 0; i < WATCH_MAX; i++)
+    {
+        if (!watched[i].seen)
+        {
+            watched[i].pid = 0;
+        }
+    }
+}
+
 int main(void)
 {
     int streak[LABELS];
@@ -446,6 +564,7 @@ int main(void)
     while (1)
     {
         sleep(50);
+        permission_watch();
 
         if (read_window() != 0 || window[WINDOW - 1].seq == last_seq)
         {

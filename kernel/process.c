@@ -1448,6 +1448,8 @@ int process_info(uint32_t index, process_info_t *info)
         info->flags = p->pid == foreground ? PROCESS_FLAG_FOREGROUND : 0;
         info->cpu_ticks = p->cpu_ticks;
         info->memory = p->mem_used;
+        info->denied = p->denied;
+        info->reserved = 0;
         memset(info->name, 0, sizeof(info->name));
         copy_name(info->name, p->name);
 
