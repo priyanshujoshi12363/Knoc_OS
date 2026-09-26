@@ -9,6 +9,10 @@
 #define HASH_SIZE (1u << HASH_BITS)
 #define READ_CHUNK (8UL * 1024 * 1024)
 #define PREFIX_MAGIC "KNOCKV02"
+#define WORKERS_MAX 3
+#define WORKER_STACK (64UL * 1024)
+#define WORKER_SPINS 4000000UL
+#define PARALLEL_ROWS 64
 
 typedef struct header
 {
@@ -574,13 +578,17 @@ static void quantize_vector(const float *v, unsigned int n, signed char *q_out, 
 
 #define LANE(w, n) (((w) << (56 - 8 * (n))) >> 56)
 
-static void matmul(float *out, const qmatrix_t *m, const float *in)
+static unsigned int workers;
+static volatile unsigned int job_generation;
+static volatile unsigned int job_done;
+static float *job_out;
+static const qmatrix_t *job_matrix;
+
+static void matmul_rows(float *out, const qmatrix_t *m, unsigned int from, unsigned int to)
 {
     unsigned int groups = m->cols / group;
 
-    quantize_vector(in, m->cols, xq, xs);
-
-    for (unsigned int i = 0; i < m->rows; i++)
+    for (unsigned int i = from; i < to; i++)
     {
         const signed char *row = m->q + (unsigned long)i * m->cols;
         const float *scales = m->s + (unsigned long)i * groups;
@@ -607,6 +615,96 @@ static void matmul(float *out, const qmatrix_t *m, const float *in)
 
         out[i] = sum;
     }
+}
+
+static unsigned int slice_start(unsigned int rows, unsigned int part)
+{
+    return (unsigned int)((unsigned long)rows * part / (workers + 1));
+}
+
+static void matmul_worker(void *argument)
+{
+    unsigned int part = (unsigned int)(unsigned long)argument;
+    unsigned int seen = 0;
+    unsigned long spins = 0;
+
+    while (1)
+    {
+        unsigned int generation = __atomic_load_n(&job_generation, __ATOMIC_ACQUIRE);
+
+        if (generation == seen)
+        {
+            if (++spins > WORKER_SPINS)
+            {
+                sleep(1);
+                spins = 0;
+            }
+
+            continue;
+        }
+
+        seen = generation;
+        spins = 0;
+        matmul_rows(job_out, job_matrix, slice_start(job_matrix->rows, part),
+                    slice_start(job_matrix->rows, part + 1));
+        __atomic_fetch_add(&job_done, 1, __ATOMIC_RELEASE);
+    }
+}
+
+static void start_workers(void)
+{
+    cpu_info_t info;
+    unsigned int ai_cores = 0;
+
+    for (unsigned long i = 0; cpuinfo(i, &info) == 0; i++)
+    {
+        ai_cores += info.online && info.role == CPU_ROLE_AI;
+    }
+
+    unsigned int wanted = ai_cores > 1 ? ai_cores - 1 : 0;
+
+    if (wanted > WORKERS_MAX)
+    {
+        wanted = WORKERS_MAX;
+    }
+
+    for (unsigned int i = 0; i < wanted; i++)
+    {
+        void *stack = mem_alloc(WORKER_STACK);
+
+        if (!stack || thread_spawn(matmul_worker, (void *)(unsigned long)(i + 1), stack, WORKER_STACK) < 0)
+        {
+            break;
+        }
+
+        workers++;
+    }
+}
+
+static void matmul(float *out, const qmatrix_t *m, const float *in)
+{
+    quantize_vector(in, m->cols, xq, xs);
+
+    if (workers == 0 || m->rows < PARALLEL_ROWS)
+    {
+        matmul_rows(out, m, 0, m->rows);
+        return;
+    }
+
+    job_out = out;
+    job_matrix = m;
+    __atomic_store_n(&job_done, 0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&job_generation, 1, __ATOMIC_RELEASE);
+    matmul_rows(out, m, 0, slice_start(m->rows, 1));
+
+    while (__atomic_load_n(&job_done, __ATOMIC_ACQUIRE) != workers)
+    {
+    }
+}
+
+unsigned int llm_threads(void)
+{
+    return workers + 1;
 }
 
 static void rms_norm(float *out, const float *v, const float *weight, unsigned int n)
@@ -922,6 +1020,7 @@ int llm_load(void)
         }
     }
 
+    start_workers();
     return 0;
 }
 

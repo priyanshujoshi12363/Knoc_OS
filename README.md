@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.27.1-blue)
+![Version](https://img.shields.io/badge/version-v0.28.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -38,7 +38,7 @@ KnocOS currently has:
 - Standalone `timer/` test program for reading `mtime`
 - **Power-off / reboot** driver (QEMU test device): press **Ctrl-D** to shut KnocOS down
 - **virtio-blk disk driver** (`disk0`): reads and writes 512-byte sectors of `disk.img` through interrupts, so data survives reboots
-- **AI space (Guardian core)**: CPU core 1 runs a protected space the kernel can't touch (PMP hardware). It watches the kernel, and when the kernel crashes or freezes it **keeps running**: it diagnoses the problem, saves a crash report (black box) to disk, and **restarts only the kernel from a clean copy** (warm restart), so the AI itself never stops
+- **AI space (Guardian core)**: CPU core 4 runs a protected space the kernel can't touch (PMP hardware). It watches the kernel, and when the kernel crashes or freezes it **keeps running**: it diagnoses the problem, saves a crash report (black box) to disk, and **restarts only the kernel from a clean copy** (warm restart), so the AI itself never stops
 - **Fault containment**: a crashing process is stopped alone, like a Linux "oops". The AI space diagnoses it and decides the fix: restart the process, leave it stopped if it keeps crashing, or **disable the driver** the crash happened in
 - **KnocFS filesystem**: files and folders on the disk, stored as contiguous extents so large AI model files load fast. Programs load from `/bin`, files survive reboots, and `tools/knocfs.py` copies files (models) onto the disk from your PC
 - **Wait queues**: processes sleep until an event wakes them (a key press, a finished disk read, a process exit) instead of polling. The disk has a sleep lock, so processes can use it safely at the same time
@@ -50,9 +50,9 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.27.1 starting
+[INFO] KnocOS v0.28.0 starting
 [INFO] Supervisor interrupts enabled
-[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
+[INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 8 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
 [INFO] Virtual memory initialized
 [INFO] Kernel page tables ready
@@ -62,7 +62,7 @@ KnocOS currently has:
 [INFO] RAM mapped with 2 MiB megapages: 1026
 [INFO] Kernel heap activated
 [INFO] PMP verified: the kernel cannot read the AI space
-[INFO] AI space online (core 1, 256 MiB protected at 0x0000000090000000)
+[INFO] AI space online (core 4, 256 MiB protected at 0x0000000090000000)
 [INFO] Spinlock verified: exclusive, interrupts off while held
 [INFO] Allocation A successful
 ...
@@ -136,7 +136,29 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: HTTPS and a Text Browser (v0.27.1)
+## ✅ Just Completed: 8 Cores, 4 for the Kernel and 4 for AI (v0.28.0)
+
+**KnocOS runs programs on several cores at the same time, and the AI has its own cores.**
+
+```text
+knoc:/$ cpus
+  CORE  ROLE      LOAD  RUNNING
+  0     general   100%  knocsh
+  1     general   100%  spin
+  2     general   100%  spin
+  3     general   100%  spin
+  4     AI space  -     guardian: crash diagnosis, black box, warm restart
+  5     AI        0%    -
+  6     AI        0%    -
+  7     AI        0%    -
+```
+
+- Cores 0-3 run the kernel, the shell and normal programs; core 4 is the protected AI space; cores 5-7 run the AI (`ask`, `chat`, `agent`, `healthd`, the organizer)
+- Threads: `pthread_create` / `pthread_join` / mutexes in the C library, also for programs you build with `tcc`
+- The LLM does its matrix math on the 3 AI cores: about 2x faster (same answer, 4 s instead of 8 s)
+- `ps` shows the core of every process; a crash is still survived: the AI space stops all kernel cores, restores the kernel and starts them all again
+
+## HTTPS and a Text Browser (v0.27.1)
 
 **The whole web, from the KnocOS shell.** HTTPS works (BearSSL, with real certificate checks) and `web` is a text browser:
 
@@ -244,7 +266,7 @@ knoc:/$ noperm repeat &
 
 ## The Crash Classifier (v0.22.0)
 
-**A neural network in the AI space diagnoses crashes.** It runs on core 1 inside the protected AI space, so it keeps working when the kernel crashes, and it tells apart crashes the old rules mixed up:
+**A neural network in the AI space diagnoses crashes.** It runs on core 4 inside the protected AI space, so it keeps working when the kernel crashes, and it tells apart crashes the old rules mixed up:
 
 ```text
 knoc:/$ crash stack
@@ -462,7 +484,8 @@ Recent progress:
 | `0ab4247` | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
 | `a1f8493` | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
 | `677c7e7` | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
-| *(uncommitted)* | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
+| `3d801e2` | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
+| *(uncommitted)* | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
 
 What works right now:
 
@@ -498,9 +521,9 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.25.0: a C compiler inside KnocOS
 - [x] v0.27.0: networking
 - [x] v0.27.1: HTTPS + text browser
-- [ ] v0.26.0: kernel on several cores
-- [ ] v0.28.0 – v0.30.0: KnocNet, semantic search, Linux apps
-- [ ] v0.31.0 – v0.34.0: the GUI (last)
+- [x] v0.28.0: kernel on 8 cores (4 kernel + 4 AI)
+- [ ] v0.29.0 – v0.31.0: KnocNet, semantic search, Linux apps
+- [ ] v0.32.0 – v0.35.0: the GUI (last)
 
 ---
 
@@ -513,7 +536,7 @@ ABI:          LP64D
 Machine:      QEMU virt
 Kernel base:  0x80000000
 RAM:          from the device tree (make run: 2 GiB, 0x80000000 – 0x100000000; minimum 1 GiB)
-Cores:        2 (core 0 = kernel, core 1 = AI space)
+Cores:        8 (cores 0-3 = kernel and programs, core 4 = AI space, cores 5-7 = AI programs)
 Page size:    4 KiB
 Paging:       Sv39
 ```
@@ -525,7 +548,8 @@ QEMU reset
    │
    ▼
 _start (Machine mode)          boot/boot.S
-   ├─ core 1? → aispace_boot → aispace_main(dtb) (M-mode, protected memory, never returns)
+   ├─ core 4? → aispace_boot → aispace_main(dtb) (M-mode, protected memory, never returns)
+   ├─ cores 1-3, 5-7: wait until core 0 sets smp_go, then the same setup with their own stacks → secondary_main
    ├─ core 0: keep the device tree address (a1), wait for the AI space's clean copy
    ├─ core 0: clear .bss, set stack pointer
    ├─ PMP: block the AI space (0x90000000, 256 MiB), allow everything else
@@ -632,6 +656,10 @@ KnocOS/
 │   ├── page.c/h      # Buddy page allocator (4 KiB pages up to 1 GiB blocks)
 │   ├── fdt.c/h       # Device tree parser: RAM size, CPU count
 │   ├── spinlock.c/h  # Spinlocks (interrupts off while held)
+│   ├── cpu.c/h       # Several cores: per-core state, big kernel lock, wake-up signals, secondary boot
+│   ├── rtc.c/h       # Real-time clock (goldfish RTC)
+│   ├── virtio_rng.c/h # Random numbers (virtio-rng)
+│   ├── virtio_net.c/h, net.c/h # Network card and the TCP/IP stack
 │   ├── syscall.c/h   # System call dispatch, safe user copies, capabilities
 │   ├── syscall_abi.h # System call numbers, errors, capabilities, user address layout
 │   ├── elf.c/h       # ELF loader for user programs
@@ -650,7 +678,7 @@ KnocOS/
 │   ├── process.c/h   # Processes and the AI-aware scheduler
 │   ├── switch.S      # context_switch: save/restore registers between processes
 │   ├── string.c/h    # memcpy / memset (needed by the compiler on bare metal)
-│   ├── aispace.c/h   # AI space on core 1: watch, diagnose, black box, recover (self-contained)
+│   ├── aispace.c/h   # AI space on core 4: watch, diagnose, black box, recover (self-contained)
 │   ├── guardian.c/h  # Kernel side of the Guardian: mailbox, heartbeat, crash reporting, boot report, AI verdicts
 │   ├── faulty.c/h    # faulty0: a test driver with a bug on purpose (Ctrl-X)
 │   ├── mailbox.h     # Shared kernel ↔ AI space mailbox layout
@@ -681,7 +709,7 @@ KnocOS/
 
 ### Boot: `boot/boot.S`
 
-- Checks `mhartid`: **core 1 jumps to `aispace_boot`** (its own stack, then `aispace_main`), and any other extra core parks
+- Checks `mhartid`: **core 4 jumps to `aispace_boot`** (its own stack, then `aispace_main`); cores 1-3 and 5-7 wait for core 0 (`smp_go` in the mailbox), then get their own machine stack, timer and kernel stack and enter `secondary_main`; cores beyond 8 park
 - Core 0 keeps the **device tree address** from `a1` (QEMU puts it there for every core) and passes it to `kernel_main(dtb)`. On a warm restart the AI space puts it back in `a1`
 - Core 0 **clears `.bss`** (a warm reboot doesn't clear memory) and sets `sp` to `stack_top`
 - **PMP:** entry 0 blocks the AI space region (`0x90000000`, 256 MiB, no permissions), entry 1 allows all other memory. The kernel (S-mode) cannot change PMP, so it can never reach the AI space
@@ -881,7 +909,7 @@ Adding a new device means writing its driver file and calling its register funct
 ### AI space (Guardian core): `kernel/aispace.c` + `kernel/guardian.c`
 
 ```text
-core 0: KnocOS kernel                        core 1: AI space (M-mode, own memory)
+cores 0-3, 5-7: KnocOS kernel                core 4: AI space (M-mode, own memory)
   every tick: heartbeat++  ──── mailbox ────►  watches the heartbeat every 10 ms
   panic / trap: crash info ──── mailbox ────►  crash? → collect → diagnose → black box → act
   M-mode timer: last_kernel_pc ─ mailbox ───►  no heartbeat for 2 s? → freeze → same steps
@@ -903,11 +931,11 @@ core 0: KnocOS kernel                        core 1: AI space (M-mode, own memor
 
 | Crashes in a row | Action |
 |---|---|
-| 1–2 | **Warm kernel restart**: only core 0 restarts, from the clean copy |
+| 1–2 | **Warm kernel restart**: only the kernel cores restart, from the clean copy |
 | 3 | Warm kernel restart into **safe mode** (minimal services only) |
-| 4+ | **Halt the kernel** (crash loop detected). Core 0 stays stopped, the AI space stays online |
+| 4+ | **Halt the kernel** (crash loop detected). The kernel cores stay stopped, the AI space stays online |
 
-If core 0 can't be stopped (stuck in M-mode), the AI falls back to rebooting the whole machine as in v0.8.0.
+If the kernel cores can't be stopped (stuck in M-mode), the AI falls back to rebooting the whole machine as in v0.8.0.
 
 6. **After the restart:** the kernel prints `Warm restart #N by the AI space` and every new black box report with the AI's diagnosis and action. A `guardian` background process resets the crash streak after 60 s without a crash
 
@@ -915,12 +943,13 @@ If core 0 can't be stopped (stuck in M-mode), the AI falls back to rebooting the
 
 ```text
 boot    core 0 waits in boot.S (boot_request / boot_ack handshake) until
-        core 1 has copied kernel_start..kernel_image_end (38 KiB) into protected memory
-crash   core 1 raises a machine software interrupt on core 0 (CLINT MSIP)
-        core 0 → machine_trap → aispace_park_core0() (AI space code) → spins, parked
-        core 1 compares the kernel code with the clean copy, saves the black box,
-        copies the clean kernel back, resets the mailbox, releases core 0
-        core 0 → fence.i → _start → a fresh kernel. Core 1 never stopped
+        core 4 has copied kernel_start..kernel_image_end into protected memory
+crash   core 4 sets park_request and raises a machine software interrupt on every kernel core (CLINT MSIP)
+        each core → machine_trap → aispace_park_core0() (AI space code) → spins, parked
+        core 4 compares the kernel code with the clean copy, saves the black box,
+        copies the clean kernel back, resets the mailbox, releases the cores
+        every core → fence.i → _start → a fresh kernel. Core 4 never stopped
+        (without park_request the same interrupt is only a wake-up signal between kernel cores)
 ```
 
 **Fault containment (process crashes):**
@@ -1106,14 +1135,14 @@ Header files and `boot/linker.ld` are tracked automatically, so `make` always re
 `make test` runs `scripts/test.sh`, which:
 
 1. Creates a fresh temporary disk image with `scripts/mkdisk.sh` (`Hello from the host!` in sector 0, a KnocFS filesystem with the programs and the test model)
-2. **Boot 1:** types a shell session (`ls`, `cat`, `echo > file`, `cd`, `pwd`, `ps`, `mem`, `devices`, `ai`, `crashes`, `counter` + Ctrl-C, `kill`) and checks the output, and checks that every self-test message appears (including the device tree with 2048 MiB and 2 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
+2. **Boot 1:** types a shell session (`ls`, `cat`, `echo > file`, `cd`, `pwd`, `ps`, `mem`, `devices`, `ai`, `crashes`, `counter` + Ctrl-C, `kill`) and checks the output, and checks that every self-test message appears (including the device tree with 2048 MiB and 8 CPUs, the buddy allocator, 1026 megapages, the 1 GiB block test, the spinlock test, the disk tests, `Disk boot count: 1`, and the 5 user programs with the no-leak check) and there is no `[PANIC]`
 3. The first typed line, `knocos-echo-test`, must come back as `unknown command` from the shell (this tests the UART → PLIC → trap → console → tty → shell path)
 4. Presses Ctrl-D and checks that KnocOS powers QEMU off within 15 seconds
 5. **Boot 2** with the same disk image: checks `Disk boot count: 2` and that the `files` program finds the note it wrote on Boot 1, which proves sectors and files survive a reboot
 6. **Run 3** (user programs, fault containment and warm restarts), on a fresh disk in one QEMU session: Ctrl-U → the `crash` program is restarted 3 times by the AI, then left stopped. Ctrl-E → `spy`'s forbidden call is logged, its read of kernel memory is blocked, and the AI refuses to restart it (the test fails if `spy` ever reads kernel memory). Ctrl-F → the console crash is contained and the AI restarts it. Ctrl-X → the AI disables `faulty0` and restarts the console, and a second Ctrl-X does nothing. Ctrl-W (freeze) → warm restart #1. Ctrl-O (code corruption) → the code check finds it, warm restart #2 from the clean copy. Ctrl-K (3rd kernel crash in a row) → warm restart #3 into **SAFE MODE**. The test fails if the machine was rebooted instead, or if a kernel line and an AI space line were ever mixed
 7. **Run 4**, same disk: one more panic is the 4th crash in a row → the kernel stays halted and the AI space says it stays online
 
-QEMU runs with `-smp 2 -m 2G` (core 0 = kernel, core 1 = AI space, 2 GiB of RAM). `make run RAM=8G` runs with more memory (at least `1G`).
+QEMU runs with `-smp 8 -m 2G` (cores 0-3 = kernel, core 4 = AI space, cores 5-7 = AI programs, 2 GiB of RAM). `make run RAM=8G` runs with more memory (at least `1G`).
 
 The disk used by `make run` is `disk.img` in the project folder. It isn't deleted by `make clean`, so its data persists between runs.
 

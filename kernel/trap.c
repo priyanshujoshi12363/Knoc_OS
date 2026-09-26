@@ -7,6 +7,7 @@
 #include "guardian.h"
 #include "uart.h"
 #include "syscall.h"
+#include "cpu.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -139,7 +140,7 @@ static const char *trap_name(uint64_t scause)
     return name;
 }
 
-void supervisor_trap_handler(trap_frame_t *frame)
+static void handle_trap(trap_frame_t *frame)
 {
     uint64_t scause = read_scause();
     uint64_t sepc = read_sepc();
@@ -150,9 +151,30 @@ void supervisor_trap_handler(trap_frame_t *frame)
         (scause & SCAUSE_CODE_MASK) == INTERRUPT_SUPERVISOR_SOFTWARE)
     {
         clear_sip(SIP_SSIP);
-        timer_tick();
-        guardian_heartbeat();
-        scheduler_tick();
+
+        uint64_t passed = cpu_ticks_passed();
+
+        if (passed == 0)
+        {
+            scheduler_kick();
+        }
+        else
+        {
+            if (cpu_id() == 0)
+            {
+                timer_tick(1);
+                guardian_heartbeat();
+            }
+
+            scheduler_tick();
+
+            if (sstatus & SSTATUS_SPP)
+            {
+                bkl_pass();
+            }
+        }
+
+        process_exit_if_killed();
 
         write_sepc(sepc);
         write_sstatus(sstatus);
@@ -258,6 +280,25 @@ void supervisor_trap_handler(trap_frame_t *frame)
     log_trap_hex("sp     = ", frame->sp);
 
     panic("Unhandled supervisor trap");
+}
+
+void supervisor_trap_handler(trap_frame_t *frame)
+{
+    if (read_scause() == (SCAUSE_INTERRUPT | INTERRUPT_SUPERVISOR_SOFTWARE) && scheduler_idle_tick())
+    {
+        clear_sip(SIP_SSIP);
+        cpu_ticks_passed();
+        return;
+    }
+
+    bkl_enter();
+    handle_trap(frame);
+
+    if (!(read_sstatus() & SSTATUS_SPP))
+    {
+        process_exit_if_killed();
+        bkl_leave_to_user();
+    }
 }
 
 uint64_t trap_breakpoint_count(void)

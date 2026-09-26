@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -77,7 +78,21 @@ static int grow(size_t need)
     return 0;
 }
 
-void *malloc(size_t size)
+static int heap_lock;
+
+static void lock_heap(void)
+{
+    while (atomic_exchange_explicit(&heap_lock, 1, memory_order_acquire))
+    {
+    }
+}
+
+static void unlock_heap(void)
+{
+    atomic_store_explicit(&heap_lock, 0, memory_order_release);
+}
+
+static void *malloc_locked(size_t size)
 {
     if (size == 0)
     {
@@ -130,11 +145,23 @@ void *malloc(size_t size)
     return NULL;
 }
 
+void *malloc(size_t size)
+{
+    lock_heap();
+
+    void *memory = malloc_locked(size);
+
+    unlock_heap();
+    return memory;
+}
+
 void free(void *pointer)
 {
     if (pointer)
     {
+        lock_heap();
         insert_free((block_t *)((char *)pointer - HEADER));
+        unlock_heap();
     }
 }
 

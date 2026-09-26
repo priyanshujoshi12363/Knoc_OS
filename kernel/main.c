@@ -26,6 +26,7 @@
 #include "virtio_net.h"
 #include "virtio_rng.h"
 #include "rtc.h"
+#include "cpu.h"
 
 #define TIMER_TEST_TICKS 5
 #define TIMER_RUNAWAY_WINDOW 3
@@ -319,7 +320,7 @@ static void wait_queue_test(void)
         return;
     }
 
-    int worker = process_create("wait-worker", PROCESS_CLASS_NORMAL, wait_test_worker, 0);
+    int worker = process_create_pinned("wait-worker", PROCESS_CLASS_NORMAL, wait_test_worker, 0, 0x1U);
 
     if (worker < 0)
     {
@@ -603,10 +604,11 @@ static void scheduler_test(void *arg)
     {
         sched_worker_t *worker = &sched_workers[i];
 
-        worker->pid = process_create(worker->name,
-                                     worker->process_class,
-                                     cpu_worker,
-                                     worker);
+        worker->pid = process_create_pinned(worker->name,
+                                            worker->process_class,
+                                            cpu_worker,
+                                            worker,
+                                            0x1U);
 
         if (worker->pid < 0)
         {
@@ -614,7 +616,7 @@ static void scheduler_test(void *arg)
         }
     }
 
-    log_info("Workers created: agent-coder (AI_AGENT), normal-task (NORMAL), nn-sorter (BACKGROUND)");
+    log_info("Workers created on one core: agent-coder (AI_AGENT), normal-task (NORMAL), nn-sorter (BACKGROUND)");
 
     uint64_t wake_target = timer_ticks() + SCHED_TEST_TICKS;
 
@@ -690,6 +692,7 @@ static void scheduler_test(void *arg)
 
 void kernel_main(uintptr_t dtb)
 {
+    cpu_init_boot();
     log_info("KnocOS " KNOCOS_VERSION " starting");
 
     trap_enable_interrupts();
@@ -715,6 +718,7 @@ void kernel_main(uintptr_t dtb)
     uart_puts(", ");
     uart_put_uint(fdt.cpu_count);
     uart_puts(" CPUs\n");
+    cpu_set_present((int)fdt.cpu_count);
 
     for (int i = 0; fdt.bootargs[i]; i++)
     {
@@ -1056,7 +1060,7 @@ void kernel_main(uintptr_t dtb)
             panic("Could not create console process");
         }
     }
-    else if (process_create("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0) < 0)
+    else if (process_create_pinned("sched-test", PROCESS_CLASS_INTERACTIVE, scheduler_test, 0, 0x1U) < 0)
     {
         panic("Could not create scheduler test process");
     }
@@ -1072,10 +1076,8 @@ void kernel_main(uintptr_t dtb)
     }
 
     scheduler_start();
+    cpu_start_secondaries();
     guardian_start_watch();
 
-    while (1)
-    {
-        asm volatile("wfi");
-    }
+    cpu_idle_loop();
 }

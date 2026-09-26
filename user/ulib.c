@@ -235,6 +235,33 @@ int ps(unsigned long index, process_info_t *info)
     return (int)syscall(SYS_PS, (long)index, (long)info, 0);
 }
 
+typedef struct thread_start
+{
+    void (*function)(void *);
+    void *argument;
+} thread_start_t;
+
+static void thread_entry(thread_start_t *start)
+{
+    start->function(start->argument);
+    syscall(SYS_EXIT, 0, 0, 0);
+}
+
+int thread_spawn(void (*function)(void *), void *argument, void *stack, unsigned long stack_size)
+{
+    unsigned long top = ((unsigned long)stack + stack_size - sizeof(thread_start_t)) & ~0xFUL;
+    thread_start_t *start = (thread_start_t *)top;
+
+    start->function = function;
+    start->argument = argument;
+    return (int)syscall(SYS_THREAD, (long)thread_entry, (long)start, (long)top);
+}
+
+int cpuinfo(unsigned long index, cpu_info_t *info)
+{
+    return (int)syscall(SYS_CPUINFO, (long)index, (long)info, 0);
+}
+
 int kill(int pid)
 {
     return (int)syscall(SYS_KILL, pid, 0, 0);

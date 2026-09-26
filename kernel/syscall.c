@@ -64,6 +64,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_TCP_CLOSE] = "tcp_close",
     [SYS_TIME] = "time",
     [SYS_GETRANDOM] = "getrandom",
+    [SYS_CPUINFO] = "cpuinfo",
+    [SYS_THREAD] = "thread",
 };
 
 const char *syscall_name(uint64_t number)
@@ -349,6 +351,33 @@ static int allowed(uint64_t number, uint32_t capability)
     return 0;
 }
 
+#define CONSOLE_LINE_TICKS 5
+
+static int console_line_owner;
+static uint64_t console_line_since;
+
+static void console_claim_line(void)
+{
+    int me = process_current_pid();
+
+    while (console_line_owner != 0 && console_line_owner != me &&
+           timer_ticks() - console_line_since < CONSOLE_LINE_TICKS && process_can_block())
+    {
+        process_sleep(1);
+    }
+
+    console_line_owner = me;
+    console_line_since = timer_ticks();
+}
+
+static void console_finish_line(const char *data, uint64_t size)
+{
+    if (size > 0 && data[size - 1] == '\n')
+    {
+        console_line_owner = 0;
+    }
+}
+
 static int64_t console_write(uintptr_t buffer, uint64_t length)
 {
     char chunk[SYSCALL_CHUNK];
@@ -376,7 +405,9 @@ static int64_t console_write(uintptr_t buffer, uint64_t length)
 
         if (!process_capture(chunk, size))
         {
+            console_claim_line();
             device_write(console, chunk, size);
+            console_finish_line(chunk, size);
         }
         written += size;
     }
@@ -1139,6 +1170,21 @@ int64_t syscall_handle(trap_frame_t *frame)
         }
 
         return process_lower_class_user((int)frame->a0, (uint32_t)frame->a1);
+
+    case SYS_THREAD:
+        return process_thread_spawn(frame->a0, frame->a1, frame->a2);
+
+    case SYS_CPUINFO:
+    {
+        cpu_info_t info;
+
+        if (process_cpu_info((uint32_t)frame->a0, &info) != 0)
+        {
+            return E_NOTFOUND;
+        }
+
+        return copy_to_user(frame->a1, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+    }
 
     case SYS_PS:
     case SYS_KILL:

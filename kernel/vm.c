@@ -5,6 +5,7 @@
 #include "power.h"
 #include "virtio.h"
 #include "rtc.h"
+#include "cpu.h"
 #include "syscall_abi.h"
 
 static page_table_t *root_page_table;
@@ -70,6 +71,15 @@ void vm_init(uintptr_t ram_start, uintptr_t ram_end)
     if (vm_map_range(POWER_BASE,
                      POWER_BASE,
                      VM_PAGE_SIZE,
+                     PTE_R | PTE_W) != 0)
+    {
+        root_page_table = 0;
+        return;
+    }
+
+    if (vm_map_range(CLINT_BASE,
+                     CLINT_BASE,
+                     CLINT_SIZE,
                      PTE_R | PTE_W) != 0)
     {
         root_page_table = 0;

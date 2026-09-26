@@ -16,6 +16,8 @@
 #include "tty.h"
 #include "memgraph.h"
 #include "net.h"
+#include "cpu.h"
+#include "aispace.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -82,6 +84,13 @@ typedef struct process
     uint32_t capture_length;
     char capture[PROCESS_CAPTURE_MAX];
     uint64_t block_seq;
+    int cpu;
+    uint32_t pin_mask;
+    int kill_pending;
+    struct process *leader;
+    int space_pending;
+    uintptr_t thread_stack;
+    uintptr_t thread_argument;
 } process_t;
 
 typedef struct class_info
@@ -111,10 +120,11 @@ static const char *state_names[] = {
 };
 
 static process_t processes[PROCESS_MAX];
-static process_t *current = 0;
+static process_t idle_processes[CPU_MAX];
+
+#define current (cpu_self()->running)
 static int next_pid = 1;
 static int scheduler_running = 0;
-static int resched_pending = 0;
 static uint64_t block_count = 0;
 static char crash_channel;
 static uint64_t disk_loads = 0;
@@ -133,7 +143,7 @@ extern void context_switch(process_context_t *old_context,
 extern void fp_save(uint64_t *state);
 extern void fp_restore(uint64_t *state);
 
-extern void user_enter(uintptr_t entry, uintptr_t user_sp, uintptr_t kernel_sp)
+extern void user_enter(uintptr_t entry, uintptr_t user_sp, uintptr_t kernel_sp, uintptr_t argument)
     __attribute__((noreturn));
 
 static uint64_t interrupts_disable(void)
@@ -151,6 +161,55 @@ static void interrupts_restore(uint64_t enabled)
     {
         asm volatile("csrs sstatus, %0" :: "r"((uint64_t)SSTATUS_SIE));
     }
+}
+
+static int is_idle(process_t *p)
+{
+    return p->process_class == PROCESS_CLASS_IDLE;
+}
+
+static uint32_t allowed_cpus(process_t *p)
+{
+    uint32_t wanted = p->pin_mask;
+
+    if (wanted == 0)
+    {
+        wanted = p->process_class == PROCESS_CLASS_AI_AGENT || p->process_class == PROCESS_CLASS_BACKGROUND
+                     ? CPU_MASK_AI
+                     : CPU_MASK_GENERAL;
+    }
+
+    uint32_t online = cpu_online_bits;
+
+    if (wanted & online)
+    {
+        return wanted & online;
+    }
+
+    return (CPU_MASK_GENERAL & online) ? CPU_MASK_GENERAL & online : 1U;
+}
+
+static int runs_here(process_t *p)
+{
+    return (allowed_cpus(p) >> cpu_id()) & 1;
+}
+
+static int is_running_anywhere(process_t *p)
+{
+    for (int i = 0; i < CPU_MAX; i++)
+    {
+        if (cpus[i].running == p)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static process_t *owner_of(process_t *p)
+{
+    return p->leader ? p->leader : p;
 }
 
 static int is_weighted(process_t *p)
@@ -195,7 +254,7 @@ static int lowest_vruntime(process_t *except, uint64_t *result)
     {
         process_t *p = &processes[i];
 
-        if (p == except || !is_weighted(p))
+        if (p == except || !is_weighted(p) || !(allowed_cpus(p) & allowed_cpus(except)))
         {
             continue;
         }
@@ -215,6 +274,27 @@ static int lowest_vruntime(process_t *except, uint64_t *result)
     return found;
 }
 
+static void kick_for(process_t *p)
+{
+    uint32_t mask = allowed_cpus(p);
+    int self = cpu_id();
+
+    if (((mask >> self) & 1) && is_idle(current))
+    {
+        return;
+    }
+
+    for (int i = 0; i < CPU_MAX; i++)
+    {
+        if (i != self && ((mask >> i) & 1) && cpus[i].online && !cpus[i].kicked &&
+            cpus[i].running && is_idle(cpus[i].running))
+        {
+            cpu_kick(i);
+            return;
+        }
+    }
+}
+
 static void place_vruntime(process_t *p)
 {
     uint64_t lowest;
@@ -223,18 +303,23 @@ static void place_vruntime(process_t *p)
     {
         p->vruntime = lowest;
     }
+
+    if (p->state == PROCESS_READY && scheduler_running)
+    {
+        kick_for(p);
+    }
 }
 
 static process_t *pick_next(void)
 {
-    int start = (int)(current - processes);
+    int start = is_idle(current) ? 0 : (int)(current - processes);
 
     for (int i = 1; i <= PROCESS_MAX; i++)
     {
         process_t *p = &processes[(start + i) % PROCESS_MAX];
 
         if (p->state == PROCESS_READY &&
-            p->process_class == PROCESS_CLASS_INTERACTIVE)
+            p->process_class == PROCESS_CLASS_INTERACTIVE && runs_here(p))
         {
             return p;
         }
@@ -246,7 +331,7 @@ static process_t *pick_next(void)
     {
         process_t *p = &processes[i];
 
-        if (p->state != PROCESS_READY || !is_weighted(p))
+        if (p->state != PROCESS_READY || !is_weighted(p) || !runs_here(p))
         {
             continue;
         }
@@ -265,7 +350,44 @@ static process_t *pick_next(void)
         return best;
     }
 
-    return &processes[0];
+    return cpu_self()->idle;
+}
+
+static void account_time(cpu_t *cpu, process_t *leaving)
+{
+    uint64_t now = timer_read();
+
+    if (cpu->switch_time != 0)
+    {
+        if (is_idle(leaving))
+        {
+            cpu->idle_time += now - cpu->switch_time;
+        }
+        else
+        {
+            cpu->busy_time += now - cpu->switch_time;
+        }
+    }
+
+    cpu->switch_time = now;
+}
+
+static void cpu_times(cpu_t *cpu, uint64_t *busy, uint64_t *idle)
+{
+    uint64_t now = timer_read();
+    uint64_t running = cpu->switch_time != 0 ? now - cpu->switch_time : 0;
+
+    *busy = cpu->busy_time;
+    *idle = cpu->idle_time;
+
+    if (cpu->running && !is_idle(cpu->running))
+    {
+        *busy += running;
+    }
+    else
+    {
+        *idle += running;
+    }
 }
 
 static void schedule(void)
@@ -288,6 +410,9 @@ static void schedule(void)
     }
 
     count_switches++;
+    account_time(cpu_self(), previous);
+    cpu_self()->switches++;
+    next->cpu = cpu_id();
     current = next;
     guardian_set_current(next->pid, next->name);
     vm_switch(next->satp);
@@ -317,9 +442,29 @@ void process_init(void)
     idle->slice_left = class_info[PROCESS_CLASS_IDLE].slice;
 
     idle->satp = vm_kernel_satp();
+    idle->cpu = 0;
 
+    cpu_self()->idle = idle;
+    cpu_self()->switch_time = timer_read();
     current = idle;
     guardian_set_current(idle->pid, idle->name);
+}
+
+void process_init_cpu(int id)
+{
+    process_t *idle = &idle_processes[id];
+
+    idle->pid = 0;
+    copy_name(idle->name, "idle");
+    idle->process_class = PROCESS_CLASS_IDLE;
+    idle->state = PROCESS_RUNNING;
+    idle->stack = 0;
+    idle->slice_left = class_info[PROCESS_CLASS_IDLE].slice;
+    idle->satp = vm_kernel_satp();
+    idle->cpu = id;
+    cpus[id].idle = idle;
+    cpus[id].switch_time = timer_read();
+    cpus[id].running = idle;
 }
 
 /* Takes a free slot and sets up a READY kernel thread. Interrupts must be off. */
@@ -334,7 +479,7 @@ static process_t *create_locked(const char *name,
     {
         process_t *candidate = &processes[i];
 
-        if (candidate == current)
+        if (is_running_anywhere(candidate) || candidate->space_pending)
         {
             continue;
         }
@@ -405,6 +550,13 @@ static process_t *create_locked(const char *name,
     p->capture_pid = 0;
     p->capture_quiet = 0;
     p->capture_length = 0;
+    p->cpu = -1;
+    p->pin_mask = 0;
+    p->kill_pending = 0;
+    p->leader = 0;
+    p->space_pending = 0;
+    p->thread_stack = 0;
+    p->thread_argument = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -432,6 +584,27 @@ int process_create(const char *name,
     uint64_t enabled = interrupts_disable();
     process_t *p = create_locked(name, process_class, entry, arg);
     int pid = p != 0 ? p->pid : -1;
+
+    interrupts_restore(enabled);
+    return pid;
+}
+
+int process_create_pinned(const char *name,
+                          process_class_t process_class,
+                          process_entry_t entry,
+                          void *arg,
+                          uint32_t cpu_mask)
+{
+    uint64_t enabled = interrupts_disable();
+    process_t *p = create_locked(name, process_class, entry, arg);
+    int pid = -1;
+
+    if (p != 0)
+    {
+        p->pin_mask = cpu_mask;
+        place_vruntime(p);
+        pid = p->pid;
+    }
 
     interrupts_restore(enabled);
     return pid;
@@ -611,7 +784,9 @@ static void user_process_start(void *arg)
 
     uintptr_t kernel_sp = ((uintptr_t)current->stack + PROCESS_STACK_SIZE) & ~0xFUL;
 
-    user_enter(current->user_entry, USER_STACK_TOP, kernel_sp);
+    bkl_leave_to_user();
+    user_enter(current->user_entry, current->leader ? current->thread_stack : USER_STACK_TOP, kernel_sp,
+               current->thread_argument);
 }
 
 int process_spawn(const program_t *program)
@@ -771,7 +946,7 @@ open_file_t *process_file(int fd)
         return 0;
     }
 
-    open_file_t *file = &current->files[fd - FD_FIRST_FILE];
+    open_file_t *file = &owner_of(current)->files[fd - FD_FIRST_FILE];
 
     return file->used ? file : 0;
 }
@@ -780,7 +955,7 @@ int process_file_open(uint32_t inode, uint32_t flags)
 {
     for (int i = 0; i < PROCESS_FILES_MAX; i++)
     {
-        open_file_t *file = &current->files[i];
+        open_file_t *file = &owner_of(current)->files[i];
 
         if (!file->used)
         {
@@ -967,37 +1142,38 @@ int64_t process_mem_alloc(uint64_t bytes)
         return E_INVAL;
     }
 
+    process_t *owner = owner_of(current);
     uint64_t size = block_size(bytes);
     uintptr_t alignment = size >= VM_MEGAPAGE_SIZE ? VM_MEGAPAGE_SIZE : PAGE_SIZE;
-    uintptr_t address = (current->heap_next + alignment - 1) & ~(alignment - 1);
+    uintptr_t address = (owner->heap_next + alignment - 1) & ~(alignment - 1);
 
     if (address + size > USER_HEAP_END)
     {
         return E_NOMEM;
     }
 
-    void *memory = user_block(current, size);
+    void *memory = user_block(owner, size);
 
     if (memory == 0)
     {
         return E_NOMEM;
     }
 
-    if (vm_user_map(current->user_root, address, (uintptr_t)memory, size, PTE_R | PTE_W) != 0)
+    if (vm_user_map(owner->user_root, address, (uintptr_t)memory, size, PTE_R | PTE_W) != 0)
     {
         return E_NOMEM;
     }
 
     asm volatile("sfence.vma zero, zero");
 
-    current->heap_next = address + size;
+    owner->heap_next = address + size;
     return (int64_t)address;
 }
 
 void scheduler_start(void)
 {
-    scheduler_running = 1;
     log_info("Scheduler started (AI-aware: INTERACTIVE first, then AI_AGENT 60 / NORMAL 30 / BACKGROUND 10)");
+    scheduler_running = 1;
 }
 
 void scheduler_tick(void)
@@ -1007,37 +1183,50 @@ void scheduler_tick(void)
         return;
     }
 
-    if (timer_ticks() % 10 == 0)
+    cpu_t *cpu = cpu_self();
+    int interactive_woke = 0;
+
+    if (cpu->id == 0)
     {
-        net_tick();
+        uint64_t now = timer_ticks();
+
+        if (now % 10 == 0)
+        {
+            net_tick();
+        }
+
+        for (int i = 0; i < PROCESS_MAX; i++)
+        {
+            process_t *p = &processes[i];
+
+            if ((p->state == PROCESS_SLEEPING && now >= p->wake_tick) ||
+                (p->state == PROCESS_BLOCKED && p->wake_tick != 0 && now >= p->wake_tick))
+            {
+                p->state = PROCESS_READY;
+                place_vruntime(p);
+
+                if (p->process_class == PROCESS_CLASS_INTERACTIVE)
+                {
+                    interactive_woke = 1;
+                }
+            }
+        }
     }
 
-    uint64_t now = timer_ticks();
-
     current->cpu_ticks++;
+
+    if (is_idle(current))
+    {
+        cpu->idle_ticks++;
+    }
+    else
+    {
+        cpu->busy_ticks++;
+    }
 
     if (is_weighted(current))
     {
         current->vruntime += VRUNTIME_SCALE / class_info[current->process_class].weight;
-    }
-
-    int interactive_woke = 0;
-
-    for (int i = 0; i < PROCESS_MAX; i++)
-    {
-        process_t *p = &processes[i];
-
-        if ((p->state == PROCESS_SLEEPING && now >= p->wake_tick) ||
-            (p->state == PROCESS_BLOCKED && p->wake_tick != 0 && now >= p->wake_tick))
-        {
-            p->state = PROCESS_READY;
-            place_vruntime(p);
-
-            if (p->process_class == PROCESS_CLASS_INTERACTIVE)
-            {
-                interactive_woke = 1;
-            }
-        }
     }
 
     if (current->slice_left > 0)
@@ -1052,7 +1241,7 @@ void scheduler_tick(void)
         need_switch = 1;
     }
 
-    if (current == &processes[0])
+    if (is_idle(current))
     {
         need_switch = 1;
     }
@@ -1063,9 +1252,45 @@ void scheduler_tick(void)
     }
 }
 
+void scheduler_kick(void)
+{
+    cpu_self()->kicked = 0;
+
+    if (scheduler_running && is_idle(current))
+    {
+        schedule();
+    }
+}
+
+int scheduler_idle_tick(void)
+{
+    cpu_t *cpu = cpu_self();
+
+    cpu->kicked = 0;
+
+    if (cpu->id == 0 || cpu->bkl || !scheduler_running || !is_idle(current) || cpu->resched)
+    {
+        return 0;
+    }
+
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->state == PROCESS_READY && runs_here(p))
+        {
+            return 0;
+        }
+    }
+
+    current->cpu_ticks++;
+    cpu->idle_ticks++;
+    return 1;
+}
+
 int process_can_block(void)
 {
-    return scheduler_running && current != 0 && current != &processes[0];
+    return scheduler_running && current != 0 && !is_idle(current);
 }
 
 int process_block(void *channel, uint64_t timeout)
@@ -1103,10 +1328,10 @@ void process_wake(void *channel)
         p->state = PROCESS_READY;
         place_vruntime(p);
 
-        /* Run it right away if the CPU is idle or it has a higher class than the running process */
-        if (current == &processes[0] || p->process_class < current->process_class)
+        /* Run it right away if this core is idle or it has a higher class than the running process */
+        if (runs_here(p) && (is_idle(current) || p->process_class < current->process_class))
         {
-            resched_pending = 1;
+            cpu_self()->resched = 1;
         }
     }
 
@@ -1116,9 +1341,9 @@ void process_wake(void *channel)
 /* Called at the end of a device interrupt: switch now if a wake-up asked for it */
 void scheduler_preempt(void)
 {
-    if (scheduler_running && resched_pending)
+    if (scheduler_running && cpu_self()->resched)
     {
-        resched_pending = 0;
+        cpu_self()->resched = 0;
         schedule();
     }
 }
@@ -1244,11 +1469,12 @@ void sleeplock_release(sleeplock_t *lock)
         next->state = PROCESS_READY;
         place_vruntime(next);
 
-        if (current == &processes[0] ||
-            (next->process_class == PROCESS_CLASS_INTERACTIVE &&
-             current->process_class != PROCESS_CLASS_INTERACTIVE))
+        if (runs_here(next) &&
+            (is_idle(current) ||
+             (next->process_class == PROCESS_CLASS_INTERACTIVE &&
+              current->process_class != PROCESS_CLASS_INTERACTIVE)))
         {
-            resched_pending = 1;
+            cpu_self()->resched = 1;
         }
     }
 
@@ -1273,18 +1499,148 @@ void process_sleep(uint64_t ticks)
     interrupts_restore(enabled);
 }
 
+static void release_locks(process_t *p);
+
+static int live_threads(process_t *owner, process_t *except)
+{
+    int count = 0;
+
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p != except && p->leader == owner && p->state != PROCESS_UNUSED && p->state != PROCESS_EXITED)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static void release_space(process_t *owner)
+{
+    if (live_threads(owner, 0) == 0)
+    {
+        user_space_free(owner);
+        owner->space_pending = 0;
+    }
+    else
+    {
+        owner->space_pending = 1;
+    }
+}
+
+static void end_thread(process_t *p, int code)
+{
+    process_t *owner = p->leader;
+
+    net_release(p->pid);
+    release_locks(p);
+    p->exit_code = code;
+    p->state = PROCESS_EXITED;
+    process_wake(p);
+
+    if (owner->space_pending && live_threads(owner, 0) == 0)
+    {
+        user_space_free(owner);
+        owner->space_pending = 0;
+    }
+}
+
+static void stop_threads(process_t *owner)
+{
+    for (int i = 0; i < PROCESS_MAX; i++)
+    {
+        process_t *p = &processes[i];
+
+        if (p->leader != owner || p->state == PROCESS_UNUSED || p->state == PROCESS_EXITED || p == current)
+        {
+            continue;
+        }
+
+        if (p->state == PROCESS_RUNNING)
+        {
+            p->kill_pending = 1;
+        }
+        else
+        {
+            end_thread(p, E_KILLED);
+        }
+    }
+}
+
+int process_thread_spawn(uintptr_t entry, uintptr_t argument, uintptr_t stack)
+{
+    if (current == 0 || !current->user)
+    {
+        return E_INVAL;
+    }
+
+    uint64_t enabled = interrupts_disable();
+    process_t *owner = owner_of(current);
+
+    if (live_threads(owner, 0) >= PROCESS_THREADS_MAX)
+    {
+        interrupts_restore(enabled);
+        return E_NOMEM;
+    }
+
+    process_t *p = create_locked(owner->name, owner->process_class, user_process_start, 0);
+
+    if (p == 0)
+    {
+        interrupts_restore(enabled);
+        return E_NOMEM;
+    }
+
+    p->user = 1;
+    p->leader = owner;
+    p->program = owner->program;
+    p->user_root = owner->user_root;
+    p->satp = owner->satp;
+    p->capabilities = owner->capabilities;
+    p->mem_limit = 0;
+    p->user_entry = entry;
+    p->thread_stack = stack & ~0xFUL;
+    p->thread_argument = argument;
+    p->pin_mask = owner->pin_mask;
+    p->capture_owner = owner->capture_owner;
+    p->capture_quiet = owner->capture_quiet;
+    memcpy(p->cwd, owner->cwd, PATH_MAX);
+    memcpy(p->args, owner->args, ARGS_MAX);
+
+    int pid = p->pid;
+
+    count_spawns++;
+    interrupts_restore(enabled);
+    return pid;
+}
+
 void process_exit_code(int code)
 {
     interrupts_disable();
 
     current->exit_code = code;
 
+    if (current->user && current->leader)
+    {
+        vm_switch(vm_kernel_satp());
+        end_thread(current, code);
+        schedule();
+
+        while (1)
+        {
+        }
+    }
+
     if (current->user)
     {
         /* Leave the program's page table before freeing it */
         vm_switch(vm_kernel_satp());
         net_release(current->pid);
-        user_space_free(current);
+        stop_threads(current);
+        release_space(current);
     }
 
     current->state = PROCESS_EXITED;
@@ -1317,11 +1673,24 @@ static void release_locks(process_t *p)
 
 static int kill_locked(process_t *p)
 {
+    if (p->state == PROCESS_RUNNING)
+    {
+        p->kill_pending = 1;
+        return 0;
+    }
+
+    if (p->leader)
+    {
+        end_thread(p, E_KILLED);
+        return 0;
+    }
+
     net_release(p->pid);
 
     if (p->user)
     {
-        user_space_free(p);
+        stop_threads(p);
+        release_space(p);
     }
 
     release_locks(p);
@@ -1330,6 +1699,19 @@ static int kill_locked(process_t *p)
     p->state = PROCESS_EXITED;
     process_wake(p);
     return 0;
+}
+
+void process_exit_if_killed(void)
+{
+    if (current == 0 || !current->kill_pending)
+    {
+        return;
+    }
+
+    interrupts_disable();
+    current->kill_pending = 0;
+    release_locks(current);
+    process_exit_code(E_KILLED);
 }
 
 static process_t *find_live(int pid)
@@ -1531,9 +1913,35 @@ void process_telemetry(telemetry_sample_t *sample)
         }
     }
 
+    uint32_t busiest = 0;
+
+    for (int i = 0; i < CPU_MAX; i++)
+    {
+        static uint64_t seen_busy[CPU_MAX];
+        static uint64_t seen_idle[CPU_MAX];
+        uint64_t busy_now;
+        uint64_t idle_now;
+
+        cpu_times(&cpus[i], &busy_now, &idle_now);
+
+        uint64_t busy = since(&seen_busy[i], busy_now);
+        uint64_t idle_part = since(&seen_idle[i], idle_now);
+
+        if (cpus[i].online && ((CPU_MASK_GENERAL >> i) & 1) && busy + idle_part > 0)
+        {
+            uint32_t percent = (uint32_t)(busy * 100 / (busy + idle_part));
+
+            if (percent > busiest)
+            {
+                busiest = percent;
+            }
+        }
+    }
+
     interrupts_restore(enabled);
 
-    sample->cpu_busy = idle >= elapsed ? 0 : (uint32_t)((elapsed - idle) * 100 / elapsed);
+    (void)idle;
+    sample->cpu_busy = busiest;
     sample->top_cpu = (uint32_t)(best_cpu * 100 / elapsed);
     sample->top_sys = (uint32_t)(best_sys * 100 / elapsed);
     sample->top_mem_kib = (uint32_t)(best_mem / 1024);
@@ -1570,7 +1978,7 @@ int process_info(uint32_t index, process_info_t *info)
         info->cpu_ticks = p->cpu_ticks;
         info->memory = p->mem_used;
         info->denied = p->denied;
-        info->reserved = 0;
+        info->reserved = (uint32_t)(p->cpu + 1);
         memset(info->name, 0, sizeof(info->name));
         copy_name(info->name, p->name);
 
@@ -1582,17 +1990,70 @@ int process_info(uint32_t index, process_info_t *info)
     return -1;
 }
 
+int process_cpu_info(uint32_t index, cpu_info_t *info)
+{
+    if (index >= CPU_MAX)
+    {
+        return -1;
+    }
+
+    uint64_t enabled = interrupts_disable();
+    cpu_t *cpu = &cpus[index];
+
+    memset(info, 0, sizeof(*info));
+    info->id = index;
+    info->role = index == AISPACE_HART ? CPU_ROLE_AI_SPACE
+                 : ((CPU_MASK_AI >> index) & 1) ? CPU_ROLE_AI
+                                                : CPU_ROLE_GENERAL;
+    info->online = index == AISPACE_HART ? (uint32_t)guardian_ai_online() : (uint32_t)cpu->online;
+    uint64_t busy;
+    uint64_t idle;
+
+    cpu_times(cpu, &busy, &idle);
+    info->busy_ticks = busy / TIMER_INTERVAL;
+    info->idle_ticks = idle / TIMER_INTERVAL;
+    info->running_pid = -1;
+
+    if (cpu->online && cpu->running && !is_idle(cpu->running))
+    {
+        info->running_pid = cpu->running->pid;
+        copy_name(info->running, cpu->running->name);
+    }
+
+    interrupts_restore(enabled);
+    return 0;
+}
+
 int process_can_contain_fault(void)
 {
-    return scheduler_running && current != 0 && current != &processes[0];
+    return scheduler_running && current != 0 && !is_idle(current);
 }
 
 void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval, uint64_t sp)
 {
     interrupts_disable();
 
+    if (current->leader)
+    {
+        process_t *owner = current->leader;
+
+        if (owner->state != PROCESS_EXITED && owner->state != PROCESS_UNUSED && owner->state != PROCESS_CRASHED)
+        {
+            kill_locked(owner);
+        }
+
+        vm_switch(vm_kernel_satp());
+        end_thread(current, E_CRASHED);
+        schedule();
+
+        while (1)
+        {
+        }
+    }
+
     count_crashes++;
     net_release(current->pid);
+    stop_threads(current);
     current->state = PROCESS_CRASHED;
     current->fault_reported = 0;
 
@@ -1694,6 +2155,11 @@ int process_restart(int pid)
     p->state = PROCESS_LOADING;
     interrupts_restore(enabled);
 
+    while (live_threads(p, 0) > 0 && process_can_block())
+    {
+        process_sleep(1);
+    }
+
     if (p->user)
     {
         user_space_free(p);
@@ -1743,7 +2209,7 @@ void process_discard(int pid)
     {
         if (p->user)
         {
-            user_space_free(p);
+            release_space(p);
         }
 
         p->state = PROCESS_EXITED;
@@ -1775,7 +2241,7 @@ const char *process_current_driver(void)
 
 int process_current_pid(void)
 {
-    return current->pid;
+    return current != 0 ? current->pid : 0;
 }
 
 const char *process_current_name(void)

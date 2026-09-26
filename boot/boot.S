@@ -2,6 +2,7 @@
 #include "../kernel/trap.h"
 #include "../kernel/aispace.h"
 #include "../kernel/mailbox.h"
+#include "../kernel/cpu.h"
 
 .section .text
 .global _start
@@ -16,7 +17,9 @@ _start:
     csrr t0, mhartid
     li t1, AISPACE_HART
     beq t0, t1, aispace_boot
-    bnez t0, park
+    li t1, CPU_MAX
+    bgeu t0, t1, park
+    bnez t0, secondary_boot
 
     mv s0, a1
 
@@ -52,6 +55,26 @@ clear_bss:
 
 clear_bss_done:
     la sp, stack_top
+    la s1, supervisor_start
+    j machine_setup
+
+secondary_boot:
+    la t1, guardian_mailbox
+
+secondary_wait:
+    ld t2, MAILBOX_SMP_GO(t1)
+    beqz t2, secondary_wait
+    fence
+
+    la sp, cpu_stacks
+    addi t3, t0, 1
+    li t4, CPU_STACK_SIZE
+    mul t3, t3, t4
+    add sp, sp, t3
+    la s1, secondary_start
+
+machine_setup:
+    csrr tp, mhartid
 
     csrw satp, zero
     sfence.vma zero, zero
@@ -74,7 +97,10 @@ clear_bss_done:
     li t0, PMP_CFG_KERNEL
     csrw pmpcfg0, t0
 
-    la t0, machine_stack_top
+    la t0, machine_stacks
+    addi t1, tp, 1
+    slli t1, t1, 12
+    add t0, t0, t1
     csrw mscratch, t0
 
     la t0, machine_trap
@@ -89,8 +115,7 @@ clear_bss_done:
     li t0, SIP_SSIP | SIP_SEIP
     csrw mideleg, t0
 
-    la t0, supervisor_start
-    csrw mepc, t0
+    csrw mepc, s1
 
     li t0, 0x1800
     csrc mstatus, t0
@@ -114,6 +139,8 @@ clear_bss_done:
     add t1, t1, t2
 
     li t0, CLINT_MTIMECMP
+    slli t3, tp, 3
+    add t0, t0, t3
     sd t1, 0(t0)
 
     li t0, MIE_MTIE | MIE_MSIE
@@ -124,6 +151,10 @@ clear_bss_done:
 supervisor_start:
     mv a0, s0
     call kernel_main
+
+secondary_start:
+    mv a0, tp
+    call secondary_main
 
 aispace_boot:
     li t0, MSTATUS_FS_INITIAL
@@ -177,12 +208,18 @@ machine_trap:
     csrr t0, mcause
 
     li t1, MCAUSE_MACHINE_SOFTWARE
-    beq t0, t1, machine_trap_park
+    bne t0, t1, machine_trap_timer
 
+    call aispace_park_core0
+    j machine_trap_return
+
+machine_trap_timer:
     li t1, 0x8000000000000007
     bne t0, t1, machine_trap_exception
 
     call timer_interrupt
+
+machine_trap_return:
 
     ld ra, 0(sp)
     ld gp, 8(sp)
@@ -218,9 +255,6 @@ machine_trap:
     addi sp, sp, 256
     csrrw sp, mscratch, sp
     mret
-
-machine_trap_park:
-    call aispace_park_core0
 
 machine_trap_exception:
     la t1, trap_message
@@ -351,6 +385,7 @@ supervisor_trap_from_user:
     csrr t0, sscratch
     sd t0, 240(sp)
     csrw sscratch, zero
+    ld tp, 248(sp)
 
 supervisor_trap_call:
     mv a0, sp
@@ -360,6 +395,7 @@ supervisor_trap_call:
     andi t0, t0, SSTATUS_SPP
     beqz t0, supervisor_return_to_user
 
+    sd tp, 16(sp)
     RESTORE_REGISTERS
     addi sp, sp, 256
     sret
@@ -367,6 +403,7 @@ supervisor_trap_call:
 supervisor_return_to_user:
     addi t0, sp, 256
     csrw sscratch, t0
+    sd tp, 248(sp)
 
     RESTORE_REGISTERS
     ld sp, 240(sp)
@@ -377,6 +414,5 @@ trap_message:
 
 .section .bss
 .align 4
-machine_stack:
-    .space 4096
-machine_stack_top:
+machine_stacks:
+    .space 4096 * CPU_MAX

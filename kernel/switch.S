@@ -39,12 +39,13 @@ context_switch:
 
     ret
 
-/* user_enter(entry, user_sp, kernel_sp): start a user program.
+/* user_enter(entry, user_sp, kernel_sp, a0): start a user program.
    sret jumps to sepc in the mode stored in sstatus.SPP (0 = U-mode),
    and turns interrupts back on from SPIE. */
 user_enter:
     csrw sepc, a0
     csrw sscratch, a2
+    sd tp, -8(a2)
 
     li t0, SSTATUS_SPP
     csrc sstatus, t0
@@ -62,7 +63,7 @@ user_enter:
     li t2, 0
     li s0, 0
     li s1, 0
-    li a0, 0
+    mv a0, a3
     li a1, 0
     li a2, 0
     li a3, 0

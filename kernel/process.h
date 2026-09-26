@@ -3,7 +3,8 @@
 
 #include <stdint.h>
 
-#define PROCESS_MAX 16
+#define PROCESS_MAX 32
+#define PROCESS_THREADS_MAX 8
 #define PROCESS_NAME_MAX 16
 #define PROCESS_CAPTURE_MAX 4096
 #define PROCESS_STACK_SIZE (16 * 1024)
@@ -97,8 +98,21 @@ int process_create(const char *name,
                    process_entry_t entry,
                    void *arg);
 
+int process_create_pinned(const char *name,
+                          process_class_t process_class,
+                          process_entry_t entry,
+                          void *arg,
+                          uint32_t cpu_mask);
+void process_init_cpu(int id);
+void process_exit_if_killed(void);
+int process_thread_spawn(uintptr_t entry, uintptr_t argument, uintptr_t stack);
+struct cpu_info;
+int process_cpu_info(uint32_t index, struct cpu_info *info);
+
 void scheduler_start(void);
 void scheduler_tick(void);
+int scheduler_idle_tick(void);
+void scheduler_kick(void);
 
 void process_yield(void);
 

@@ -15,6 +15,7 @@ typedef struct llm_prompt
 typedef int (*llm_allow_t)(int token, const unsigned char *text, unsigned int length, void *context);
 
 int llm_load(void);
+unsigned int llm_threads(void);
 void llm_prompt_start(llm_prompt_t *p, const char *system);
 void llm_prompt_text(llm_prompt_t *p, const char *text);
 void llm_prompt_end(llm_prompt_t *p, const char *answer_start);

@@ -14,7 +14,7 @@
 
 uint64_t timer_read(void);
 void timer_interrupt(void);
-void timer_tick(void);
+void timer_tick(uint64_t count);
 uint64_t timer_ticks(void);
 
 #endif

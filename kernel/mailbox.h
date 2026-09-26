@@ -1,9 +1,10 @@
 #ifndef MAILBOX_H
 #define MAILBOX_H
 
-/* boot.S uses these offsets: boot_request and boot_ack must stay first */
+/* boot.S uses these offsets: boot_request, boot_ack and smp_go must stay first */
 #define MAILBOX_BOOT_REQUEST 0
 #define MAILBOX_BOOT_ACK 8
+#define MAILBOX_SMP_GO 16
 
 #ifndef __ASSEMBLER__
 
@@ -40,6 +41,7 @@ typedef struct guardian_mailbox
     /* Boot handshake: the kernel waits for the AI space to copy it first */
     volatile uint64_t boot_request;
     volatile uint64_t boot_ack;
+    volatile uint64_t smp_go;
 
     volatile uint64_t aispace_magic;
     volatile uint32_t aispace_state;
@@ -102,6 +104,11 @@ typedef struct guardian_mailbox
     /* Stack pointer of a process fault, and data collection for the crash classifier */
     volatile uint64_t fault_sp;
     volatile uint32_t crash_data;
+
+    /* Several cores: which kernel cores run, and which ones stopped for a warm restart */
+    volatile uint32_t harts_online;
+    volatile uint32_t harts_parked;
+    volatile uint32_t park_request;
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;

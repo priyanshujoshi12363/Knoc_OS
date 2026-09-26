@@ -71,7 +71,10 @@ int main(void)
 
     print("[ask] Qwen2.5-0.5B loaded in ");
     print_uint((loaded - started) / 100);
-    print(" s, reading ");
+    print(" s, ");
+    print_uint(llm_threads());
+    print(llm_threads() == 1 ? " thread" : " threads");
+    print(" on the AI cores, reading ");
     print_uint((unsigned long)prompt.count);
     print(" prompt tokens...\n");
 

@@ -74,7 +74,7 @@ int guardian_init(void)
     {
         if (timer_read() - start > GUARDIAN_ONLINE_TIMEOUT)
         {
-            log_warn("AI space offline: crashes will not be recorded (run with -smp 2)");
+            log_warn("AI space offline: crashes will not be recorded (run with -smp 8)");
             return -1;
         }
     }
@@ -127,6 +127,11 @@ void guardian_set_safe_mode(int enabled)
 void guardian_set_ram_end(uint64_t ram_end)
 {
     guardian_mailbox.ram_end = ram_end;
+}
+
+int guardian_ai_online(void)
+{
+    return guardian_online;
 }
 
 int guardian_restart_safe_mode(void)

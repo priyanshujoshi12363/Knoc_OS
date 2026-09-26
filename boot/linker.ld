@@ -63,6 +63,11 @@ SECTIONS
     . += 16K;
     stack_top = .;
 
+    . = ALIGN(16);
+    cpu_stacks = .;
+    . += 16K * 8;
+    cpu_stacks_end = .;
+
     . = 0x90000000;
 
     aispace_start = .;

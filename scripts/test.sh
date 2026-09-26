@@ -21,7 +21,7 @@ new_disk() {
 
 qemu() {
     timeout "$1" env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-        qemu-system-riscv64 -machine virt -smp 2 -m 2G -bios none -nographic \
+        qemu-system-riscv64 -machine virt -smp 8 -m 2G -bios none -nographic \
         -global virtio-mmio.force-legacy=false \
         -drive file="$DISK",if=none,format=raw,id=disk0 \
         -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
@@ -100,7 +100,7 @@ boot "knocos-echo-test" "ls /bin" "cat /hello.txt" \
     "ask why was 335505283.pdf moved?"
 check \
     "Supervisor interrupts enabled" \
-    "RAM 2048 MiB at 0x0000000080000000, 2 CPUs" \
+    "RAM 2048 MiB at 0x0000000080000000, 8 CPUs" \
     "Page memory initialized" \
     "largest block 1024 MiB (buddy allocator)" \
     "Sv39 enabled" \
@@ -112,7 +112,7 @@ check \
     "Supervisor timer interrupts verified" \
     "Supervisor trap handler verified" \
     "PMP verified: the kernel cannot read the AI space" \
-    "AI space online (core 1, 256 MiB protected at 0x0000000090000000)" \
+    "AI space online (core 4, 256 MiB protected at 0x0000000090000000)" \
     "Black box: no previous crashes" \
     "Device ready: uart0 (IRQ 10)" \
     "Device ready: power0" \
@@ -137,7 +137,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc web" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -153,7 +153,7 @@ check \
     "knocsh        INTERACTIVE  RUNNING" \
     "RAM:  2048 MiB total" \
     "disk0     IRQ 1" \
-    "AI space: online on core 1" \
+    "AI space: online on core 4" \
     "No crashes recorded in the black box" \
     "[counter] 2" \
     "knocsh: counter stopped (Ctrl-C)" \
@@ -242,10 +242,10 @@ check \
     "faulty0 is disabled, nothing happened" \
     "Test freeze (Ctrl-W)" \
     "[AI] Kernel freeze detected: FREEZE" \
-    "[AI] Core 0 stopped" \
+    "[AI] Kernel cores stopped" \
     "[AI] Kernel code check: intact" \
     "[AI] Black box saved (crash #1, 1 in a row)" \
-    "[AI] Action: warm kernel restart (only core 0" \
+    "[AI] Action: warm kernel restart (only the kernel cores" \
     "Warm restart #1 by the AI space" \
     "Device disabled by the AI space: faulty0" \
     "Previous crash detected: #1 FREEZE" \
@@ -411,10 +411,10 @@ show_log_on_failure
 
 echo "Run 9: auto-organize sorts new downloads by itself and learns from a correction"
 new_disk
-boot "organize auto on" "sleep 14" "mkdir /home/College" \
+boot "organize auto on" "sleep 20" "mkdir /home/College" \
     "move /home/Downloads/Documents/335505283.pdf /home/College" "organize learn" "organize personal" \
     "copy /home/College/335505283.pdf /home/Downloads/335505299.pdf" "echo buy milk > /home/Downloads/todo.txt" \
-    "sleep 14" "ls /home/College" "organize auto off" "memory why /home/College/335505283.pdf" \
+    "sleep 20" "ls /home/College" "organize auto off" "memory why /home/College/335505283.pdf" \
     "organize forget" "organize personal"
 check \
     "Auto-organize is on" \
@@ -475,8 +475,9 @@ show_log_on_failure
 echo "Run 13: the C compiler inside KnocOS compiles and runs programs"
 new_disk
 python3 tools/knocfs.py put-many "$DISK" /home/code scripts/fixtures/prog.c scripts/fixtures/util.c \
-    scripts/fixtures/main2.c scripts/fixtures/bad.c
+    scripts/fixtures/main2.c scripts/fixtures/bad.c scripts/fixtures/threads.c
 boot "cd /home/code" "tcc -v" "tcc prog.c -o prog" "./prog 20" "tcc main2.c util.c -o two" "./two" \
+    "tcc threads.c -o threads" "./threads" \
     "tcc bad.c -o bad" 'echo compile status $?' \
     'agent --call {"name": "run_app", "arguments": {"app": "tcc", "args": "bad.c -o bad"}}' "?y"
 check \
@@ -485,6 +486,7 @@ check \
     "closest first: near mid far" \
     "file says: compiled inside KnocOS" \
     "two files: square(12) = 144" \
+    "threads built by tcc: total 2501500, joined 1000 and 2000" \
     "bad.c:6: error: ';' expected (got 'return')" \
     "compile status 1"
 show_log_on_failure
@@ -576,6 +578,53 @@ kill "$WEB_PID" "$TLS_PID" 2>/dev/null
 WEB_PID=""
 TLS_PID=""
 rm -rf "$CERTS"
+show_log_on_failure
+
+echo "Run 16: 8 cores: parallel programs, AI cores, threads, and a warm restart while every core is busy"
+new_disk
+(
+    sleep 6;  printf 'run spin &\r'
+    sleep 1;  printf 'run spin &\r'
+    sleep 1;  printf 'run spin &\r'
+    sleep 3;  printf 'cpus\r'
+    sleep 3;  printf 'ps\r'
+    sleep 2;  printf 'threadtest\r'
+    sleep 12; printf '\013'
+    sleep 12; printf 'cpus\r'
+    sleep 3;  printf '\004'
+    sleep 3
+) | qemu "$GUARDIAN_TIMEOUT"
+STATUS=$?
+check_status "$GUARDIAN_TIMEOUT" panic-allowed
+check \
+    "CPU cores online: 7 kernel cores (4 general: 0-3, 3 AI: 5-7) + the AI space on core 4" \
+    "4     AI space  -     guardian: crash diagnosis, black box, warm restart" \
+    "threadtest: 3 threads summed the work: same answer as 1 thread" \
+    "threadtest: mutex counter 60000 (expected 60000)" \
+    "threadtest: malloc from 3 threads at once: ok" \
+    "[AI] Kernel cores stopped" \
+    "Warm restart #1 by the AI space"
+SPIN_CORES=$(tr -d '\r' < "$LOG" | grep -E "^ +[0-9]+ +spin +NORMAL +RUNNING" | awk '{print $NF}' | sort -u | grep -cE "^[0-3]$")
+AI_ON_AI_CORE=$(tr -d '\r' < "$LOG" | grep -cE "^ +[0-9]+ +healthd +BACKGROUND .* user +[567]$")
+ONLINE_TWICE=$(grep -c "CPU cores online: 7 kernel cores" "$LOG")
+if [ "$SPIN_CORES" -ge 3 ]; then
+    echo "  ok   3 spin programs ran at the same time on 3 different general cores"
+else
+    echo "  MISS 3 spin programs on 3 different general cores (found $SPIN_CORES)"
+    FAILED=1
+fi
+if [ "$AI_ON_AI_CORE" -ge 1 ]; then
+    echo "  ok   the AI health monitor runs on an AI core (5-7)"
+else
+    echo "  MISS the AI health monitor runs on an AI core"
+    FAILED=1
+fi
+if [ "$ONLINE_TWICE" -ge 2 ]; then
+    echo "  ok   all 7 kernel cores came back after the warm restart"
+else
+    echo "  MISS all kernel cores came back after the warm restart"
+    FAILED=1
+fi
 show_log_on_failure
 
 echo "RESULT: PASS"

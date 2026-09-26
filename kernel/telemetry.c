@@ -26,6 +26,8 @@ void telemetry_process(void *arg)
     virtio_blk_stats(&seen_reads, &seen_writes, &seen_wait);
     process_telemetry(&history[0]);
 
+    uint64_t sampled = timer_read();
+
     while (1)
     {
         telemetry_sample_t sample;
@@ -43,9 +45,19 @@ void telemetry_process(void *arg)
 
         sample.seq = ++seq;
         sample.uptime = (uint32_t)(timer_ticks() / TIMER_TICK_HZ);
-        sample.disk_reads = (uint32_t)(reads - seen_reads);
-        sample.disk_writes = (uint32_t)(writes - seen_writes);
-        sample.disk_wait = (uint32_t)(wait - seen_wait);
+        uint64_t now = timer_read();
+        uint64_t elapsed = now - sampled > TIMER_FREQ_HZ ? now - sampled : TIMER_FREQ_HZ;
+
+        sampled = now;
+        sample.switches = (uint32_t)((uint64_t)sample.switches * TIMER_FREQ_HZ / elapsed);
+        sample.syscalls = (uint32_t)((uint64_t)sample.syscalls * TIMER_FREQ_HZ / elapsed);
+        sample.denied = (uint32_t)((uint64_t)sample.denied * TIMER_FREQ_HZ / elapsed);
+        sample.spawns = (uint32_t)((uint64_t)sample.spawns * TIMER_FREQ_HZ / elapsed);
+        sample.top_sys = (uint32_t)((uint64_t)sample.top_sys * TIMER_FREQ_HZ / elapsed);
+        sample.top_spawn = (uint32_t)((uint64_t)sample.top_spawn * TIMER_FREQ_HZ / elapsed);
+        sample.disk_reads = (uint32_t)((reads - seen_reads) * TIMER_FREQ_HZ / elapsed);
+        sample.disk_writes = (uint32_t)((writes - seen_writes) * TIMER_FREQ_HZ / elapsed);
+        sample.disk_wait = (uint32_t)((wait - seen_wait) * TIMER_FREQ_HZ / elapsed);
         sample.ram_free_kib = page_free_count() * PAGE_SIZE / 1024;
         sample.ram_total_kib = page_total() * PAGE_SIZE / 1024;
         sample.disk_total_kib = disk_total / 1024;

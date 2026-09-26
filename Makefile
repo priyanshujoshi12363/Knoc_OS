@@ -15,7 +15,7 @@ LIBGCC := $(shell $(CC) -march=rv64g -mabi=lp64d -print-libgcc-file-name)
 
 QEMU = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin qemu-system-riscv64
 RAM ?= 2G
-QEMU_FLAGS = -machine virt -smp 2 -m $(RAM) -bios none -nographic
+QEMU_FLAGS = -machine virt -smp 8 -m $(RAM) -bios none -nographic
 
 DISK = disk.img
 DISK_MB ?= 64
@@ -59,15 +59,16 @@ KERNEL_OBJS = boot/boot.o \
               kernel/net.o \
               kernel/virtio_rng.o \
               kernel/rtc.o \
+              kernel/cpu.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
 
 USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat organized
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
-LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/setjmp.o
+LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/pthread.o user/libc/setjmp.o
 LIBC_CRT = user/libc/crt1.o
-LIBC_PROGRAMS = libctest calc net ping fetch web date
+LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest
 HTTP_PROGRAMS = fetch web
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
 USER_OBJS = $(USER_LIB_OBJS) user/http.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
@@ -89,7 +90,7 @@ TCC_SOURCES = $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h)
 KNOC_TCC = $(TCC_BUILD)/knoc-tcc
 KNOC_TCC_FLAGS = -nostdinc -I $(TCC_DIR)/include -I user/libc/include
 LIBC_HEADERS = $(wildcard user/libc/include/*.h user/libc/include/sys/*.h)
-SDK_LIBC_OBJS = $(patsubst %,$(TCC_SDK)/%.o,stdio stdlib string ctype math misc posix setjmp ulib)
+SDK_LIBC_OBJS = $(patsubst %,$(TCC_SDK)/%.o,stdio stdlib string ctype math misc posix pthread setjmp ulib)
 SDK_TCC1_OBJS = $(patsubst %,$(TCC_SDK)/tcc1-%.o,lib-arm64 builtin stdatomic alloca atomic)
 SDK_FILES = $(TCC_SDK)/crt1.o $(TCC_SDK)/crti.o $(TCC_SDK)/crtn.o $(TCC_SDK)/libc.a $(TCC_SDK)/libtcc1.a
 

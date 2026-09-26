@@ -2,6 +2,28 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.28.0] - 2026-09-27
+
+KnocOS runs on 8 cores: 4 for the kernel and programs, 4 for AI.
+
+### Added
+- Multi-core kernel (QEMU `-smp 8`): cores 0-3 are general cores (shell, drivers, normal programs; core 0 takes the device interrupts), core 4 is the AI space (the Guardian), cores 5-7 are AI cores for AI_AGENT and BACKGROUND programs (`ask`, `chat`, `agent`, `healthd`, the organizer)
+- A big kernel lock (a fair ticket lock): only one core runs kernel code at a time, while user programs run truly in parallel; it is handed over at timer ticks, so a busy kernel thread can't hold it forever
+- Per-core state: the running process, an idle process, timer, busy and idle time; each core boots with its own stacks and timer
+- Wake-up signals between cores: a process woken on one core starts at once on an idle core that may run it, instead of waiting for the next tick; idle cores don't touch the lock at all
+- Threads: a `thread` system call starts a thread that shares its program's memory and files; `pthread_create`, `pthread_join` and mutexes in the C library (also for programs built with `tcc`); `malloc` is safe with threads
+- The LLM uses the 3 AI cores: two worker threads and the main thread share every matrix multiplication (about 2x faster on QEMU: answer 4 s instead of 8 s, prompt 26 s instead of 46 s in the same test)
+- `cpus` shows the load of every core and what runs on it; `ps` has a CORE column; a `cpuinfo` system call
+- `threadtest`: threads, a mutex counter, `malloc` from several threads and the speed-up
+- `make test` Run 16: 7 kernel cores online, 3 programs on 3 cores at once, the AI monitor on an AI core, `threadtest`, and a warm restart while every core is busy; Run 13 builds a threads program with `tcc`
+
+### Changed
+- The AI space moved from core 1 to core 4; a warm restart stops every kernel core and brings them all back
+- The scheduler self-test pins its workers to core 0, so it still measures the 60 / 30 / 10 shares on one core
+- Telemetry measures busy time and rates in real time, so the anomaly detector reads the same values on a slow host; a CPU hog is only reported when the blamed program really uses a large share of a core
+- A line printed by a program is not cut by another program's output; kernel log lines are printed in one piece
+- Up to 32 processes (was 16)
+
 ## [0.27.1] - 2026-09-27
 
 HTTPS and a text web browser.

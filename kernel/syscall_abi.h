@@ -45,7 +45,9 @@
 #define SYS_TCP_CLOSE 37
 #define SYS_TIME 38
 #define SYS_GETRANDOM 39
-#define SYS_COUNT 40
+#define SYS_CPUINFO 40
+#define SYS_THREAD 41
+#define SYS_COUNT 42
 
 #define RANDOM_MAX 256
 
@@ -146,6 +148,21 @@ typedef struct process_info
     uint32_t reserved;
     char name[INFO_NAME_MAX];
 } process_info_t;
+
+#define CPU_ROLE_GENERAL 0
+#define CPU_ROLE_AI 1
+#define CPU_ROLE_AI_SPACE 2
+
+typedef struct cpu_info
+{
+    uint32_t id;
+    uint32_t online;
+    uint32_t role;
+    int32_t running_pid;
+    uint64_t busy_ticks;
+    uint64_t idle_ticks;
+    char running[INFO_NAME_MAX];
+} cpu_info_t;
 
 typedef struct system_info
 {

@@ -343,6 +343,12 @@ char *strerror(int code)
         return "result out of range";
     case ENOTEMPTY:
         return "folder not empty";
+    case ESRCH:
+        return "no such thread or process";
+    case EAGAIN:
+        return "try again (no room)";
+    case EBUSY:
+        return "busy";
     case ENOSYS:
         return "not supported on this machine";
     case ENETDOWN:

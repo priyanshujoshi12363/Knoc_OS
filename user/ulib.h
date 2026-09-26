@@ -18,6 +18,8 @@ int mkdir(const char *path);
 int remove(const char *path);
 long wait(int pid);
 int ps(unsigned long index, process_info_t *info);
+int cpuinfo(unsigned long index, cpu_info_t *info);
+int thread_spawn(void (*function)(void *), void *argument, void *stack, unsigned long stack_size);
 int kill(int pid);
 int sysinfo(system_info_t *info);
 int devinfo(unsigned long index, device_info_t *info);

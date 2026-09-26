@@ -4,6 +4,7 @@
 #include "virtio.h"
 #include "syscall_abi.h"
 #include "crashnet_model.h"
+#include "trap.h"
 
 #define AI_UART 0x10000000UL
 #define AI_UART_LSR 5
@@ -522,7 +523,7 @@ static const char *ai_action_name(uint32_t action)
 
     if (action == BLACKBOX_ACTION_RESTART)
     {
-        return "warm kernel restart (only core 0, the AI keeps running)";
+        return "warm kernel restart (only the kernel cores, the AI keeps running)";
     }
 
     if (action == BLACKBOX_ACTION_RESTART_SAFE)
@@ -637,6 +638,8 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_TCP_CLOSE] = "tcp_close",
         [SYS_TIME] = "time",
         [SYS_GETRANDOM] = "getrandom",
+        [SYS_CPUINFO] = "cpuinfo",
+        [SYS_THREAD] = "thread",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";
@@ -1193,28 +1196,44 @@ static void ai_serve_boot(void)
     }
 }
 
+static void ai_signal_harts(uint32_t harts, uint32_t value)
+{
+    for (int hart = 0; hart < 32; hart++)
+    {
+        if (harts & (1U << hart))
+        {
+            ((volatile uint32_t *)CLINT_MSIP_HART0)[hart] = value;
+        }
+    }
+}
+
 static int ai_stop_kernel(void)
 {
     volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+    uint32_t harts = (mailbox->harts_online | 1U) & ~(1U << AISPACE_HART);
 
     mailbox->core0_release = 0;
     mailbox->core0_parked = 0;
+    mailbox->harts_parked = 0;
+    mailbox->park_request = 1;
 
     __sync_synchronize();
 
-    *(volatile uint32_t *)CLINT_MSIP_HART0 = 1;
+    ai_signal_harts(harts, 1);
 
     uint64_t start = ai_time();
 
-    while (!mailbox->core0_parked)
+    while ((mailbox->harts_parked & harts) != harts)
     {
         if (ai_time() - start > AI_PARK_TIMEOUT)
         {
-            *(volatile uint32_t *)CLINT_MSIP_HART0 = 0;
+            ai_signal_harts(harts, 0);
+            mailbox->park_request = 0;
             return -1;
         }
     }
 
+    mailbox->core0_parked = 1;
     return 0;
 }
 
@@ -1230,18 +1249,26 @@ static void ai_restart_kernel(uint32_t safe_mode)
     guardian_mailbox.core0_release = 1;
 }
 
-/* Runs on core 0 in M-mode, entered from machine_trap when the AI space
+/* Runs on every kernel core in M-mode, entered from machine_trap when the AI space
    raises a machine software interrupt. It lives in the AI space so the
-   kernel's own (maybe corrupted) code is not needed to stop core 0. */
+   kernel's own (maybe corrupted) code is not needed to stop the kernel. */
 void aispace_park_core0(void)
 {
     volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
+    uint64_t hart;
 
-    *(volatile uint32_t *)CLINT_MSIP_HART0 = 0;
+    asm volatile("csrr %0, mhartid" : "=r"(hart));
+    ((volatile uint32_t *)CLINT_MSIP_HART0)[hart] = 0;
 
     __sync_synchronize();
 
-    mailbox->core0_parked = 1;
+    if (!mailbox->park_request)
+    {
+        asm volatile("csrs mip, %0" :: "r"((uint64_t)SIP_SSIP));
+        return;
+    }
+
+    __atomic_fetch_or(&mailbox->harts_parked, 1U << hart, __ATOMIC_SEQ_CST);
 
     while (!mailbox->core0_release)
     {
@@ -1286,11 +1313,11 @@ static void ai_handle(uint32_t crash_type)
 
     if (stopped)
     {
-        ai_log("Core 0 stopped: the kernel is paused while the AI works");
+        ai_log("Kernel cores stopped: the kernel is paused while the AI works");
     }
     else
     {
-        ai_log("Core 0 did not stop: a warm restart is not possible");
+        ai_log("The kernel cores did not stop: a warm restart is not possible");
     }
 
     uint64_t damage = 0;
@@ -1419,7 +1446,7 @@ static void ai_handle(uint32_t crash_type)
     {
         ai_puts("[AI] Restoring the kernel from its clean copy (");
         ai_put_uint(ai_image_size / 1024);
-        ai_puts(" KiB) and restarting core 0, restart #");
+        ai_puts(" KiB) and restarting the kernel cores, restart #");
         ai_put_uint(ai_restarts + 1);
         ai_putc('\n');
 

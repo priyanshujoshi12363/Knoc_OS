@@ -659,7 +659,7 @@ static void cmd_ps(void)
 {
     process_info_t info;
 
-    print("  PID  NAME          CLASS        STATE     CPU  MEMORY    MODE\n");
+    print("  PID  NAME          CLASS        STATE     CPU  MEMORY    MODE    CORE\n");
 
     for (unsigned long i = 0; ps(i, &info) == 0; i++)
     {
@@ -671,7 +671,13 @@ static void cmd_ps(void)
         print_padded_uint(info.cpu_ticks, 5);
         print_padded_uint(info.memory / 1024, 6);
         print_padded("KiB", 4);
-        print(info.user ? "user" : "kernel");
+        print_padded(info.user ? "user" : "kernel", 8);
+
+        if (info.reserved > 0 && info.pid != 0)
+        {
+            print_uint(info.reserved - 1);
+        }
+
         print("\n");
     }
 }
@@ -968,7 +974,7 @@ static void cmd_ai(void)
         return;
     }
 
-    print("AI space: online on core 1, running for ");
+    print("AI space: online on core 4, running for ");
     print_uint(info.ai_uptime_ms / 1000);
     print(" s\n");
     print("Warm kernel restarts: ");
@@ -1607,6 +1613,71 @@ static void cmd_uptime(void)
     print(" ticks)\n");
 }
 
+static void cmd_cpus(void)
+{
+    static const char *roles[] = {"general", "AI", "AI space"};
+    cpu_info_t before[8];
+    cpu_info_t after;
+
+    for (unsigned long i = 0; i < 8; i++)
+    {
+        if (cpuinfo(i, &before[i]) != 0)
+        {
+            before[i].online = 0;
+        }
+    }
+
+    sleep(50);
+    print("  CORE  ROLE      LOAD  RUNNING\n");
+
+    for (unsigned long i = 0; i < 8 && cpuinfo(i, &after) == 0; i++)
+    {
+        print("  ");
+        print_padded_uint(i, 6);
+        print_padded(after.role < 3 ? roles[after.role] : "?", 10);
+
+        if (!after.online)
+        {
+            print("off\n");
+            continue;
+        }
+
+        if (after.role == CPU_ROLE_AI_SPACE)
+        {
+            print("-     guardian: crash diagnosis, black box, warm restart\n");
+            continue;
+        }
+
+        unsigned long busy = after.busy_ticks - before[i].busy_ticks;
+        unsigned long idle = after.idle_ticks - before[i].idle_ticks;
+        unsigned long load = busy + idle > 0 ? busy * 100 / (busy + idle) : 0;
+        char percent[8];
+        unsigned long n = 0;
+
+        if (load >= 100)
+        {
+            percent[n++] = '1';
+            percent[n++] = '0';
+            percent[n++] = '0';
+        }
+        else
+        {
+            if (load >= 10)
+            {
+                percent[n++] = (char)('0' + load / 10);
+            }
+
+            percent[n++] = (char)('0' + load % 10);
+        }
+
+        percent[n++] = '%';
+        percent[n] = 0;
+        print_padded(percent, 6);
+        print(after.running_pid >= 0 ? after.running : "-");
+        print("\n");
+    }
+}
+
 static void cmd_help(void)
 {
     print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT  mkdir DIR  rm PATH  copy FROM TO  move FROM TO\n");
@@ -1615,7 +1686,7 @@ static void cmd_help(void)
     print("           if COND / else / end  for X in A B C / end  while COND / end  exit N\n");
     print("           COND: exists PATH, A == B, A != B, not COND, or any command (true when it exits with 0)\n");
     print("Programs:  run NAME [&]  or just NAME (programs are in /bin)  ps  kill PID\n");
-    print("System:    mem  devices  crashes  ai  health [watch|recover]  context  uptime  sleep N  clear  exit\n");
+    print("System:    mem  cpus  devices  crashes  ai  health [watch|recover]  context  uptime  sleep N  clear  exit\n");
     print("Memory:    memory  memory recent [N]  memory find TEXT  memory show NAME  memory why FILE  memory forget NAME\n");
     print("AI:        chat  ask QUESTION  agent TASK  agent --tools  organize DIR\n");
     print("Organize:  organize auto on|off  organize learn  organize personal  organize forget\n");
@@ -2305,6 +2376,10 @@ static int execute(int argc, char **args)
     else if (strcmp(command, "uptime") == 0)
     {
         cmd_uptime();
+    }
+    else if (strcmp(command, "cpus") == 0)
+    {
+        cmd_cpus();
     }
     else if (strcmp(command, "context") == 0)
     {

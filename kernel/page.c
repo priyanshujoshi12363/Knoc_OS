@@ -36,6 +36,7 @@ static free_block_t *free_lists[PAGE_MAX_ORDER + 1];
 static spinlock_t page_lock = SPINLOCK_INIT;
 
 extern char stack_top;
+extern char cpu_stacks_end;
 
 static uintptr_t align_up(uintptr_t value, uintptr_t alignment)
 {
@@ -129,7 +130,7 @@ int page_init(uintptr_t start, uint64_t size, uintptr_t dtb_start, uint64_t dtb_
     }
 
     /* One metadata byte per page, placed right after the boot stack */
-    page_meta = (uint8_t *)align_up((uintptr_t)&stack_top, PAGE_SIZE);
+    page_meta = (uint8_t *)align_up((uintptr_t)&cpu_stacks_end, PAGE_SIZE);
     uintptr_t meta_end = align_up((uintptr_t)page_meta + total_pages, PAGE_SIZE);
 
     if (meta_end >= AISPACE_BASE || meta_end >= ram_end)
