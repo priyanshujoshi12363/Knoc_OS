@@ -28,6 +28,7 @@ int chdir(const char *path);
 int isatty(int fd);
 int getpid(void);
 int execvp(const char *file, char *const argv[]);
+int getentropy(void *buffer, size_t length);
 void _exit(int code) __attribute__((noreturn));
 
 #endif

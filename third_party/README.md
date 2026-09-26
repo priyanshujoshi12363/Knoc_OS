@@ -1,5 +1,12 @@
 # Third-party code
 
+## BearSSL (`bearssl/`)
+
+- Source: https://www.bearssl.org/git/BearSSL, commit `7bea48e`
+- License: MIT (see `bearssl/LICENSE.txt`)
+- Used for: HTTPS (TLS 1.0 - 1.2) in `fetch` and `web`, through `user/http.c`
+- Only `src/`, `inc/`, the license and the README are kept; no changes to the code. The `Makefile` builds it into `build/bearssl/libbearssl.a` with the system clock and random sources turned off (`BR_USE_UNIX_TIME=0`, `BR_USE_URANDOM=0`, `BR_USE_GETENTROPY=0`): KnocOS passes the time from the `rtc0` clock and random bytes from the `rng0` device itself
+
 ## TinyCC (`tinycc/`)
 
 - Source: https://repo.or.cz/tinycc.git (mob branch), commit `c982991` (version 0.9.28rc)

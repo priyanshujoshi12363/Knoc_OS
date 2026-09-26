@@ -635,6 +635,8 @@ static const char *ai_syscall_name(uint8_t number)
         [SYS_TCP_SEND] = "tcp_send",
         [SYS_TCP_RECV] = "tcp_recv",
         [SYS_TCP_CLOSE] = "tcp_close",
+        [SYS_TIME] = "time",
+        [SYS_GETRANDOM] = "getrandom",
     };
 
     return number < SYS_COUNT ? names[number] : "unknown";

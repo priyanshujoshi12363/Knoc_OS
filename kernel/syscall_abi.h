@@ -43,7 +43,11 @@
 #define SYS_TCP_SEND 35
 #define SYS_TCP_RECV 36
 #define SYS_TCP_CLOSE 37
-#define SYS_COUNT 38
+#define SYS_TIME 38
+#define SYS_GETRANDOM 39
+#define SYS_COUNT 40
+
+#define RANDOM_MAX 256
 
 /* File descriptors: 0 = keyboard, 1 and 2 = screen, 3+ = open files */
 #define FD_STDIN 0
@@ -82,6 +86,7 @@
 #define E_TIMEOUT -16
 #define E_REFUSED -17
 #define E_NETDOWN -18
+#define E_NODEV -19
 
 /* Capabilities: what a program is allowed to ask the kernel for */
 #define CAP_CONSOLE 0x1

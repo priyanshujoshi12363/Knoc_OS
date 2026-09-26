@@ -14,6 +14,8 @@
 #include "memgraph.h"
 #include "telemetry.h"
 #include "net.h"
+#include "rtc.h"
+#include "virtio_rng.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -60,6 +62,8 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_TCP_SEND] = "tcp_send",
     [SYS_TCP_RECV] = "tcp_recv",
     [SYS_TCP_CLOSE] = "tcp_close",
+    [SYS_TIME] = "time",
+    [SYS_GETRANDOM] = "getrandom",
 };
 
 const char *syscall_name(uint64_t number)
@@ -1007,6 +1011,31 @@ int64_t syscall_handle(trap_frame_t *frame)
 
     case SYS_UPTIME:
         return (int64_t)timer_ticks();
+
+    case SYS_TIME:
+    {
+        uint64_t seconds = rtc_seconds();
+
+        return seconds ? (int64_t)seconds : E_NODEV;
+    }
+
+    case SYS_GETRANDOM:
+    {
+        uint8_t random[RANDOM_MAX];
+        uint64_t length = frame->a1;
+
+        if (length > RANDOM_MAX)
+        {
+            return E_INVAL;
+        }
+
+        if (virtio_rng_read(random, length) != (int64_t)length)
+        {
+            return E_NODEV;
+        }
+
+        return copy_to_user(frame->a0, random, length) == 0 ? (int64_t)length : E_FAULT;
+    }
 
     case SYS_SPAWN:
         if (!allowed(number, CAP_SPAWN))

@@ -14,7 +14,8 @@ static struct tm broken;
 
 time_t time(time_t *result)
 {
-    time_t now = (time_t)(uptime() / 100);
+    long seconds = realtime();
+    time_t now = seconds > 0 ? (time_t)seconds : (time_t)(uptime() / 100);
 
     if (result)
     {

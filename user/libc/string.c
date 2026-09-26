@@ -209,6 +209,21 @@ char *strstr(const char *text, const char *part)
     return NULL;
 }
 
+char *strcasestr(const char *text, const char *part)
+{
+    size_t n = strlen(part);
+
+    for (; *text; text++)
+    {
+        if (strncasecmp(text, part, n) == 0)
+        {
+            return (char *)text;
+        }
+    }
+
+    return n == 0 ? (char *)text : NULL;
+}
+
 size_t strspn(const char *text, const char *accept)
 {
     size_t n = 0;
@@ -328,6 +343,8 @@ char *strerror(int code)
         return "result out of range";
     case ENOTEMPTY:
         return "folder not empty";
+    case ENOSYS:
+        return "not supported on this machine";
     case ENETDOWN:
         return "network is down";
     case ETIMEDOUT:

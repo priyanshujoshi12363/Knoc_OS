@@ -27,6 +27,7 @@ size_t strcspn(const char *text, const char *reject);
 char *strpbrk(const char *text, const char *accept);
 char *strtok(char *text, const char *delimiters);
 char *strdup(const char *text);
+char *strcasestr(const char *text, const char *part);
 char *strndup(const char *text, size_t length);
 char *strerror(int code);
 

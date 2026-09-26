@@ -18,6 +18,8 @@
 
 long syscall(long number, long a0, long a1, long a2);
 unsigned long uptime(void);
+long realtime(void);
+long random_bytes(void *buffer, unsigned long length);
 
 static int fail(long code)
 {
@@ -376,10 +378,28 @@ char *realpath(const char *path, char *resolved)
 int gettimeofday(struct timeval *value, void *zone)
 {
     unsigned long ticks = uptime();
+    long seconds = realtime();
 
     (void)zone;
-    value->tv_sec = (time_t)(ticks / 100);
+    value->tv_sec = seconds > 0 ? (time_t)seconds : (time_t)(ticks / 100);
     value->tv_usec = (suseconds_t)((ticks % 100) * 10000);
+    return 0;
+}
+
+int getentropy(void *buffer, size_t length)
+{
+    if (length > RANDOM_MAX)
+    {
+        errno = EIO;
+        return -1;
+    }
+
+    if (random_bytes(buffer, length) != (long)length)
+    {
+        errno = ENOSYS;
+        return -1;
+    }
+
     return 0;
 }
 

@@ -4,6 +4,8 @@
 #include "spinlock.h"
 #include "timer.h"
 #include "logging.h"
+#include "knocfs.h"
+#include "heap.h"
 
 #define ETH_ARP 0x0806
 #define ETH_IP 0x0800
@@ -24,6 +26,8 @@
 #define GATEWAY ADDRESS(10, 0, 2, 2)
 #define DNS_SERVER ADDRESS(10, 0, 2, 3)
 
+#define HOSTS_FILE "/etc/hosts"
+#define HOSTS_MAX 4096
 #define ARP_MAX 8
 #define CONN_MAX 8
 #define RX_SIZE 32768
@@ -880,12 +884,126 @@ static int parse_ip(const char *text, uint32_t *address)
     return 0;
 }
 
+static char lower(char ch)
+{
+    return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
+}
+
+static int is_space(char ch)
+{
+    return ch == ' ' || ch == '\t' || ch == '\r';
+}
+
+static int hosts_search(char *hosts, const char *name, uint32_t *address)
+{
+
+    for (char *line = hosts; *line;)
+    {
+        char *end = line;
+
+        while (*end && *end != '\n')
+        {
+            end++;
+        }
+
+        char *next = *end ? end + 1 : end;
+        char *hash = line;
+
+        while (hash < end && *hash != '#')
+        {
+            hash++;
+        }
+
+        *hash = 0;
+
+        char *p = line;
+        char ip[16];
+        uint32_t n = 0;
+
+        while (is_space(*p))
+        {
+            p++;
+        }
+
+        while (*p && !is_space(*p) && n < sizeof(ip) - 1)
+        {
+            ip[n++] = *p++;
+        }
+
+        ip[n] = 0;
+
+        uint32_t value;
+
+        if (n > 0 && parse_ip(ip, &value) == 0)
+        {
+            while (*p)
+            {
+                while (is_space(*p))
+                {
+                    p++;
+                }
+
+                uint32_t i = 0;
+
+                while (p[i] && !is_space(p[i]) && name[i] && lower(p[i]) == lower(name[i]))
+                {
+                    i++;
+                }
+
+                if (i > 0 && name[i] == 0 && (p[i] == 0 || is_space(p[i])))
+                {
+                    *address = value;
+                    return 0;
+                }
+
+                while (*p && !is_space(*p))
+                {
+                    p++;
+                }
+            }
+        }
+
+        line = next;
+    }
+
+    return -1;
+}
+
+static int hosts_lookup(const char *name, uint32_t *address)
+{
+    uint32_t inode;
+
+    if (knocfs_lookup(HOSTS_FILE, &inode) != 0)
+    {
+        return -1;
+    }
+
+    char *hosts = kmalloc(HOSTS_MAX + 1);
+
+    if (!hosts)
+    {
+        return -1;
+    }
+
+    int64_t length = knocfs_read(inode, 0, hosts, HOSTS_MAX);
+    int result = -1;
+
+    if (length > 0)
+    {
+        hosts[length] = 0;
+        result = hosts_search(hosts, name, address);
+    }
+
+    kfree(hosts);
+    return result;
+}
+
 int64_t net_resolve(const char *name, uint32_t *address)
 {
     static uint8_t query[300];
     static uint16_t sequence;
 
-    if (parse_ip(name, address) == 0)
+    if (parse_ip(name, address) == 0 || hosts_lookup(name, address) == 0)
     {
         return 0;
     }

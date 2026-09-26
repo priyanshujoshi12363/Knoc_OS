@@ -132,18 +132,18 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.27.0)
+## 4. Where KnocOS Is Today (v0.27.1)
 
 | Area | What works |
 |---|---|
-| **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, virtio disk, virtio network), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
+| **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, real-time clock, virtio disk, network and random numbers), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
 | **AI that survives crashes** | The AI space on core 1 (PMP-protected), a crash classifier NN inside it, black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
-| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 38 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
+| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 40 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | File organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing and a live permission watch (`healthd`), memory graph (KnocGraph) with your work context |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Network** | virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP), `net`, `ping`, `fetch` for HTTP downloads, a `NET` capability |
-| **Quality** | `make test` (14 runs) in CI on every push |
+| **Network** | virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP, `/etc/hosts`), HTTPS with BearSSL, `net`, `ping`, `fetch`, the `web` text browser, a `NET` capability |
+| **Quality** | `make test` (15 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -179,6 +179,7 @@ People can move to KnocOS without losing their software.
 | v0.24.0 | 2026-09-26 | The C library `libknoc`: stdio, stdlib (malloc/free), string, ctype, math, time; `libctest` and `calc` |
 | v0.25.0 | 2026-09-26 | TinyCC inside KnocOS (`tcc`), working directories, programs by path, a POSIX layer in the C library |
 | v0.27.0 | 2026-09-26 | Networking: virtio-net, TCP/IP in the kernel, `net` / `ping` / `fetch` (v0.26.0 SMP comes later) |
+| v0.27.1 | 2026-09-27 | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts` |
 
 ---
 
@@ -213,7 +214,8 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 
 | Version | Milestone | What we build | Result |
 |---|---|---|---|
-| **v0.27.0** ✅ | Networking | virtio-net driver, TCP/IP, downloading files and models | KnocOS is online (HTTP; HTTPS later) |
+| **v0.27.0** ✅ | Networking | virtio-net driver, TCP/IP, downloading files and models | KnocOS is online |
+| **v0.27.1** ✅ | HTTPS + text browser | BearSSL TLS, certificate checks, `web` browser with search, clock and random devices | The whole web is readable from KnocOS |
 | v0.28.0 | KnocNet | Direct, encrypted links between KnocOS machines; shared files and AI jobs | OS-to-OS communication |
 | v0.29.0 | Semantic search | Embeddings on files and graph nodes, search by meaning | "Find the invoice from last month" |
 
@@ -310,7 +312,7 @@ request / event → Tier 0: rules (no AI, never wrong)
 - **No model is hallucination-free.** The design makes mistakes harmless: closed-set classification, confidence thresholds, grammar-constrained output, verification of results, and grounding in real data
 - **Model-agnostic:** built in v0.18.0. LLMs are converted to KnocOS's `.kllm` format (int8, tokenizer inside) by `models/llm/export.py`, and `/etc/llm.model` chooses which one runs, so a better model is a file swap, not a code change
 - **Runtime:** our own small int8 runtime for small NNs (`user/nn.c`, v0.14.0) and our own LLM engine (`user/llm.c`, v0.16.0) instead of a llama.cpp port, which would need a full C library
-- **Getting models onto KnocOS:** copied onto the disk image from the host (`make reset-disk DISK_MB=1024` puts Qwen on it, `make put FILE=... DEST=/models/...` adds others), or downloaded with `fetch` over HTTP (v0.27.0)
+- **Getting models onto KnocOS:** copied onto the disk image from the host (`make reset-disk DISK_MB=1024` puts Qwen on it, `make put FILE=... DEST=/models/...` adds others), or downloaded with `fetch` over HTTP / HTTPS (v0.27)
 
 ---
 

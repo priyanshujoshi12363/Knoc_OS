@@ -2,6 +2,24 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.27.1] - 2026-09-27
+
+HTTPS and a text web browser.
+
+### Added
+- HTTPS: BearSSL 0.6+ (`third_party/bearssl`, MIT) with TLS 1.0 - 1.2, certificate chains checked against `/etc/ssl/certs.pem` (your PC's CA bundle, copied onto the disk), the server name and the date; clear messages for untrusted, expired and wrong-name certificates and for servers that don't speak TLS
+- `user/http.c`, a shared HTTP / HTTPS client: redirects (relative ones too), chunked answers, content length checks, URL joining
+- `web`, a text browser: headings, paragraphs, lists, tables, `<pre>`, HTML entities and UTF-8, numbered links; Enter / `b` to page, a number to follow a link, `g URL`, `s WORDS` (web search through DuckDuckGo Lite), `u` back, `/TEXT` and `n` to find, `l` links, `d NUMBER` to download, `r` reload; `web -dump URL` prints the page and its links for scripts and the agent
+- App manifest for `web` (read only), so the agent can read web pages; `fetch` now downloads `https://` too
+- `rtc0`: the real-time clock driver (goldfish RTC), `time` system call; the C library's `time()` and `gettimeofday()` give the real date, and a new `date` command shows it
+- `rng0`: a virtio random number driver, `getrandom` system call and `getentropy()` in the C library (HTTPS keys need real random numbers); `make run` and the tests give QEMU a `virtio-rng-device`
+- `/etc/hosts`: the kernel's name lookup reads it before asking DNS (the default names `host` / `pc` point to your PC, 10.0.2.2)
+- `strcasestr` and `ENOSYS` in the C library
+- `make test` Run 15: HTTPS to a local server with a test certificate authority, a wrong-name certificate, https to a plain http server, the real-time clock, `web -dump` rendering and following a link in the browser
+
+### Changed
+- `fetch` uses the shared client; `make test` no longer needs the internet for any check
+
 ## [0.27.0] - 2026-09-26
 
 Networking: KnocOS is online.

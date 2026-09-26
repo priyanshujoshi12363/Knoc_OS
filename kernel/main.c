@@ -24,6 +24,8 @@
 #include "telemetry.h"
 #include "mailbox.h"
 #include "virtio_net.h"
+#include "virtio_rng.h"
+#include "rtc.h"
 
 #define TIMER_TEST_TICKS 5
 #define TIMER_RUNAWAY_WINDOW 3
@@ -966,6 +968,8 @@ void kernel_main(uintptr_t dtb)
     power_register();
     virtio_blk_register();
     virtio_net_register();
+    virtio_rng_register();
+    rtc_register();
     faulty_register();
 
     device_init_all();
@@ -980,7 +984,7 @@ void kernel_main(uintptr_t dtb)
         panic("Required device missing");
     }
 
-    if (device_count() != 5 || device_find("missing0") != 0)
+    if (device_count() != 7 || device_find("missing0") != 0)
     {
         panic("Device table test failed");
     }

@@ -10,7 +10,8 @@ LOG=$(mktemp)
 DISK=$(mktemp)
 WWW=$(mktemp -d)
 WEB_PID=""
-trap 'rm -f "$LOG" "$DISK"; rm -rf "$WWW"; [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null' EXIT
+TLS_PID=""
+trap 'rm -f "$LOG" "$DISK"; rm -rf "$WWW"; [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null; [ -n "$TLS_PID" ] && kill "$TLS_PID" 2>/dev/null' EXIT
 
 FAILED=0
 
@@ -25,6 +26,7 @@ qemu() {
         -drive file="$DISK",if=none,format=raw,id=disk0 \
         -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
         -netdev user,id=net0 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1 \
+        -device virtio-rng-device,bus=virtio-mmio-bus.2 \
         -kernel "$KERNEL" > "$LOG" 2>&1
 }
 
@@ -135,7 +137,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc web" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -497,7 +499,7 @@ WEB_PID=$!
 sleep 1
 boot "net" "ping 10.0.2.2 2" "fetch http://10.0.2.2:$PORT/hello.txt /home/hello.txt" "cat /home/hello.txt" \
     "fetch http://10.0.2.2:$PORT/big.bin /home/big.bin" "fetch http://10.0.2.2:$PORT/missing.txt" \
-    "fetch http://10.0.2.2:1/x" "fetch https://example.com/" "net"
+    "fetch http://10.0.2.2:1/x" "net"
 check \
     "net0: up" \
     "address    10.0.2.15" \
@@ -507,7 +509,6 @@ check \
     "fetch: 200 OK, 200000 bytes saved to /home/big.bin" \
     "fetch: the server answered 404" \
     "fetch: cannot connect to 10.0.2.2:1 (refused)" \
-    "fetch: https needs encryption (TLS)" \
     "0 open connections"
 if python3 tools/knocfs.py cat "$DISK" /home/big.bin | cmp -s - "$WWW/big.bin"; then
     echo "  ok   the 200000 byte download is identical to the original"
@@ -515,8 +516,66 @@ else
     echo "  MISS the downloaded file differs from the original"
     FAILED=1
 fi
-kill "$WEB_PID" 2>/dev/null
+show_log_on_failure
+
+echo "Run 15: HTTPS with certificate checks, the real-time clock and the text browser"
+new_disk
+cp scripts/fixtures/index.html scripts/fixtures/page2.html "$WWW/"
+CERTS=$(mktemp -d)
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$CERTS/ca.key" -out "$CERTS/ca.pem" -days 30 \
+    -subj "/CN=KnocOS Test CA" -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign" 2> /dev/null
+openssl req -newkey rsa:2048 -nodes -keyout "$CERTS/server.key" -out "$CERTS/server.csr" \
+    -subj "/CN=knoc.test" 2> /dev/null
+printf 'subjectAltName=DNS:knoc.test\nbasicConstraints=CA:FALSE\n' > "$CERTS/ext.txt"
+openssl x509 -req -in "$CERTS/server.csr" -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca.key" -CAcreateserial \
+    -out "$CERTS/server.pem" -days 30 -extfile "$CERTS/ext.txt" 2> /dev/null
+python3 tools/knocfs.py cat "$DISK" /etc/ssl/certs.pem > "$CERTS/bundle.pem" 2> /dev/null || true
+cat "$CERTS/ca.pem" >> "$CERTS/bundle.pem"
+python3 tools/knocfs.py put "$DISK" "$CERTS/bundle.pem" /etc/ssl/certs.pem
+python3 tools/knocfs.py put-text "$DISK" /etc/hosts "10.0.2.2 host knoc.test
+"
+TLS_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+python3 -c '
+import http.server, os, ssl, sys
+os.chdir(sys.argv[1])
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), http.server.SimpleHTTPRequestHandler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[3], sys.argv[4])
+server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+' "$WWW" "$TLS_PORT" "$CERTS/server.pem" "$CERTS/server.key" > /dev/null 2>&1 &
+TLS_PID=$!
+sleep 1
+boot "date" "fetch https://knoc.test:$TLS_PORT/hello.txt /home/secure.txt" "cat /home/secure.txt" \
+    "fetch https://10.0.2.2:$TLS_PORT/hello.txt" "fetch https://knoc.test:$PORT/hello.txt" \
+    "web -dump http://host:$PORT/index.html" \
+    "web https://knoc.test:$TLS_PORT/" "?1" "?u" "?q" 'echo web status $?'
+check \
+    " UTC 20" \
+    "fetch: 200 OK, 31 bytes saved to /home/secure.txt" \
+    "hello from the host web server" \
+    "fetch: the certificate belongs to a different name" \
+    "fetch: the server didn't answer with https (TLS); try http://" \
+    "KnocOS test page" \
+    "# Welcome to KnocOS" \
+    "Fish & chips cost <5> €, café ✓" \
+    "  * first item" \
+    "  * second item with Second page[1]" \
+    "  code   stays" \
+    "  as     typed" \
+    "Plain text[2] and absolute[3]" \
+    "[1] http://host:$PORT/page2.html" \
+    "[2] http://host:$PORT/hello.txt" \
+    "[3] https://knoc.test/abs" \
+    "web: loading https://knoc.test:$TLS_PORT/page2.html" \
+    "This is page two, reached by following a link." \
+    "web status 0"
+check_absent "SCRIPT_SHOULD_NOT_SHOW" "COMMENT_SHOULD_NOT_SHOW" "color: red"
+kill "$WEB_PID" "$TLS_PID" 2>/dev/null
 WEB_PID=""
+TLS_PID=""
+rm -rf "$CERTS"
 show_log_on_failure
 
 echo "RESULT: PASS"

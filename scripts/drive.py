@@ -7,7 +7,7 @@ import sys
 import time
 
 PROMPT = re.compile(rb"knoc:\S*\$ ")
-QUESTION = re.compile(rb"\(y/n\) |you: |calc> ")
+QUESTION = re.compile(rb"\(y/n\) |you: |calc> |web> ")
 BOOT_WAIT = 60
 COMMAND_WAIT = int(os.environ.get("COMMAND_WAIT", "60"))
 RUNNING_WAIT = 2
@@ -24,6 +24,7 @@ def main():
          "-device", "virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0",
          "-netdev", "user,id=net0" + os.environ.get("QEMU_NETDEV_EXTRA", ""),
          "-device", "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1",
+         "-device", "virtio-rng-device,bus=virtio-mmio-bus.2",
          "-kernel", kernel] + (["-append", os.environ["QEMU_APPEND"]] if os.environ.get("QEMU_APPEND") else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output = bytearray()

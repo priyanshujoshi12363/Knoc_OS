@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.27.0-blue)
+![Version](https://img.shields.io/badge/version-v0.27.1-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.27.0 starting
+[INFO] KnocOS v0.27.1 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,31 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Networking (v0.27.0)
+## ✅ Just Completed: HTTPS and a Text Browser (v0.27.1)
+
+**The whole web, from the KnocOS shell.** HTTPS works (BearSSL, with real certificate checks) and `web` is a text browser:
+
+```text
+knoc:/$ web en.wikipedia.org/wiki/RISC-V
+RISC-V - Wikipedia
+https://en.wikipedia.org/wiki/RISC-V
+
+RISC-V (pronounced "risk-five") is a free and open standard instruction set
+architecture[90] (ISA) based on reduced instruction set computer[91] (RISC)
+...
+-- lines 1-20 ... -- Enter more, NUMBER open link, h help, q quit
+web> 91
+```
+
+- `web URL`: Enter for more, a number opens that link, `u` goes back, `/word` finds text, `d 5` downloads link 5, `h` for help
+- `web -s risc-v`: searches the web (DuckDuckGo Lite; Google's results page needs JavaScript)
+- `web -dump URL`: the page as plain text with its links; the agent reads web pages this way
+- `fetch https://...` downloads over HTTPS; untrusted, expired or wrong-name certificates are refused
+- New devices: a real-time clock (`date`) and a random number generator (HTTPS keys need real randomness)
+- `/etc/hosts` gives names to machines: `host` is your PC (10.0.2.2)
+- Limits: TLS 1.2 at most (a few TLS 1.3-only sites refuse), no JavaScript, no forms except search
+
+## Networking (v0.27.0)
 
 **KnocOS is online.** A virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP), with three new commands:
 
@@ -437,7 +461,8 @@ Recent progress:
 | `6bf2439` | Context tracker, live permission watch, version `v0.23.0` |
 | `0ab4247` | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
 | `a1f8493` | TinyCC inside KnocOS, working directories, programs by path, POSIX layer, version `v0.25.0` |
-| *(uncommitted)* | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
+| `677c7e7` | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
+| *(uncommitted)* | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
 
 What works right now:
 
@@ -472,6 +497,7 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.24.0: the C library
 - [x] v0.25.0: a C compiler inside KnocOS
 - [x] v0.27.0: networking
+- [x] v0.27.1: HTTPS + text browser
 - [ ] v0.26.0: kernel on several cores
 - [ ] v0.28.0 – v0.30.0: KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)

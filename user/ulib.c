@@ -129,6 +129,16 @@ int tcp_close(int handle)
     return (int)syscall(SYS_TCP_CLOSE, handle, 0, 0);
 }
 
+long realtime(void)
+{
+    return syscall(SYS_TIME, 0, 0, 0);
+}
+
+long random_bytes(void *buffer, unsigned long length)
+{
+    return syscall(SYS_GETRANDOM, (long)buffer, (long)length, 0);
+}
+
 int chdir(const char *path)
 {
     return (int)syscall(SYS_CHDIR, (long)path, 0, 0);

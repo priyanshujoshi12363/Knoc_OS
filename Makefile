@@ -23,7 +23,8 @@ KNOCFS = python3 tools/knocfs.py
 QEMU_DISK_FLAGS = -global virtio-mmio.force-legacy=false \
                   -drive file=$(DISK),if=none,format=raw,id=disk0 \
                   -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
-                  -netdev user,id=net0 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1
+                  -netdev user,id=net0 -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1 \
+                  -device virtio-rng-device,bus=virtio-mmio-bus.2
 
 KERNEL_OBJS = boot/boot.o \
               kernel/main.o \
@@ -56,6 +57,8 @@ KERNEL_OBJS = boot/boot.o \
               kernel/telemetry.o \
               kernel/virtio_net.o \
               kernel/net.o \
+              kernel/virtio_rng.o \
+              kernel/rtc.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
@@ -64,9 +67,10 @@ USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocs
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/setjmp.o
 LIBC_CRT = user/libc/crt1.o
-LIBC_PROGRAMS = libctest calc net ping fetch
+LIBC_PROGRAMS = libctest calc net ping fetch web date
+HTTP_PROGRAMS = fetch web
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
-USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
+USER_OBJS = $(USER_LIB_OBJS) user/http.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
@@ -151,10 +155,30 @@ user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o
 
-$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o): CFLAGS += -isystem user/libc/include
+$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o) user/http.o: CFLAGS += -isystem user/libc/include
 
-$(LIBC_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+$(filter-out $(HTTP_PROGRAMS:%=user/%.elf),$(LIBC_PROGRAMS:%=user/%.elf)): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< $(LIBC_OBJS) user/ulib.o $(LIBGCC)
+
+BEARSSL_DIR = third_party/bearssl
+BEARSSL_SOURCES = $(wildcard $(BEARSSL_DIR)/src/*.c $(BEARSSL_DIR)/src/*/*.c)
+BEARSSL_OBJS = $(BEARSSL_SOURCES:$(BEARSSL_DIR)/src/%.c=build/bearssl/%.o)
+BEARSSL_LIB = build/bearssl/libbearssl.a
+BEARSSL_DEFS = -DBR_USE_UNIX_TIME=0 -DBR_USE_URANDOM=0 -DBR_USE_GETENTROPY=0 -DBR_RDRAND=0 -DBR_64=1
+
+build/bearssl/%.o: $(BEARSSL_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) -march=rv64g -mabi=lp64d -mcmodel=medany -ffreestanding -fno-pie -fno-pic -nostdlib -O2 -w \
+		-isystem user/libc/include -I$(BEARSSL_DIR)/inc -I$(BEARSSL_DIR)/src $(BEARSSL_DEFS) -c -o $@ $<
+
+$(BEARSSL_LIB): $(BEARSSL_OBJS)
+	rm -f $@
+	riscv64-unknown-elf-ar rcs $@ $^
+
+user/http.o: CFLAGS += -O2 -I$(BEARSSL_DIR)/inc
+
+$(HTTP_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o user/http.o $(BEARSSL_LIB) $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< user/http.o $(BEARSSL_LIB) $(LIBC_OBJS) user/ulib.o $(LIBGCC)
 
 user/organize.elf: user/organize.o user/learn.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/organize.o user/learn.o
@@ -197,6 +221,7 @@ sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	done
 	@$(KNOCFS) mkdir $(DISK) /etc /etc/apps 2>/dev/null || true
 	@./scripts/sdk.sh $(DISK)
+	@./scripts/etc.sh $(DISK)
 	@for manifest in apps/*.app; do \
 		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done

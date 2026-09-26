@@ -33,6 +33,7 @@ done
 ./scripts/sdk.sh "$DISK"
 
 $KNOCFS mkdir "$DISK" /etc /etc/apps
+./scripts/etc.sh "$DISK"
 for manifest in apps/*.app; do
     $KNOCFS put "$DISK" "$manifest" "/etc/apps/$(basename "$manifest")"
 done

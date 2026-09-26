@@ -16,6 +16,7 @@ extern int errno;
 #define EINVAL 22
 #define ENOSPC 28
 #define ERANGE 34
+#define ENOSYS 38
 #define ENOTEMPTY 39
 #define ENETDOWN 100
 #define ETIMEDOUT 110
