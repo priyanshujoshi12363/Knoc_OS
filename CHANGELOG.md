@@ -2,6 +2,24 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.22.0] - 2026-09-26
+
+The crash classifier: a neural network in the AI space diagnoses crashes.
+
+### Added
+- A crash classifier NN (107 → 32 → 16 → 10, int8, 4.7 KiB) runs inside the PMP-protected AI space on core 1; its weights are compiled into the AI space (`kernel/crashnet_model.h`), so a crashing kernel can't damage the model
+- 10 diagnoses: null pointer, bad pointer, unallocated memory, **stack overflow**, **jump to a bad address**, illegal instruction, misaligned access, code corruption, kernel panic, kernel freeze. The rule brain called a stack overflow "memory it never allocated" and a bad jump "memory outside its space"; the NN tells them apart
+- Features computed by the AI space from each crash: fault code, crash type, the memory region of the fault address and of the program counter, a jump (pc = fault address), the distance to the stack pointer, alignment, user program or kernel, inside a driver, forbidden calls, restarts, kernel code damage, the last system calls and the panic message words
+- `[AI]   decided by:` shows who decided: the NN with its confidence, or the rules
+- The rules stay as the safety layer: access faults (which the NN never saw) and any crash the NN is less than 80% sure about go to the rules, the clean-copy comparison still decides code corruption, and the actions (restart, disable a driver, leave a suspicious program stopped) are unchanged
+- Training data from real crashes: `crash` has scenario modes (`null`, `wild`, `unmapped`, `stack`, `jump`, `illegal`, `misaligned`, each with a random seed); the `crashdata` boot option (QEMU `-append crashdata`) makes the AI space print its features; `models/crash/collect.py` runs user and kernel crash scenarios in parallel QEMU machines, `train.py` tests on unseen runs, quantizes and writes the C header
+- The stack pointer of a crashed program reaches the AI space (`fault_sp`)
+- `make test` Run 10: every kind of program crash diagnosed by the NN; Runs 3 and 4 check the NN on kernel freezes and panics
+- The test driver passes `QEMU_APPEND` to QEMU
+
+### Changed
+- Core 1 (the AI space) has the floating-point unit enabled
+
 ## [0.21.0] - 2026-09-26
 
 Auto-organize and learning: Downloads sort themselves, and KnocOS learns your own folders.

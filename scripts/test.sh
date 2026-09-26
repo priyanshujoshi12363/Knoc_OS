@@ -212,6 +212,8 @@ check \
     "[OOPS] Store page fault in user program crash" \
     "[AI] Process crash contained: crash" \
     "[AI] Diagnosis: Null pointer: the program used an address near 0." \
+    "[AI]   decided by: the crash classifier NN (null_pointer" \
+    "[AI]   decided by: the crash classifier NN (kernel_freeze" \
     "Process crash restarted as pid" \
     "[AI] Action: leave crash stopped (it crashed 4 times)" \
     "Process crash left stopped: it keeps crashing" \
@@ -246,6 +248,7 @@ check \
     "[TRAP] Illegal instruction" \
     "bytes differ from the clean copy (code corrupted)" \
     "[AI] Diagnosis: Kernel code was overwritten" \
+    "[AI]   decided by: rules (the kernel code differs from the clean copy)" \
     "[AI] Black box saved (crash #2, 2 in a row)" \
     "Warm restart #2 by the AI space" \
     "Previous crash detected: #2 TRAP" \
@@ -296,6 +299,7 @@ check \
     "Black box: no new crashes, total recorded: 3" \
     "SAFE MODE" \
     "Test panic (Ctrl-P)" \
+    "[AI]   decided by: the crash classifier NN (kernel_panic" \
     "[AI] Kernel crash detected: PANIC - Test panic (Ctrl-P)" \
     "[AI] Black box saved (crash #4, 4 in a row)" \
     "[AI] Action: halt the kernel (crash loop detected)" \
@@ -419,6 +423,22 @@ check \
     "knocsh: file /home/Downloads/Documents/335505283.pdf --moved_to--> file /home/College/335505283.pdf" \
     "organize: forgot everything it learned from you" \
     "Nothing learned yet"
+show_log_on_failure
+
+echo "Run 10: the crash classifier NN in the AI space diagnoses each kind of program crash"
+new_disk
+boot "crash stack" "sleep 1" "crash jump 5" "sleep 1" "crash misaligned 3" "sleep 1" "crash unmapped 7" "sleep 1" \
+    "crash illegal 2" "sleep 1" "crash wild 4" "sleep 1"
+check \
+    "[AI] Diagnosis: Stack overflow: the stack grew past its end" \
+    "[AI]   decided by: the crash classifier NN (stack_overflow" \
+    "[AI] Diagnosis: Jump to a bad address" \
+    "[AI]   decided by: the crash classifier NN (bad_jump" \
+    "[AI]   decided by: the crash classifier NN (misaligned" \
+    "[AI]   decided by: the crash classifier NN (unallocated" \
+    "[AI]   decided by: the crash classifier NN (illegal_instruction" \
+    "[AI]   decided by: the crash classifier NN (bad_pointer"
+check_absent "decided by: rules (the crash classifier NN was unsure)"
 show_log_on_failure
 
 echo "RESULT: PASS"

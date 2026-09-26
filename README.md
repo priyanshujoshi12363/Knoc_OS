@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.21.0-blue)
+![Version](https://img.shields.io/badge/version-v0.22.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.21.0 starting
+[INFO] KnocOS v0.22.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,24 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Auto-Organize and Learning (v0.21.0)
+## ✅ Just Completed: The Crash Classifier (v0.22.0)
+
+**A neural network in the AI space diagnoses crashes.** It runs on core 1 inside the protected AI space, so it keeps working when the kernel crashes, and it tells apart crashes the old rules mixed up:
+
+```text
+knoc:/$ crash stack
+[AI] Diagnosis: Stack overflow: the stack grew past its end (endless recursion or a huge local array).
+[AI]   decided by: the crash classifier NN (stack_overflow, 100% sure)
+knoc:/$ crash jump 5
+[AI] Diagnosis: Jump to a bad address: a broken function pointer or return address (sepc = stval).
+[AI]   decided by: the crash classifier NN (bad_jump, 100% sure)
+```
+
+- **10 diagnoses** for program and kernel crashes, trained on 1,590 real crashes produced inside KnocOS
+- **Tiny and protected:** 4.7 KiB of int8 weights compiled into the PMP-protected AI space
+- **Rules as the safety net:** when the NN is unsure (below 80%) or sees a kind of crash it never trained on, the rules decide; the actions (restart, disable a driver) stay rule-based
+
+## Auto-Organize and Learning (v0.21.0)
 
 **Downloads sort themselves, and KnocOS learns your folders.**
 
@@ -304,7 +321,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** a crash classifier NN in the AI space, replacing the rule brain.
+**Next up:** context + intent security: what you're working on, and programs that misbehave.
 
 Recent progress:
 
@@ -333,7 +350,8 @@ Recent progress:
 | `a6b2983` | The agent: tools, app manifests, output capture, installed apps, shared LLM engine, version `v0.18.0` |
 | `dd6f3a9` | Shell scripts, redirection for every command, `copy`/`move`, startup script, agent `run_script`, version `v0.19.0` |
 | `bcb9a63` | `chat` with conversation memory, shared assistant core (`assist.c`), version `v0.20.0` |
-| *(uncommitted)* | Auto-organize daemon, learning from corrections (personal model), version `v0.21.0` |
+| `4dcc139` | Auto-organize daemon, learning from corrections (personal model), version `v0.21.0` |
+| *(uncommitted)* | Crash classifier NN in the AI space, crash scenarios and data collection, version `v0.22.0` |
 
 What works right now:
 
@@ -363,7 +381,8 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.19.0: shell scripts
 - [x] v0.20.0: `chat`
 - [x] v0.21.0: auto-organize + learning
-- [ ] v0.22.0 – v0.26.0: crash classifier NN, context + intent security, C library, compiler inside KnocOS, kernel on several cores
+- [x] v0.22.0: crash classifier NN in the AI space
+- [ ] v0.23.0 – v0.26.0: context + intent security, C library, compiler inside KnocOS, kernel on several cores
 - [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)
 

@@ -427,6 +427,7 @@ static void post_fault(process_fault_t *fault)
     guardian_mailbox.fault_scause = fault->scause;
     guardian_mailbox.fault_sepc = fault->sepc;
     guardian_mailbox.fault_stval = fault->stval;
+    guardian_mailbox.fault_sp = fault->sp;
     guardian_mailbox.fault_user = (uint32_t)fault->user;
     guardian_mailbox.fault_denied = fault->denied;
     guardian_mailbox.fault_trace_count = fault->trace_count;

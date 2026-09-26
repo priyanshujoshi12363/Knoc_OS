@@ -126,6 +126,8 @@ supervisor_start:
     call kernel_main
 
 aispace_boot:
+    li t0, MSTATUS_FS_INITIAL
+    csrs mstatus, t0
     la sp, aispace_stack_top
     mv a0, a1
     call aispace_main

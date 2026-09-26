@@ -81,6 +81,7 @@ typedef struct process_fault
     uint64_t scause;
     uint64_t sepc;
     uint64_t stval;
+    uint64_t sp;
     uint32_t restarts;
     int user;
     uint32_t denied;
@@ -127,7 +128,7 @@ int process_lower_class_user(int pid, uint32_t process_class);
 int process_alive(int pid);
 
 int process_can_contain_fault(void);
-void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
+void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval, uint64_t sp)
     __attribute__((noreturn));
 int process_next_crash(process_fault_t *fault);
 int process_restart(int pid);

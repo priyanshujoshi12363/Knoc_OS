@@ -3,6 +3,7 @@
 #include "blackbox.h"
 #include "virtio.h"
 #include "syscall_abi.h"
+#include "crashnet_model.h"
 
 #define AI_UART 0x10000000UL
 #define AI_UART_LSR 5
@@ -31,6 +32,31 @@
 #define AI_BLK_STATUS_PENDING 0xFF
 
 #define AI_SCAUSE_CODE_MASK 0x7FFFFFFFFFFFFFFFULL
+
+#define AI_FEATURE_CODES 16
+#define AI_FEATURE_REGIONS 8
+#define AI_FEATURE_WORDS 32
+#define AI_FEATURE_CODE 0
+#define AI_FEATURE_TYPE (AI_FEATURE_CODE + AI_FEATURE_CODES)
+#define AI_FEATURE_STVAL (AI_FEATURE_TYPE + 3)
+#define AI_FEATURE_SEPC (AI_FEATURE_STVAL + AI_FEATURE_REGIONS)
+#define AI_FEATURE_JUMP (AI_FEATURE_SEPC + AI_FEATURE_REGIONS)
+#define AI_FEATURE_STACK (AI_FEATURE_JUMP + 1)
+#define AI_FEATURE_MISALIGNED (AI_FEATURE_STACK + 4)
+#define AI_FEATURE_USER (AI_FEATURE_MISALIGNED + 1)
+#define AI_FEATURE_DRIVER (AI_FEATURE_USER + 1)
+#define AI_FEATURE_DENIED (AI_FEATURE_DRIVER + 1)
+#define AI_FEATURE_RESTARTS (AI_FEATURE_DENIED + 1)
+#define AI_FEATURE_DAMAGE (AI_FEATURE_RESTARTS + 1)
+#define AI_FEATURE_TRACE (AI_FEATURE_DAMAGE + 1)
+#define AI_FEATURE_MESSAGE (AI_FEATURE_TRACE + SYS_COUNT)
+#define AI_FEATURES (AI_FEATURE_MESSAGE + AI_FEATURE_WORDS)
+#define AI_NN_MIN_CONFIDENCE 0.8f
+#define AI_NN_WIDTH_MAX 256
+
+#if CRASHNET_READY && CRASHNET_FEATURES != AI_FEATURES
+#error "crashnet_model.h was trained on different features: retrain models/crash"
+#endif
 
 typedef struct ai_blk_request
 {
@@ -634,6 +660,355 @@ static void ai_diagnose_user(blackbox_record_t *record)
     }
 }
 
+static const char *ai_class_names[] = {"null_pointer", "bad_pointer", "unallocated", "stack_overflow", "bad_jump",
+                                       "illegal_instruction", "misaligned", "code_corruption", "kernel_panic",
+                                       "kernel_freeze"};
+
+static float ai_x[AI_FEATURES];
+static const char *ai_brain;
+static uint32_t ai_brain_percent;
+
+static int ai_region(uint64_t address)
+{
+    uint64_t ram_end = guardian_mailbox.ram_end ? guardian_mailbox.ram_end : AI_RAM_DEFAULT_END;
+
+    if (address < AI_NULL_LIMIT)
+    {
+        return 1;
+    }
+
+    if (address >= USER_BASE && address < USER_END)
+    {
+        return 2;
+    }
+
+    if (address >= (uint64_t)kernel_start && address < (uint64_t)kernel_image_end)
+    {
+        return 3;
+    }
+
+    if (address >= AISPACE_BASE && address < AISPACE_BASE + AISPACE_SIZE)
+    {
+        return 5;
+    }
+
+    if (address >= AI_RAM_START && address < ram_end)
+    {
+        return 4;
+    }
+
+    return address < AI_RAM_START ? 6 : 7;
+}
+
+static uint32_t ai_hash_word(const char *word, int length)
+{
+    uint32_t h = 2166136261u;
+
+    for (int i = 0; i < length; i++)
+    {
+        char c = word[i];
+
+        h ^= (uint8_t)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        h *= 16777619u;
+    }
+
+    return h % AI_FEATURE_WORDS;
+}
+
+static void ai_features(const blackbox_record_t *r, int user, uint32_t denied, uint32_t restarts,
+                        const volatile uint8_t *trace, uint32_t trace_count, uint64_t damage)
+{
+    uint64_t code = r->scause & AI_SCAUSE_CODE_MASK;
+    float *x = ai_x;
+
+    for (int i = 0; i < AI_FEATURES; i++)
+    {
+        x[i] = 0;
+    }
+
+    if (r->crash_type == CRASH_TYPE_TRAP && code < AI_FEATURE_CODES)
+    {
+        x[AI_FEATURE_CODE + code] = 1;
+    }
+
+    if (r->crash_type >= CRASH_TYPE_PANIC && r->crash_type <= CRASH_TYPE_FREEZE)
+    {
+        x[AI_FEATURE_TYPE + r->crash_type - CRASH_TYPE_PANIC] = 1;
+    }
+
+    if (r->crash_type == CRASH_TYPE_TRAP)
+    {
+        x[AI_FEATURE_STVAL + ai_region(r->stval)] = 1;
+        x[AI_FEATURE_SEPC + ai_region(r->sepc)] = 1;
+        x[AI_FEATURE_JUMP] = r->sepc == r->stval ? 1 : 0;
+        x[AI_FEATURE_MISALIGNED] = (r->stval & 7) != 0 ? 1 : 0;
+
+        if (r->sp != 0)
+        {
+            uint64_t distance = r->stval > r->sp ? r->stval - r->sp : r->sp - r->stval;
+
+            x[AI_FEATURE_STACK + (distance < 256 ? 0 : distance < 4096 ? 1 : distance < 65536 ? 2 : 3)] = 1;
+        }
+    }
+
+    x[AI_FEATURE_USER] = user ? 1 : 0;
+    x[AI_FEATURE_DRIVER] = r->driver[0] ? 1 : 0;
+    x[AI_FEATURE_DENIED] = denied ? 1 : 0;
+    x[AI_FEATURE_RESTARTS] = restarts >= 3 ? 1.0f : restarts / 3.0f;
+    x[AI_FEATURE_DAMAGE] = damage ? 1 : 0;
+
+    for (uint32_t i = 0; i < trace_count && i < MAILBOX_TRACE_MAX; i++)
+    {
+        if (trace[i] < SYS_COUNT)
+        {
+            x[AI_FEATURE_TRACE + trace[i]] += 1.0f / MAILBOX_TRACE_MAX;
+        }
+    }
+
+    for (int i = 0; r->message[i];)
+    {
+        int j = i;
+        char c = r->message[i];
+
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+        {
+            while ((r->message[j] >= 'a' && r->message[j] <= 'z') || (r->message[j] >= 'A' && r->message[j] <= 'Z'))
+            {
+                j++;
+            }
+
+            x[AI_FEATURE_MESSAGE + ai_hash_word(r->message + i, j - i)] = 1;
+        }
+        else
+        {
+            j++;
+        }
+
+        i = j;
+    }
+}
+
+static void ai_print_features(void)
+{
+    ai_puts("[CRASHDATA] ");
+
+    for (int i = 0; i < AI_FEATURES; i++)
+    {
+        if (i > 0)
+        {
+            ai_putc(',');
+        }
+
+        ai_put_uint((uint64_t)(ai_x[i] * 1000.0f + 0.5f));
+    }
+
+    ai_putc('\n');
+}
+
+#if CRASHNET_READY
+static float ai_exp(float v)
+{
+    if (v < -80)
+    {
+        return 0;
+    }
+
+    float k = v * 1.44269504f;
+    int n = (int)(k < 0 ? k - 0.5f : k + 0.5f);
+    float r = v - (float)n * 0.69314718f;
+    float p = 1 + r * (1 + r * (0.5f + r * (1.0f / 6 + r * (1.0f / 24 + r / 120))));
+
+    while (n > 0)
+    {
+        p *= 2;
+        n--;
+    }
+
+    while (n < 0)
+    {
+        p *= 0.5f;
+        n++;
+    }
+
+    return p;
+}
+
+static int ai_round_even(float value)
+{
+    int whole = (int)value;
+    float fraction = value - (float)whole;
+
+    if (fraction > 0.5f || (fraction == 0.5f && (whole & 1)))
+    {
+        whole++;
+    }
+
+    return whole;
+}
+
+static void ai_crashnet(int *best, float *confidence)
+{
+    static int xq[AI_NN_WIDTH_MAX];
+    static int next[AI_NN_WIDTH_MAX];
+    static float logits[CRASHNET_CLASSES];
+    unsigned int width = AI_FEATURES;
+
+    for (int i = 0; i < AI_FEATURES; i++)
+    {
+        int q = ai_round_even(ai_x[i] * 127.0f);
+
+        xq[i] = q < 0 ? 0 : q > 127 ? 127 : q;
+    }
+
+    for (int l = 0; l < CRASHNET_LAYERS; l++)
+    {
+        for (unsigned int o = 0; o < crashnet_outputs[l]; o++)
+        {
+            const signed char *row = crashnet_weights[l] + o * crashnet_inputs[l];
+            long acc = crashnet_bias[l][o];
+
+            for (unsigned int i = 0; i < width; i++)
+            {
+                acc += (long)row[i] * xq[i];
+            }
+
+            float real = (float)acc * crashnet_in_scale[l] * crashnet_w_scale[l][o];
+
+            if (crashnet_relu[l])
+            {
+                int q = ai_round_even((real > 0 ? real : 0) / crashnet_out_scale[l]);
+
+                next[o] = q > 127 ? 127 : q;
+            }
+            else
+            {
+                logits[o] = real;
+            }
+        }
+
+        if (crashnet_relu[l])
+        {
+            for (unsigned int o = 0; o < crashnet_outputs[l]; o++)
+            {
+                xq[o] = next[o];
+            }
+        }
+
+        width = crashnet_outputs[l];
+    }
+
+    int top = 0;
+
+    for (int c = 1; c < CRASHNET_CLASSES; c++)
+    {
+        if (logits[c] > logits[top])
+        {
+            top = c;
+        }
+    }
+
+    float total = 0;
+
+    for (int c = 0; c < CRASHNET_CLASSES; c++)
+    {
+        total += ai_exp(logits[c] - logits[top]);
+    }
+
+    *best = top;
+    *confidence = 1.0f / total;
+}
+#endif
+
+static const char *ai_class_text(int label, int user)
+{
+    switch (label)
+    {
+    case 0:
+        return user ? "Null pointer: the program used an address near 0." : "Null pointer: the code used an address near 0.";
+    case 1:
+        return user ? "The program tried to touch memory outside its own space (kernel or devices). The page table blocked it."
+                    : "Bad pointer: the code accessed an address that is not mapped (stval).";
+    case 2:
+        return user ? "Bad pointer inside the program's own space: memory it never allocated."
+                    : "Page fault inside RAM: a page that was freed or never mapped.";
+    case 3:
+        return "Stack overflow: the stack grew past its end (endless recursion or a huge local array).";
+    case 4:
+        return "Jump to a bad address: a broken function pointer or return address (sepc = stval).";
+    case 5:
+        return "Illegal instruction: corrupted code or an instruction this mode may not run.";
+    case 6:
+        return "Misaligned access: a pointer with the wrong alignment.";
+    case 7:
+        return "Kernel code was overwritten in memory: a bad pointer wrote over it. The clean copy fixes it.";
+    case 8:
+        return "The kernel detected an internal error and stopped itself (see message).";
+    default:
+        return "Kernel stopped responding for 2 s with interrupts off: likely an infinite loop at kernel_pc.";
+    }
+}
+
+static void ai_classify(blackbox_record_t *record, int user, uint32_t denied, uint32_t restarts,
+                        const volatile uint8_t *trace, uint32_t trace_count, uint64_t damage)
+{
+    uint64_t code = record->scause & AI_SCAUSE_CODE_MASK;
+
+    ai_features(record, user, denied, restarts, trace, trace_count, damage);
+    ai_brain = "rules";
+    ai_brain_percent = 100;
+
+    if (guardian_mailbox.crash_data)
+    {
+        ai_print_features();
+    }
+
+    if (record->crash_type == CRASH_TYPE_TRAP && (code == 1 || code == 5 || code == 7))
+    {
+        return;
+    }
+
+#if CRASHNET_READY
+    int best;
+    float confidence;
+
+    ai_crashnet(&best, &confidence);
+
+    if (confidence < AI_NN_MIN_CONFIDENCE)
+    {
+        ai_brain = "rules (the crash classifier NN was unsure)";
+        return;
+    }
+
+    record->diagnosis[0] = 0;
+    ai_append(record->diagnosis, ai_class_text(best, user), BLACKBOX_DIAGNOSIS_MAX);
+    ai_brain = ai_class_names[best];
+    ai_brain_percent = (uint32_t)(confidence * 100.0f + 0.5f);
+#else
+    (void)ai_class_text;
+    (void)ai_class_names;
+#endif
+}
+
+static void ai_print_brain(void)
+{
+    ai_puts("[AI]   decided by: ");
+
+    if (ai_brain[0] == 'r')
+    {
+        ai_puts(ai_brain);
+    }
+    else
+    {
+        ai_puts("the crash classifier NN (");
+        ai_puts(ai_brain);
+        ai_puts(", ");
+        ai_put_uint(ai_brain_percent);
+        ai_puts("% sure)");
+    }
+
+    ai_putc('\n');
+}
+
 static void ai_collect(uint32_t crash_type)
 {
     volatile guardian_mailbox_t *mailbox = &guardian_mailbox;
@@ -925,6 +1300,7 @@ static void ai_handle(uint32_t crash_type)
     }
 
     ai_diagnose(&ai_record);
+    ai_classify(&ai_record, 0, 0, (uint32_t)ai_consecutive, 0, 0, damage);
 
     if (damage != 0)
     {
@@ -932,11 +1308,13 @@ static void ai_handle(uint32_t crash_type)
         ai_append(ai_record.diagnosis,
                   "Kernel code was overwritten in memory: a bad pointer wrote over it. The clean copy fixes it.",
                   BLACKBOX_DIAGNOSIS_MAX);
+        ai_brain = "rules (the kernel code differs from the clean copy)";
     }
 
     ai_puts("[AI] Diagnosis: ");
     ai_puts(ai_record.diagnosis);
     ai_putc('\n');
+    ai_print_brain();
 
     if (ai_record.driver[0])
     {
@@ -1069,6 +1447,8 @@ static void ai_handle_process_fault(void)
     uint32_t denied = mailbox->fault_denied;
     uint32_t trace_count = mailbox->fault_trace_count;
 
+    record->sp = mailbox->fault_sp;
+
     if (user)
     {
         ai_diagnose_user(record);
@@ -1077,6 +1457,8 @@ static void ai_handle_process_fault(void)
     {
         ai_diagnose(record);
     }
+
+    ai_classify(record, (int)user, denied, restarts, mailbox->fault_trace, trace_count, 0);
 
     ai_puts("[AI] Process crash contained: ");
     ai_puts(record->process_name);
@@ -1116,6 +1498,7 @@ static void ai_handle_process_fault(void)
     ai_puts("[AI] Diagnosis: ");
     ai_puts(record->diagnosis);
     ai_putc('\n');
+    ai_print_brain();
 
     if (denied > 0)
     {

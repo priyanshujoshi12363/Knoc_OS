@@ -132,17 +132,17 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.21.0)
+## 4. Where KnocOS Is Today (v0.22.0)
 
 | Area | What works |
 |---|---|
 | **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, virtio disk), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
-| **AI that survives crashes** | The AI space on core 1 (PMP-protected), black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
+| **AI that survives crashes** | The AI space on core 1 (PMP-protected), a crash classifier NN inside it, black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
 | **User space** | U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | File organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing (`healthd`), memory graph (KnocGraph) |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Quality** | `make test` (9 runs) in CI on every push |
+| **Quality** | `make test` (10 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -173,6 +173,7 @@ People can move to KnocOS without losing their software.
 | v0.19.0 | 2026-09-26 | Shell scripts: variables, if / for / while, `>` and `>>` for every command, `copy` / `move`, startup script, the agent's `run_script` |
 | v0.20.0 | 2026-09-26 | Chat: a conversation with the LLM that remembers, with memory-graph facts and the agent's tools |
 | v0.21.0 | 2026-09-26 | Auto-organize and learning: a daemon sorts Downloads, a personal model learns your folders from corrections |
+| v0.22.0 | 2026-09-26 | Crash classifier NN in the AI space: 10 diagnoses from real crashes, rules as the safety net |
 
 ---
 
@@ -192,7 +193,7 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 
 | Version | Milestone | What we build | Result |
 |---|---|---|---|
-| v0.22.0 | Crash classifier NN | A small NN in the AI space trained on crash records from the memory graph | Real AI replaces the rule brain |
+| **v0.22.0** ✅ | Crash classifier NN | A small NN in the AI space, trained on real crashes from crash scenarios run inside KnocOS | Real AI makes the diagnosis; the rules stay as the safety net |
 | v0.23.0 | Context + intent security | What you're working on; suspicious program behaviour from system call traces | Context-aware help, and the OS spots misbehaving programs |
 
 ### Phase 3: A userland for real software
@@ -272,7 +273,7 @@ The scheduler treats AI work as a first-class citizen, without letting it freeze
 - **Small NNs** are small enough to run in recovery mode and the guardian: they recognize crash patterns immediately
 - **The big LLM** needs a healthy system: after recovery it reads the black box and explains the problem in plain language
 - **Built in v0.8.0:** Layers 2 and 3 exist as the **AI space** on CPU core 1: PMP-protected memory the kernel can't touch, a heartbeat mailbox, crash and freeze detection, a rule brain (Tier 0), a black box on disk, and reboot / safe mode / boot-loop halt
-- **Built in v0.9.0:** Layer 1 in its first form (**fault containment**: a crashing process stops alone, and the AI space decides whether to restart it or disable the driver it crashed in), and a **warm kernel restart**: the AI space keeps a clean copy of the kernel, stops core 0, restores it and restarts only the kernel, so the AI never goes down. A crash classifier NN (planned for v0.22.0) and later the LLM replace the rule brain in the same place
+- **Built in v0.9.0:** Layer 1 in its first form (**fault containment**: a crashing process stops alone, and the AI space decides whether to restart it or disable the driver it crashed in), and a **warm kernel restart**: the AI space keeps a clean copy of the kernel, stops core 0, restores it and restarts only the kernel, so the AI never goes down. Since v0.22.0 a crash classifier NN makes the diagnosis in the same place (the rules stay as the safety net), and later the LLM explains crashes in plain language
 
 ---
 

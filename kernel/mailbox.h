@@ -98,6 +98,10 @@ typedef struct guardian_mailbox
     volatile uint32_t fault_denied;
     volatile uint32_t fault_trace_count;
     volatile uint8_t fault_trace[MAILBOX_TRACE_MAX];
+
+    /* Stack pointer of a process fault, and data collection for the crash classifier */
+    volatile uint64_t fault_sp;
+    volatile uint32_t crash_data;
 } guardian_mailbox_t;
 
 extern guardian_mailbox_t guardian_mailbox;

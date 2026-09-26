@@ -218,7 +218,7 @@ void supervisor_trap_handler(trap_frame_t *frame)
         log_trap_hex("sepc   = ", sepc);
         log_trap_hex("stval  = ", stval);
 
-        process_crash(scause, sepc, stval);
+        process_crash(scause, sepc, stval, frame->sp);
     }
 
     if (!(scause & SCAUSE_INTERRUPT) &&
@@ -245,7 +245,7 @@ void supervisor_trap_handler(trap_frame_t *frame)
         log_trap_hex("sepc   = ", sepc);
         log_trap_hex("stval  = ", stval);
 
-        process_crash(scause, sepc, stval);
+        process_crash(scause, sepc, stval, frame->sp);
     }
 
     guardian_record_trap(scause, sepc, stval, frame->ra, frame->sp);

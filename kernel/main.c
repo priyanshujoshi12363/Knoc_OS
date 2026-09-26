@@ -22,6 +22,7 @@
 #include "tty.h"
 #include "memgraph.h"
 #include "telemetry.h"
+#include "mailbox.h"
 
 #define TIMER_TEST_TICKS 5
 #define TIMER_RUNAWAY_WINDOW 3
@@ -711,6 +712,24 @@ void kernel_main(uintptr_t dtb)
     uart_puts(", ");
     uart_put_uint(fdt.cpu_count);
     uart_puts(" CPUs\n");
+
+    for (int i = 0; fdt.bootargs[i]; i++)
+    {
+        const char *word = "crashdata";
+        int j = 0;
+
+        while (word[j] && fdt.bootargs[i + j] == word[j])
+        {
+            j++;
+        }
+
+        if (word[j] == 0)
+        {
+            guardian_mailbox.crash_data = 1;
+            log_info("Crash data mode: the AI space prints the crash classifier's inputs");
+            break;
+        }
+    }
 
     if (fdt.ram_start + fdt.ram_size < AISPACE_BASE + AISPACE_SIZE)
     {

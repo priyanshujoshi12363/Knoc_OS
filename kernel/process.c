@@ -39,6 +39,7 @@ typedef struct process
     uint64_t fault_scause;
     uint64_t fault_sepc;
     uint64_t fault_stval;
+    uint64_t fault_sp;
     uint64_t satp;
     int exit_code;
 
@@ -1463,7 +1464,7 @@ int process_can_contain_fault(void)
     return scheduler_running && current != 0 && current != &processes[0];
 }
 
-void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
+void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval, uint64_t sp)
 {
     interrupts_disable();
 
@@ -1490,6 +1491,7 @@ void process_crash(uint64_t scause, uint64_t sepc, uint64_t stval)
     current->fault_scause = scause;
     current->fault_sepc = sepc;
     current->fault_stval = stval;
+    current->fault_sp = sp;
     current->driver = 0;
 
     schedule();
@@ -1520,6 +1522,7 @@ int process_next_crash(process_fault_t *fault)
         fault->scause = p->fault_scause;
         fault->sepc = p->fault_sepc;
         fault->stval = p->fault_stval;
+        fault->sp = p->fault_sp;
         fault->restarts = p->restarts;
         fault->user = p->user;
         fault->denied = p->denied;
