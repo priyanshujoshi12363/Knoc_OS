@@ -7,7 +7,7 @@ import sys
 import time
 
 PROMPT = re.compile(rb"knoc:\S*\$ ")
-QUESTION = re.compile(rb"\(y/n\) |you: ")
+QUESTION = re.compile(rb"\(y/n\) |you: |calc> ")
 BOOT_WAIT = 60
 COMMAND_WAIT = int(os.environ.get("COMMAND_WAIT", "60"))
 RUNNING_WAIT = 2

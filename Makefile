@@ -57,8 +57,10 @@ TIMER_OBJS = timer/timer.o
 
 USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat organized
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
-USER_ELFS = $(USER_PROGRAMS:%=user/%.elf)
-USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(USER_PROGRAMS:%=user/%.o)
+LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o
+LIBC_PROGRAMS = libctest calc
+USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
+USER_OBJS = $(USER_LIB_OBJS) user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
@@ -77,6 +79,11 @@ user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 
 user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o
+
+$(LIBC_OBJS) $(LIBC_PROGRAMS:%=user/%.o): CFLAGS += -isystem user/libc/include
+
+$(LIBC_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $< $(LIBC_OBJS) user/ulib.o
 
 user/organize.elf: user/organize.o user/learn.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/organize.o user/learn.o
@@ -112,7 +119,7 @@ reset-disk: $(USER_ELFS)
 
 # Copy freshly built programs into /bin, keeping every other file on the disk
 sync-programs: $(USER_ELFS) $(DISK)
-	@for program in $(USER_PROGRAMS); do \
+	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS); do \
 		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
 			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
 	done

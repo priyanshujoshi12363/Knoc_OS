@@ -438,6 +438,18 @@ static int64_t sys_seek(uint64_t fd, uint64_t offset)
         return E_BADF;
     }
 
+    if (offset == SEEK_POSITION)
+    {
+        return (int64_t)file->offset;
+    }
+
+    if (offset == SEEK_SIZE)
+    {
+        knocfs_stat_t stat;
+
+        return knocfs_stat(file->inode, &stat) == 0 ? (int64_t)stat.size : E_IO;
+    }
+
     file->offset = offset;
     return (int64_t)offset;
 }

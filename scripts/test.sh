@@ -132,7 +132,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem chat counter crash diskload files filler healthd hello hog knocsh leak modelcheck noperm organized organize quiet recorder spawner spin spy" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash diskload files filler healthd hello hog knocsh leak libctest modelcheck noperm organized organize quiet recorder spawner spin spy" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -452,6 +452,19 @@ check \
     "Folders you work in: /home/code" \
     "Programs you use:" \
     "- Recently the user worked most in: /home/code"
+show_log_on_failure
+
+echo "Run 12: the C library: libctest checks it, and calc is a normal C program"
+new_disk
+boot "libctest alpha 42" "calc 2 ^ 10" "calc" "?7 / 2" "?sqrt 2" "?oops" "?quit"
+check \
+    "libctest: testing the KnocOS C library" \
+    "checks passed, 0 failed" \
+    "1024" \
+    "= 3.5" \
+    "= 1.41421" \
+    "?  try 2 + 3 or sqrt 2"
+check_absent "  FAIL "
 show_log_on_failure
 
 echo "RESULT: PASS"

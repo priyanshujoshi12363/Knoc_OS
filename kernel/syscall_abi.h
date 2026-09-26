@@ -46,6 +46,8 @@
 #define O_WRITE 0x2
 #define O_CREATE 0x4
 #define O_TRUNC 0x8
+#define SEEK_POSITION ((unsigned long)-1)
+#define SEEK_SIZE ((unsigned long)-2)
 
 #define FILE_TYPE_FILE 1
 #define FILE_TYPE_DIR 2

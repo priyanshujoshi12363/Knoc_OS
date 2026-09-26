@@ -132,17 +132,17 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.23.0)
+## 4. Where KnocOS Is Today (v0.24.0)
 
 | Area | What works |
 |---|---|
 | **Kernel** | Boot on RISC-V (QEMU `virt`, 2 cores, 2 GiB), Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, virtio disk), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
 | **AI that survives crashes** | The AI space on core 1 (PMP-protected), a crash classifier NN inside it, black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
-| **User space** | U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
+| **User space** | A C standard library (`libknoc`: stdio, stdlib, string, math, time...), U-mode programs, 29 system calls, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | File organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing and a live permission watch (`healthd`), memory graph (KnocGraph) with your work context |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
-| **Quality** | `make test` (11 runs) in CI on every push |
+| **Quality** | `make test` (12 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -175,6 +175,7 @@ People can move to KnocOS without losing their software.
 | v0.21.0 | 2026-09-26 | Auto-organize and learning: a daemon sorts Downloads, a personal model learns your folders from corrections |
 | v0.22.0 | 2026-09-26 | Crash classifier NN in the AI space: 10 diagnoses from real crashes, rules as the safety net |
 | v0.23.0 | 2026-09-26 | Context tracker (`context`, facts for the LLM) and a live permission watch in `healthd` |
+| v0.24.0 | 2026-09-26 | The C library `libknoc`: stdio, stdlib (malloc/free), string, ctype, math, time; `libctest` and `calc` |
 
 ---
 
@@ -201,7 +202,7 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 
 | Version | Milestone | What we build | Result |
 |---|---|---|---|
-| v0.24.0 | C library | `printf`, `malloc`, files, time, strings, math, a porting layer | Normal C programs can be written for KnocOS |
+| **v0.24.0** ✅ | C library | `printf`, `malloc`, files, time, strings, math, standard headers | Normal C programs can be written for KnocOS |
 | v0.25.0 | Compiler inside KnocOS | Port TinyCC; the agent can write, compile and fix C code | KnocOS builds its own programs; base of the coding agent |
 | v0.26.0 | Kernel on several cores | SMP kernel, locks everywhere, programs on every core | Real multitasking, faster everything |
 

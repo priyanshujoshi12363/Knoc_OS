@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.23.0-blue)
+![Version](https://img.shields.io/badge/version-v0.24.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.23.0 starting
+[INFO] KnocOS v0.24.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 2 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,32 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Context and Live Permission Watching (v0.23.0)
+## ✅ Just Completed: The C Library (v0.24.0)
+
+**KnocOS programs can be written in normal C.** `libknoc` gives them `printf`, `malloc` / `free`, `fopen`, `string.h`, `math.h`, `time.h` and the rest of the usual standard library:
+
+```c
+#include <stdio.h>
+#include <math.h>
+
+int main(int argc, char **argv)
+{
+    printf("sqrt(2) = %.5f, %d arguments\n", sqrt(2.0), argc - 1);
+    return 0;
+}
+```
+
+To add a program: put it in `user/NAME.c`, add `NAME` to `LIBC_PROGRAMS` in the `Makefile`, and run `make run`; it lands in `/bin` and runs like any other command. `libctest` checks the library (65 checks) and `calc` is a small calculator written this way:
+
+```text
+knoc:/$ calc 2 ^ 10
+1024
+knoc:/$ calc
+calc> sqrt 2
+= 1.41421
+```
+
+## Context and Live Permission Watching (v0.23.0)
 
 **KnocOS knows what you're working on**, and notices programs that keep asking for things they may not do:
 
@@ -338,7 +363,7 @@ Memory graph: 57 nodes, 57 links (room for 4096 / 16384), boot 2
 - **You're in control:** `memory`, `memory recent`, `memory find`, `memory show`, `memory why`, `memory forget`
 - Stored in `/memory` on the KnocFS disk (up to 4,096 nodes and 16,384 links; the oldest links are forgotten first)
 
-**Next up:** the C library, so normal C programs can be written for KnocOS.
+**Next up:** a C compiler inside KnocOS (TinyCC), so KnocOS can build programs itself.
 
 Recent progress:
 
@@ -369,7 +394,8 @@ Recent progress:
 | `bcb9a63` | `chat` with conversation memory, shared assistant core (`assist.c`), version `v0.20.0` |
 | `4dcc139` | Auto-organize daemon, learning from corrections (personal model), version `v0.21.0` |
 | `63e18bb` | Crash classifier NN in the AI space, crash scenarios and data collection, version `v0.22.0` |
-| *(uncommitted)* | Context tracker, live permission watch, version `v0.23.0` |
+| `6bf2439` | Context tracker, live permission watch, version `v0.23.0` |
+| *(uncommitted)* | The C library `libknoc`, `libctest`, `calc`, version `v0.24.0` |
 
 What works right now:
 
@@ -401,7 +427,8 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.21.0: auto-organize + learning
 - [x] v0.22.0: crash classifier NN in the AI space
 - [x] v0.23.0: context tracker + live permission watch
-- [ ] v0.24.0 – v0.26.0: C library, compiler inside KnocOS, kernel on several cores
+- [x] v0.24.0: the C library
+- [ ] v0.25.0 – v0.26.0: compiler inside KnocOS, kernel on several cores
 - [ ] v0.27.0 – v0.30.0: networking, KnocNet, semantic search, Linux apps
 - [ ] v0.31.0 – v0.34.0: the GUI (last)
 

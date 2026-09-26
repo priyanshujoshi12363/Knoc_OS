@@ -15,7 +15,7 @@ long syscall(long number, long a0, long a1, long a2)
     return r_a0;
 }
 
-void exit(int code)
+__attribute__((weak)) void exit(int code)
 {
     syscall(SYS_EXIT, code, 0, 0);
 

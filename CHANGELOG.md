@@ -2,6 +2,25 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.24.0] - 2026-09-26
+
+The C library: normal C programs for KnocOS.
+
+### Added
+- `libknoc`, a C standard library in `user/libc/` with standard headers in `user/libc/include/`:
+  - `stdio.h`: `printf` / `fprintf` / `sprintf` / `snprintf` / `vsnprintf` (`%d %i %u %x %X %o %c %s %p %f %e %g %n`, widths, precision, flags, `l`/`ll`/`z` sizes), buffered `FILE` streams (`fopen` with `r w a` and `+`, `fread`, `fwrite`, `fgets`, `fgetc`, `ungetc`, `fputs`, `fputc`, `fseek`, `ftell`, `rewind`, `feof`, `ferror`, `fflush`, `fclose`), `stdin` / `stdout` / `stderr` (the console `stdin` echoes and handles Backspace), `sscanf`, `perror`, `remove`, `rename`
+  - `stdlib.h`: `malloc` / `free` / `calloc` / `realloc` (a free-list allocator that reuses freed memory and merges neighbours), `strtol` / `strtoul` / `strtoll` / `strtoull` / `strtod`, `atoi` / `atol` / `atoll` / `atof`, `qsort`, `bsearch`, `rand` / `srand`, `abs` / `labs` / `div`, `exit` with `atexit`, `abort`, `getenv` (`HOME`, `PATH`, `USER`, `OS`)
+  - `string.h` (27 functions, including `strtok`, `strstr`, `strdup`, `memmove`, `strerror`), `ctype.h`, `math.h` (`sqrt` with the FPU instruction, `exp`, `log`, `pow`, `sin`, `cos`, `tan`, `atan2`, `asin`, `acos`, hyperbolic functions, rounding), `time.h` (`time`, `clock`, `gmtime`, `strftime`), `errno.h`, `assert.h`
+  - Programs get `main(int argc, char **argv)`, and `exit` flushes open streams
+- `libctest`: 65 checks of the library inside KnocOS
+- `calc`: a calculator written in plain standard C (`calc 2 ^ 10`, or interactive)
+- `seek` can report the current position (`SEEK_POSITION`) and the file size (`SEEK_SIZE`)
+- `make test` Run 12: `libctest` and `calc`
+
+### Changed
+- C library programs are installed apps: they run from `/bin` without an entry in the kernel's program table
+- `ulib`'s `exit` is weak, so the C library's `exit` (which flushes output) takes over in C library programs
+
 ## [0.23.0] - 2026-09-26
 
 Context and live permission watching.
