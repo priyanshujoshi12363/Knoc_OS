@@ -15,6 +15,8 @@ Usage:
   knocfs.py ls IMAGE [PATH]
   knocfs.py cat IMAGE PATH
   knocfs.py touch IMAGE PATH EPOCH          set a file's modified time
+  knocfs.py put-link IMAGE TARGET DEST      make a symbolic link
+  knocfs.py put-tree IMAGE HOSTDIR [DEST]   copy a folder with its links
   knocfs.py rm IMAGE PATH
   knocfs.py info IMAGE
 """
@@ -35,7 +37,7 @@ NAME_MAX = 60
 ROOT = 1
 INODE_COUNT = 1024
 
-TYPE_FREE, TYPE_FILE, TYPE_DIR = 0, 1, 2
+TYPE_FREE, TYPE_FILE, TYPE_DIR, TYPE_LINK = 0, 1, 2, 3
 
 SUPER = struct.Struct("<QIIQIIIIIIII")
 INODE = struct.Struct("<HHIQ" + "II" * EXTENTS + "QQ")
@@ -225,6 +227,28 @@ class KnocFS:
         if modified is not None:
             self.touch(path, modified)
 
+    def link(self, target, path):
+        if self.lookup(path) is not None:
+            self.remove(path)
+        self.write_file(self.create(path, TYPE_LINK), target.encode())
+
+    def put_tree(self, source, dest):
+        for directory, folders, files in os.walk(source, followlinks=False):
+            relative = os.path.relpath(directory, source)
+            base = dest.rstrip("/") + ("" if relative == "." else "/" + relative)
+            if base and self.lookup(base) is None:
+                self.create(base, TYPE_DIR)
+            for name in sorted(folders + files):
+                host = os.path.join(directory, name)
+                path = (base or "") + "/" + name
+                if os.path.islink(host):
+                    self.link(os.readlink(host), path)
+                    if name in folders:
+                        folders.remove(name)
+                elif os.path.isfile(host):
+                    with open(host, "rb") as f:
+                        self.put(path, f.read(), os.path.getmtime(host))
+
     def touch(self, path, modified):
         number = self.lookup(path)
         if number is None:
@@ -306,9 +330,13 @@ def main(argv):
             for _, entry, name in fs.entries(number):
                 if entry:
                     inode = fs.inode(entry)
-                    kind = "dir " if inode["type"] == TYPE_DIR else "file"
+                    kind = "dir " if inode["type"] == TYPE_DIR else "link" if inode["type"] == TYPE_LINK else "file"
                     when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(inode["modified"])) if inode["modified"] else "-"
                     print(f"{kind} {inode['size']:>12}  {when}  {name}")
+        elif command == "put-link":
+            fs.link(args[0], args[1])
+        elif command == "put-tree":
+            fs.put_tree(args[0], args[1] if len(args) > 1 else "/")
         elif command == "touch":
             fs.touch(args[0], int(args[1]))
         elif command == "cat":

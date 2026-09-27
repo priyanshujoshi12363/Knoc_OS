@@ -2,6 +2,26 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.32.0] - 2026-09-27
+
+Dynamically linked Linux programs.
+
+### Added
+- Dynamic Linux programs run: the kernel loads the program and the loader it asks for (`/lib/ld-linux-riscv64-lp64d.so.1`, glibc's `ld.so`), and the loader brings in the shared libraries itself
+- Real memory mapping for Linux programs, page by page: `mmap` of files and anonymous memory at a free or a fixed address (`MAP_FIXED` replaces what was there), `munmap`, `mprotect` (read-only and executable pages are enforced; writing to a read-only page is a contained crash), reserved `PROT_NONE` regions that use no memory until they are opened; every page counts against the program's quota (256 MiB for Linux programs) and is freed when it exits
+- Symbolic links in KnocFS: a new link type, followed when paths are opened (relative targets and `..` too, up to 8 links deep); `symlinkat`, `readlinkat`, `lstat`-style `newfstatat`, link entries in `getdents64`; `ln -s`, `readlink` and `ls -l` show them; `knocfs.py` has `put-link` and `put-tree` (a host folder with its links)
+- A Debian base: `scripts/get-linux-base.sh` (and `make linux-apps`) downloads glibc 2.43, libgcc, libstdc++, ncurses, readline, Lua 5.4, the dynamic BusyBox 1.38 and bash 5.3, checked with SHA-256, and puts them in `/usr` on the disk (8 MiB)
+- `lua5.4`, `bash`, `/usr/bin/busybox` and other programs in `/usr/bin` run by name from knocsh
+- `make test` Run 20: Lua, bash (arithmetic and loops), the loader's `--list`, the dynamic BusyBox, symbolic links, a missing library reported by the loader, `mprotect` / `munmap` / `MAP_FIXED`, and a write to a read-only page contained by the AI space
+
+### Changed
+- Linux programs get their path as `argv[0]`; the system calls a crashed Linux program made show under their KnocOS names in the AI's report
+- knocsh keeps text in single quotes as it is (no `$` expansion), like other shells
+- The health watch only reports disk thrashing above 1500 disk requests a second, so a busy but normal program on a slow machine is not flagged
+
+### Fixed
+- A plain `make` only downloaded BusyBox (the `linux-apps` target came first); it builds KnocOS again
+
 ## [0.31.0] - 2026-09-27
 
 Linux programs run on KnocOS.

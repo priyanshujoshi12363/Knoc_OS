@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.31.0-blue)
+![Version](https://img.shields.io/badge/version-v0.32.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.31.0 starting
+[INFO] KnocOS v0.32.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 8 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,30 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Linux Programs on KnocOS (v0.31.0)
+## ✅ Just Completed: Dynamic Linux Programs (v0.32.0)
+
+**Normal Linux programs, with shared libraries, run on KnocOS.** glibc's own loader starts them and loads their libraries from a Debian base on the disk:
+
+```text
+knoc:/$ lua5.4 -e "print(2^10)"
+1024.0
+knoc:/$ bash -c 'echo $((6*7)); for i in 1 2 3; do echo n$i; done'
+42
+n1
+n2
+n3
+knoc:/$ /lib/ld-linux-riscv64-lp64d.so.1 --list /usr/bin/lua5.4
+	libreadline.so.8 => /usr/lib/riscv64-linux-gnu/libreadline.so.8 (0x000000180003b000)
+	libc.so.6 => /usr/lib/riscv64-linux-gnu/libc.so.6 (0x0000001800132000)
+	...
+knoc:/$ busybox ln -s /hello.txt /home/link.txt     ← symbolic links in KnocFS
+```
+
+- `make linux-apps` downloads the Debian base (glibc 2.43, bash 5.3, Lua 5.4, BusyBox 1.38; 8 MiB) and `make run` puts it in `/usr`; programs in `/usr/bin` run by name
+- Real memory mapping for Linux programs (`mmap`, `mprotect`, `munmap`, page by page) and symbolic links in KnocFS
+- Next: `fork` / `exec`, pipes and signals (v0.33), so `bash` can run other programs and pipelines
+
+## Linux Programs on KnocOS (v0.31.0)
 
 **Real Linux programs run on KnocOS, unchanged.** Debian's BusyBox (a static RISC-V Linux build, 300 standard tools) runs as it is:
 
@@ -559,7 +582,8 @@ Recent progress:
 | `6814f5d` | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
 | `0cb52d1` | KnocNet: pairing, encrypted links, files and AI questions between machines, TCP servers, version `v0.29.0` |
 | `d681062` | Search by meaning: `find`, KnocEmbed, `indexd`, file dates, memory facts by meaning, version `v0.30.0` |
-| *(uncommitted)* | Linux programs: system call layer, BusyBox, `/proc`, devices moved high, version `v0.31.0` |
+| `6b5332a` | Linux programs: system call layer, BusyBox, `/proc`, devices moved high, version `v0.31.0` |
+| *(uncommitted)* | Dynamic Linux programs: glibc loader, `mmap`/`mprotect`, symlinks, Debian base, version `v0.32.0` |
 
 What works right now:
 
@@ -599,7 +623,10 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.29.0: KnocNet
 - [x] v0.30.0: search by meaning
 - [x] v0.31.0: Linux programs (static, BusyBox)
-- [ ] v0.32.0 – v0.35.0: the GUI (last)
+- [x] v0.32.0: dynamic Linux programs (glibc, bash, Lua)
+- [ ] v0.33.0 – v0.35.0: fork/exec and pipes, threads and sockets, app installer
+- [ ] v0.36.0 – v0.39.0: the GUI
+- [ ] v0.40.0 – v0.41.0: Windows programs (last)
 
 ---
 

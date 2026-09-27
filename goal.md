@@ -2,7 +2,7 @@
 
 > **An AI-native operating system where intelligence is part of the kernel's world, not an app running on top of it.**
 
-KnocOS aims to be a **production-grade** operating system with **local AI built in**: a large language model for heavy reasoning and conversation, and many **small neural networks (NNs)** trained for specific tasks that run cheaply on the CPU. Everything runs **locally**, with no cloud dependency. KnocOS machines can talk **directly to each other** over their own network, and users can bring their existing apps from **Windows, Linux and (partially) macOS**.
+KnocOS aims to be a **production-grade** operating system with **local AI built in**: a large language model for heavy reasoning and conversation, and many **small neural networks (NNs)** trained for specific tasks that run cheaply on the CPU. Everything runs **locally**, with no cloud dependency. KnocOS machines can talk **directly to each other** over their own network, and users can bring their existing apps: **Linux** programs first, **Windows** programs last (after the GUI).
 
 ---
 
@@ -101,8 +101,7 @@ People can move to KnocOS without losing their software.
 | Platform | Format | Approach | Target |
 |---|---|---|---|
 | Linux | ELF | Linux syscall compatibility layer | Full |
-| Windows | `.exe` (PE) | PE loader + Win32 API translation (Wine-style) | Broad |
-| macOS | Mach-O | Mach-O loader + partial Darwin API layer (Darling-style) | Partial |
+| Windows | `.exe` (PE) | Wine (Win32 API) + Box64 (x86-64 to RISC-V), last, after the GUI | Broad |
 
 ---
 
@@ -110,9 +109,9 @@ People can move to KnocOS without losing their software.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│  Apps: native · Linux (ELF) · Windows (.exe) · macOS (partial)  │
+│  Apps: native · Linux (ELF) · Windows (.exe, last)              │
 ├─────────────────────────────────────────────────────────────────┤
-│  Compatibility Layers:  Linux ABI │ Win32/PE │ Darwin/Mach-O     │
+│  Compatibility Layers:  Linux ABI │ Wine + Box64 (Windows, last)  │
 ├─────────────────────────────────────────────────────────────────┤
 │  AI Services                                                     │
 │   Universal Agent · Tool API · Knowledge Layer · Context Engine  │
@@ -132,18 +131,18 @@ People can move to KnocOS without losing their software.
 
 ---
 
-## 4. Where KnocOS Is Today (v0.31.0)
+## 4. Where KnocOS Is Today (v0.32.0)
 
 | Area | What works |
 |---|---|
 | **Kernel** | Boot on RISC-V (QEMU `virt`, 8 cores: 4 general, 3 AI, 1 AI space, 2 GiB), a multi-core kernel with a big kernel lock and wake-up signals between cores, threads, Sv39 virtual memory, buddy allocator, 2 MiB megapages, kernel heap, traps and interrupts, timer, PLIC, device drivers (UART, power, real-time clock, virtio disk, network and random numbers), processes with an AI-aware scheduler and wake-up preemption, wait queues, fair sleep locks |
 | **AI that survives crashes** | The AI space on core 4 (PMP-protected), a crash classifier NN inside it, black box, crash and freeze detection, fault containment, warm kernel restart, safe mode |
-| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 44 system calls, threads (`pthread`), static Linux programs (BusyBox) through a Linux system call layer, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
+| **User space** | A C compiler inside KnocOS (TinyCC), a C standard library (`libknoc`: stdio, stdlib, string, math, time, POSIX files...), working directories, U-mode programs, 44 system calls, threads (`pthread`), Linux programs (static and dynamic: BusyBox, bash, Lua with glibc) through a Linux system call layer, symbolic links, capabilities and quotas, the KnocFS filesystem, the `knocsh` shell with scripts (`.ksh`) and `>` / `>>` for every command, installed apps from `/bin`, output capture |
 | **Small AI** | Search by meaning (`find`, the KnocEmbed model and the `indexd` index), file organizer (type + source classifier) that sorts Downloads by itself and learns your own folders, anomaly detector with self-healing and a live permission watch (`healthd`), memory graph (KnocGraph) with your work context |
 | **LLM** | Qwen2.5-0.5B int8 with our own C engine, matrix math on the 3 AI cores; `chat` (a conversation that remembers) and `ask` (one question), GraphRAG from the memory graph, health and crash reports, the model chosen by `/etc/llm.model` |
 | **Agent** | `agent`: rules first, then Qwen tool calling; 13 tools (scripts included), any app with a manifest in `/etc/apps`, y/n before changes, everything logged |
 | **Network** | virtio-net driver and a TCP/IP stack in the kernel (ARP, IPv4, ICMP, DNS, TCP, `/etc/hosts`), HTTPS with BearSSL, `net`, `ping`, `fetch`, the `web` text browser, a `NET` capability; KnocNet: paired machines, encrypted links, files and AI questions between KnocOS machines |
-| **Quality** | `make test` (19 runs) in CI on every push |
+| **Quality** | `make test` (20 runs) in CI on every push |
 
 **Honest limit:** under QEMU the LLM writes about one word per second, because QEMU emulates the CPU. Speed work waits for real hardware (see the Hardware track below).
 
@@ -184,6 +183,7 @@ People can move to KnocOS without losing their software.
 | v0.29.0 | 2026-09-27 | KnocNet: pairing with a code, encrypted links (X25519, ECDSA, ChaCha20-Poly1305), files and AI questions between machines, TCP servers in the kernel |
 | v0.30.0 | 2026-09-27 | Search by meaning: `find` with dates and types, the KnocEmbed model, the `indexd` index, file dates, memory facts by meaning |
 | v0.31.0 | 2026-09-27 | Linux programs: a Linux system call layer, BusyBox from Debian runs unchanged (`grep`, `tar`, `vi`, `top`...), `/proc`, devices moved high in memory |
+| v0.32.0 | 2026-09-27 | Dynamic Linux programs: glibc's loader and libraries, page-by-page `mmap` / `mprotect` / `munmap`, symbolic links, a Debian base with bash and Lua |
 
 ---
 
@@ -228,17 +228,28 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 | Version | Milestone | What we build | Result |
 |---|---|---|---|
 | **v0.31.0** ✅ | Linux app compatibility | Linux ELF loader and system call layer, static programs (BusyBox) | Linux programs run on KnocOS |
-| v0.31.x | More Linux | Dynamically linked programs (musl loader), `fork` / `exec` and pipes (`busybox sh`), Linux sockets | Most Linux software runs |
-| later | Windows and macOS | `.exe` (Wine-style), partial macOS | Easy migration |
+| **v0.32.0** ✅ | Dynamic Linux programs | Linux's loader and shared libraries from a Debian base on the disk, real `mmap` / `munmap` / `mprotect` | Most normal Linux programs run |
+| v0.33.0 | Linux processes | `fork`, `exec`, `wait`, pipes, signals (Ctrl-C, Ctrl-Z), process groups | `bash`, `busybox sh`, pipelines, `make` |
+| v0.34.0 | Linux threads + network | `clone` threads, `futex`, sockets, `epoll` | `curl`, `git`, `python3`, `pip` |
+| v0.35.0 | App installer | `knoc install NAME`: Debian RISC-V packages with their dependencies | Thousands of Linux programs |
 
-### Phase 6: Smooth GUI (last)
+macOS programs are not planned: their apps need Apple's closed frameworks (Cocoa, Metal). Most tools Mac users need also exist for Linux.
+
+### Phase 6: Smooth GUI
 
 | Version | Milestone | What we build |
 |---|---|---|
-| v0.32.0 | Graphics | virtio-gpu framebuffer, pixels, fonts |
-| v0.33.0 | Input | Mouse and keyboard events |
-| v0.34.0 | Window system | Windows, compositing, apps drawing on screen |
-| v0.35.0 | Desktop + AI panel | Desktop, chat with the LLM, memory graph viewer, organizer, health |
+| v0.36.0 | Graphics | virtio-gpu framebuffer, pixels, fonts |
+| v0.37.0 | Input | Mouse and keyboard events |
+| v0.38.0 | Window system | Windows, compositing, apps drawing on screen |
+| v0.39.0 | Desktop + AI panel | Desktop, chat with the LLM, memory graph viewer, organizer, health |
+
+### Phase 7: Windows programs (last)
+
+| Version | Milestone | What we build |
+|---|---|---|
+| v0.40.0 | Windows command-line programs | Box64 (x86-64 to RISC-V) and Wine running on KnocOS's Linux layer |
+| v0.41.0 | Windows programs with windows | Wine on the KnocOS window system |
 
 ### Hardware track (when a board arrives, alongside the phases above)
 
@@ -345,7 +356,7 @@ The Personal Knowledge Layer, built on ideas from open-source AI memory projects
 
 - **LLM speed on CPU:** needs quantization (4-bit / 8-bit), SIMD/vector instructions, and eventually GPU/NPU drivers.
 - **GPU drivers** are among the hardest parts of any OS, so early LLM work will be CPU-only.
-- **Windows/macOS compatibility** is a very large surface. Wine and Darling took years, so start with Linux ELF and grow from there.
+- **Windows compatibility** is a very large surface. Wine took years, so KnocOS runs Wine and Box64 on its Linux layer instead of rewriting them, and only after Linux software and the GUI work.
 - **Privacy:** an OS that knows everything about the user must keep all data local, encrypted and user-controlled.
 - **Safety:** an agent that can control the system needs strict, auditable permissions and undo.
 

@@ -179,6 +179,35 @@ int main(long argc, char **argv, char **envp)
         line("mmap gave 1048576 zeroed bytes", -999999, "");
     }
 
+    char *pages = (char *)call(222, 0, 2 * 4096, 3, 0x22, -1, 0);
+
+    pages[0] = 'A';
+    pages[4096] = 'B';
+
+    long protected_result = call(226, (long)pages, 4096, 1, 0, 0, 0);
+    long unmapped = call(215, (long)(pages + 4096), 4096, 0, 0, 0, 0);
+    char seen = pages[0];
+
+    if (protected_result == 0 && unmapped == 0 && seen == 'A')
+    {
+        line("mprotect and munmap ok", -999999, "");
+    }
+
+    char *again = (char *)call(222, (long)pages, 4096, 3, 0x32, -1, 0);
+
+    if (again == pages && pages[0] == 0)
+    {
+        pages[0] = 'C';
+        line("MAP_FIXED replaced a page with a fresh one", -999999, "");
+    }
+
+    if (argc > 1 && same(argv[1], "protect"))
+    {
+        call(226, (long)pages, 4096, 1, 0, 0, 0);
+        out("linuxtest: writing to a read-only page\n");
+        pages[1] = 'X';
+    }
+
     long ts[2];
 
     call(113, 0, (long)ts, 0, 0, 0, 0);

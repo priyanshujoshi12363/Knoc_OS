@@ -6,6 +6,12 @@
 - License: GNU GPL 2 (source: https://sources.debian.org/src/busybox/1:1.37.0-6/)
 - Used for: Linux programs on KnocOS: `/bin/busybox` and its tools (`grep`, `sed`, `awk`, `tar`, `vi`, `top`...); KnocOS runs the Debian binary unchanged
 
+## Debian base for dynamic Linux programs (downloaded, not stored here)
+
+- Source: Debian RISC-V packages `libc6` 2.43 (glibc, LGPL 2.1), `libgcc-s1` and `libstdc++6` 16.2 (GPL 3 with the runtime exception), `libtinfo6` 6.6 (ncurses, MIT-style), `libreadline8t64` 8.3 (GPL 3), `lua5.4` and `liblua5.4-0` 5.4.9 (MIT), `busybox` 1.38 (GPL 2), `bash` 5.3 (GPL 3)
+- `scripts/get-linux-base.sh` downloads them from deb.debian.org or snapshot.debian.org, checks each with SHA-256 and unpacks them (without `/usr/share`) into `build/linux/root`; `mkdisk` copies that tree onto the disk with its symbolic links
+- Source code for every package: https://sources.debian.org/
+
 ## BearSSL (`bearssl/`)
 
 - Source: https://www.bearssl.org/git/BearSSL, commit `7bea48e`

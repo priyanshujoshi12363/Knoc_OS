@@ -15,7 +15,6 @@
 #define ELF_OSABI_LINUX 3
 #define ELF_PT_INTERP 3
 #define ELF_PT_PHDR 6
-#define LINUX_PIE_BASE 0x40000000UL
 #define ELF_MACHINE_RISCV 243
 #define ELF_PT_LOAD 1
 #define ELF_PF_X 1
@@ -150,7 +149,7 @@ int elf_is_linux(const uint8_t *image, uint64_t size)
     return header->padding[0] == ELF_OSABI_LINUX || header->type == ELF_TYPE_DYN || header->entry < USER_BASE;
 }
 
-int elf_load_linux(uintptr_t root, const uint8_t *image, uint64_t size, elf_alloc_t alloc, void *context,
+int elf_load_linux(const uint8_t *image, uint64_t size, uintptr_t dyn_base, elf_page_t page, void *context,
                    elf_linux_info_t *info)
 {
     const elf64_header_t *header = (const elf64_header_t *)image;
@@ -165,11 +164,23 @@ int elf_load_linux(uintptr_t root, const uint8_t *image, uint64_t size, elf_allo
     const elf64_program_header_t *segments = (const elf64_program_header_t *)(image + header->phoff);
     uintptr_t lowest = (uintptr_t)-1;
 
+    info->interp[0] = 0;
+    info->phdr = 0;
+    info->brk = 0;
+
     for (uint16_t i = 0; i < header->phnum; i++)
     {
         if (segments[i].type == ELF_PT_INTERP)
         {
-            return ELF_LINUX_DYNAMIC;
+            uint64_t n = segments[i].filesz;
+
+            if (segments[i].offset + n > size || n == 0 || n >= ELF_INTERP_MAX)
+            {
+                return -1;
+            }
+
+            memcpy(info->interp, image + segments[i].offset, n);
+            info->interp[n - 1] = 0;
         }
 
         if (segments[i].type == ELF_PT_LOAD && segments[i].memsz && segments[i].vaddr < lowest)
@@ -183,11 +194,7 @@ int elf_load_linux(uintptr_t root, const uint8_t *image, uint64_t size, elf_allo
         return -1;
     }
 
-    uintptr_t bias = header->type == ELF_TYPE_DYN ? LINUX_PIE_BASE - (lowest & ~(PAGE_SIZE - 1)) : 0;
-    uintptr_t mapped_end = 0;
-
-    info->phdr = 0;
-    info->brk = 0;
+    uintptr_t bias = header->type == ELF_TYPE_DYN ? dyn_base - (lowest & ~(PAGE_SIZE - 1)) : 0;
 
     for (uint16_t i = 0; i < header->phnum; i++)
     {
@@ -211,34 +218,31 @@ int elf_load_linux(uintptr_t root, const uint8_t *image, uint64_t size, elf_allo
             return -1;
         }
 
+        uint64_t rwx = 0;
+
+        rwx |= (segment->flags & ELF_PF_R) ? PTE_R : 0;
+        rwx |= (segment->flags & ELF_PF_W) ? PTE_W : 0;
+        rwx |= (segment->flags & ELF_PF_X) ? PTE_X : 0;
+
         uintptr_t start = vaddr & ~(PAGE_SIZE - 1);
         uintptr_t end = (vaddr + segment->memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-        if (start < mapped_end)
+        for (uintptr_t address = start; address < end; address += PAGE_SIZE)
         {
-            return -1;
-        }
+            uint8_t *memory = page(context, address, rwx);
 
-        mapped_end = end;
+            if (memory == 0)
+            {
+                return -1;
+            }
 
-        uint8_t *memory = alloc(context, end - start);
+            uintptr_t from = address > vaddr ? address : vaddr;
+            uintptr_t to = address + PAGE_SIZE < vaddr + segment->filesz ? address + PAGE_SIZE : vaddr + segment->filesz;
 
-        if (memory == 0)
-        {
-            return -1;
-        }
-
-        memcpy(memory + (vaddr - start), image + segment->offset, segment->filesz);
-
-        uint64_t flags = 0;
-
-        flags |= (segment->flags & ELF_PF_R) ? PTE_R : 0;
-        flags |= (segment->flags & ELF_PF_W) ? PTE_W : 0;
-        flags |= (segment->flags & ELF_PF_X) ? PTE_X : 0;
-
-        if (vm_user_map(root, start, (uintptr_t)memory, end - start, flags) != 0)
-        {
-            return -1;
+            if (to > from)
+            {
+                memcpy(memory + (from - address), image + segment->offset + (from - vaddr), to - from);
+            }
         }
 
         if (segment->offset == 0 && info->phdr == 0)

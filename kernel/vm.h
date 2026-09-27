@@ -29,6 +29,14 @@ typedef pte_t page_table_t[512];
 
 pte_t vm_make_pte(uintptr_t physical_address, uint64_t flags);
 
+#define PTE_OWNED (1UL << 8)
+#define PTE_SLOT (1UL << 9)
+
+int vm_page_set(uintptr_t root, uintptr_t virtual_address, uintptr_t physical_address, uint64_t flags);
+int vm_page_get(uintptr_t root, uintptr_t virtual_address, pte_t *entry);
+int vm_page_clear(uintptr_t root, uintptr_t virtual_address, pte_t *old);
+int vm_page_protect(uintptr_t root, uintptr_t virtual_address, uint64_t rwx);
+
 void vm_init(uintptr_t ram_start, uintptr_t ram_end);
 void vm_enable(void);
 uint64_t vm_megapage_count(void);

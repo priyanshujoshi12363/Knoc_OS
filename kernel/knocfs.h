@@ -29,6 +29,8 @@
 #define KNOCFS_TYPE_FREE 0
 #define KNOCFS_TYPE_FILE 1
 #define KNOCFS_TYPE_DIR 2
+#define KNOCFS_TYPE_LINK 3
+#define KNOCFS_LINKS_MAX 8
 
 typedef struct knocfs_super
 {
@@ -84,6 +86,9 @@ void knocfs_usage(uint64_t *total_bytes, uint64_t *free_bytes, uint32_t *files);
 void knocfs_space(uint64_t *total_bytes, uint64_t *free_bytes);
 
 int knocfs_lookup(const char *path, uint32_t *inode);
+int knocfs_lookup_link(const char *path, uint32_t *inode);
+int knocfs_symlink(const char *target, const char *path);
+int64_t knocfs_readlink(const char *path, char *buffer, uint64_t size);
 int knocfs_create(const char *path, uint16_t type, uint32_t *inode);
 int knocfs_remove(const char *path);
 int knocfs_rename(const char *from, const char *to);

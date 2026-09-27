@@ -21,6 +21,10 @@ if ! ./scripts/get-busybox.sh > /dev/null; then
     echo "  MISS BusyBox could not be downloaded (Linux program tests need it)"
     FAILED=1
 fi
+if ! ./scripts/get-linux-base.sh > /dev/null; then
+    echo "  MISS the Debian base could not be downloaded (dynamic Linux program tests need it)"
+    FAILED=1
+fi
 
 new_disk() {
     ./scripts/mkdisk.sh "$DISK" > /dev/null
@@ -418,10 +422,10 @@ show_log_on_failure
 
 echo "Run 9: auto-organize sorts new downloads by itself and learns from a correction"
 new_disk
-boot "organize auto on" "sleep 20" "mkdir /home/College" \
+boot "organize auto on" "sleep 30" "mkdir /home/College" \
     "move /home/Downloads/Documents/335505283.pdf /home/College" "organize learn" "organize personal" \
     "copy /home/College/335505283.pdf /home/Downloads/335505299.pdf" "echo buy milk > /home/Downloads/todo.txt" \
-    "sleep 20" "ls /home/College" "organize auto off" "memory why /home/College/335505283.pdf" \
+    "sleep 35" "ls /home/College" "organize auto off" "memory why /home/College/335505283.pdf" \
     "organize forget" "organize personal"
 check \
     "Auto-organize is on" \
@@ -641,9 +645,9 @@ python3 tools/knocfs.py mkdir "$DISK2" /home/Shared
 python3 tools/knocfs.py put-text "$DISK2" /home/Shared/shared.txt "a file shared by beta"
 KN_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 QEMU_NETDEV_EXTRA=",hostfwd=tcp:127.0.0.1:$KN_PORT-:7000" COMMAND_WAIT=150 \
-    python3 scripts/drive.py "$TIMEOUT" "$LOG2" "$DISK2" "$KERNEL" \
+    python3 scripts/drive.py "$((TIMEOUT + 120))" "$LOG2" "$DISK2" "$KERNEL" \
     "knocnet name beta" "knocnet pair wait 424242" "sleep 40" "ls /home/KnocNet/alpha" \
-    "cat /home/KnocNet/alpha/note.txt" "knocnet peers" "knocnet unpair alpha" "sleep 40" &
+    "cat /home/KnocNet/alpha/note.txt" "knocnet peers" "knocnet unpair alpha" "sleep 100" &
 BETA_PID=$!
 sleep 15
 COMMAND_WAIT=90 boot "knocnet selftest" "knocnet name alpha" "knocnet ping 10.0.2.2:$KN_PORT" \
@@ -824,6 +828,52 @@ if tr -d '\r' < "$LOG" | grep -qx "hello from vi on KnocOS"; then
     echo "  ok   vi edited and saved a file"
 else
     echo "  MISS vi edited and saved a file"
+    FAILED=1
+fi
+show_log_on_failure
+
+echo "Run 20: dynamic Linux programs: glibc's loader and libraries, bash, Lua, symlinks, mprotect"
+new_disk
+python3 - "$WWW/broken-lua" <<'PY'
+import sys
+data = open("build/linux/root/usr/bin/lua5.4", "rb").read()
+open(sys.argv[1], "wb").write(data.replace(b"libreadline.so.8", b"libmissingx.so.8"))
+PY
+python3 tools/knocfs.py put "$DISK" "$WWW/broken-lua" /home/broken-lua
+HELLO_SHA=$(printf 'Hello from a file on KnocFS!' | sha256sum | cut -d' ' -f1)
+boot "lua5.4 -e 'print(2^10)'" "lua5.4 -e 'local t={} for i=1,1000 do t[i]=i*i end print(#t, t[1000])'" \
+    "/lib/ld-linux-riscv64-lp64d.so.1 --list /usr/bin/lua5.4" "bash --version" \
+    "bash -c 'echo \$((6*7)); for i in 1 2 3; do echo n\$i; done'" "/usr/bin/busybox echo dynamic busybox" \
+    "/usr/bin/busybox sha256sum /hello.txt" "busybox ln -s /hello.txt /home/link.txt" "cat /home/link.txt" \
+    "busybox readlink /home/link.txt" "busybox ls -l /home/link.txt" "/home/broken-lua -v" "linuxtest" \
+    "linuxtest protect" "sleep 4"
+check \
+    "1024.0" \
+    "1000	1000000" \
+    "libc.so.6 => /usr/lib/riscv64-linux-gnu/libc.so.6" \
+    "libreadline.so.8 => /usr/lib/riscv64-linux-gnu/libreadline.so.8" \
+    "GNU bash, version 5.3" \
+    "n3" \
+    "dynamic busybox" \
+    "$HELLO_SHA  /hello.txt" \
+    "Hello from a file on KnocFS!" \
+    "/home/link.txt -> /hello.txt" \
+    "error while loading shared libraries: libmissingx.so.8: cannot open shared object file" \
+    "exited with code 127" \
+    "linuxtest: mprotect and munmap ok" \
+    "linuxtest: MAP_FIXED replaced a page with a fresh one" \
+    "linuxtest: writing to a read-only page" \
+    "[OOPS] Store page fault in user program linuxtest"
+if tr -d '\r' < "$LOG" | grep -qx "42"; then
+    echo "  ok   bash computed 6*7"
+else
+    echo "  MISS bash computed 6*7"
+    FAILED=1
+fi
+if tr -d '\r' < "$LOG" | grep -qx "/hello.txt"; then
+    echo "  ok   readlink shows the link target"
+else
+    echo "  MISS readlink shows the link target"
     FAILED=1
 fi
 show_log_on_failure

@@ -2,6 +2,7 @@
 #include "nn.h"
 
 #define HOG_TOP_CPU 40
+#define THRASH_MIN_REQUESTS 1500
 #define MODEL_PATH "/models/health.knm"
 #define WINDOW 10
 #define METRICS 15
@@ -592,7 +593,9 @@ int main(void)
             int expected = !running(culprit_pid(label), &foreground) || (label == 2 && foreground);
 
             if (confidence >= MIN_CONFIDENCE && !expected && (label != 1 || steady_growth()) &&
-                (label != 2 || window[WINDOW - 1].top_cpu >= HOG_TOP_CPU) && (label != 5 || disk_filling()))
+                (label != 2 || window[WINDOW - 1].top_cpu >= HOG_TOP_CPU) &&
+                (label != 3 || window[WINDOW - 1].disk_reads + window[WINDOW - 1].disk_writes >= THRASH_MIN_REQUESTS) &&
+                (label != 5 || disk_filling()))
             {
                 streak[label]++;
                 calm[label] = 0;

@@ -80,10 +80,12 @@ DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
 .PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls tcc-sdk linux-apps
 
-linux-apps:
-	./scripts/get-busybox.sh
 
 all: knocos.elf tcc-sdk
+
+linux-apps:
+	./scripts/get-busybox.sh
+	./scripts/get-linux-base.sh
 
 TCC_DIR = third_party/tinycc
 TCC_BUILD = build/tcc
@@ -243,6 +245,7 @@ sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	@./scripts/etc.sh $(DISK)
 	@[ ! -f models/embed/knocembed.knm ] || $(KNOCFS) put $(DISK) models/embed/knocembed.knm /models/knocembed.knm
 	@[ ! -f build/linux/busybox ] || $(KNOCFS) put $(DISK) build/linux/busybox /bin/busybox
+	@[ ! -f build/linux/root/.complete ] || $(KNOCFS) put-tree $(DISK) build/linux/root /
 	@for manifest in apps/*.app; do \
 		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done

@@ -558,6 +558,8 @@ static int dir_find(uint32_t directory, const char *name, uint32_t *inode, uint3
 
 /* Walks the path; with `parent` set, stops at the last component and
    returns its parent directory and name instead */
+#define KNOCFS_PATH_WORK 256
+
 static int resolve(const char *path, uint32_t *inode, uint32_t *parent, char *last)
 {
     char name[KNOCFS_NAME_MAX];
@@ -737,6 +739,215 @@ void knocfs_usage(uint64_t *total_bytes, uint64_t *free_bytes, uint32_t *files)
     sleeplock_release(&fs_lock);
 }
 
+static int append_part(char *out, uint32_t *used, uint32_t room, const char *part, uint32_t length)
+{
+    if (*used + length + 2 > room)
+    {
+        return -1;
+    }
+
+    if (*used == 0 || out[*used - 1] != '/')
+    {
+        out[(*used)++] = '/';
+    }
+
+    memcpy(out + *used, part, length);
+    *used += length;
+    out[*used] = 0;
+    return 0;
+}
+
+static int expand_links(const char *path, int follow_last, char *out)
+{
+    char work[KNOCFS_PATH_WORK];
+    char next_work[KNOCFS_PATH_WORK];
+    char target[KNOCFS_PATH_WORK];
+    uint32_t length = 0;
+
+    while (path[length] && length < sizeof(work) - 1)
+    {
+        work[length] = path[length];
+        length++;
+    }
+
+    work[length] = 0;
+
+    for (int hop = 0; hop <= KNOCFS_LINKS_MAX; hop++)
+    {
+        uint32_t used = 0;
+        uint32_t current = KNOCFS_ROOT_INODE;
+        const char *p = work;
+        int restarted = 0;
+
+        out[0] = 0;
+
+        while (*p)
+        {
+            while (*p == '/')
+            {
+                p++;
+            }
+
+            if (*p == 0)
+            {
+                break;
+            }
+
+            const char *part = p;
+            uint32_t part_length = 0;
+
+            while (p[part_length] && p[part_length] != '/')
+            {
+                part_length++;
+            }
+
+            p += part_length;
+
+            while (*p == '/')
+            {
+                p++;
+            }
+
+            int last = *p == 0;
+
+            if (part_length == 1 && part[0] == '.')
+            {
+                continue;
+            }
+
+            if (part_length == 2 && part[0] == '.' && part[1] == '.')
+            {
+                while (used > 0 && out[used - 1] != '/')
+                {
+                    used--;
+                }
+
+                if (used > 0)
+                {
+                    used--;
+                }
+
+                out[used] = 0;
+
+                if (used == 0 || resolve(out, &current, 0, 0) != 0)
+                {
+                    current = KNOCFS_ROOT_INODE;
+                    used = 0;
+                    out[0] = 0;
+                }
+
+                continue;
+            }
+
+            if (part_length >= KNOCFS_NAME_MAX)
+            {
+                return E_INVAL;
+            }
+
+            char name[KNOCFS_NAME_MAX];
+            uint32_t found;
+            knocfs_inode_t inode;
+
+            memcpy(name, part, part_length);
+            name[part_length] = 0;
+
+            int result = dir_find(current, name, &found, 0);
+
+            if (result != 0)
+            {
+                if (!last)
+                {
+                    return result;
+                }
+
+                if (append_part(out, &used, KNOCFS_PATH_WORK, part, part_length) != 0)
+                {
+                    return E_INVAL;
+                }
+
+                return 0;
+            }
+
+            if (inode_get(found, &inode) != 0)
+            {
+                return E_IO;
+            }
+
+            if (inode.type == KNOCFS_TYPE_LINK && (!last || follow_last))
+            {
+                int64_t n = read_locked(found, 0, target, sizeof(target) - 1);
+
+                if (n <= 0)
+                {
+                    return E_IO;
+                }
+
+                target[n] = 0;
+
+                uint32_t w = 0;
+
+                if (target[0] != '/')
+                {
+                    for (uint32_t i = 0; i < used && w < sizeof(next_work) - 1; i++)
+                    {
+                        next_work[w++] = out[i];
+                    }
+
+                    next_work[w++] = '/';
+                }
+
+                for (int64_t i = 0; i < n && w < sizeof(next_work) - 1; i++)
+                {
+                    next_work[w++] = target[i];
+                }
+
+                if (*p && w < sizeof(next_work) - 1)
+                {
+                    next_work[w++] = '/';
+                }
+
+                while (*p && w < sizeof(next_work) - 1)
+                {
+                    next_work[w++] = *p++;
+                }
+
+                next_work[w] = 0;
+                memcpy(work, next_work, w + 1);
+                restarted = 1;
+                break;
+            }
+
+            if (append_part(out, &used, KNOCFS_PATH_WORK, part, part_length) != 0)
+            {
+                return E_INVAL;
+            }
+
+            current = found;
+        }
+
+        if (!restarted)
+        {
+            if (used == 0)
+            {
+                out[0] = '/';
+                out[1] = 0;
+            }
+
+            return 0;
+        }
+    }
+
+    return E_INVAL;
+}
+
+static int lookup_locked(const char *path, int follow, uint32_t *inode)
+{
+    char canonical[KNOCFS_PATH_WORK];
+    int result = expand_links(path, follow, canonical);
+
+    return result != 0 ? result : resolve(canonical, inode, 0, 0);
+}
+
 int knocfs_lookup(const char *path, uint32_t *inode)
 {
     if (!mounted)
@@ -745,27 +956,72 @@ int knocfs_lookup(const char *path, uint32_t *inode)
     }
 
     sleeplock_acquire(&fs_lock);
-    int result = resolve(path, inode, 0, 0);
+    int result = lookup_locked(path, 1, inode);
     sleeplock_release(&fs_lock);
 
+    return result;
+}
+
+int knocfs_lookup_link(const char *path, uint32_t *inode)
+{
+    if (!mounted)
+    {
+        return E_IO;
+    }
+
+    sleeplock_acquire(&fs_lock);
+    int result = lookup_locked(path, 0, inode);
+    sleeplock_release(&fs_lock);
+
+    return result;
+}
+
+int64_t knocfs_readlink(const char *path, char *buffer, uint64_t size)
+{
+    uint32_t number;
+    knocfs_inode_t inode;
+
+    if (!mounted)
+    {
+        return E_IO;
+    }
+
+    sleeplock_acquire(&fs_lock);
+
+    int64_t result = lookup_locked(path, 0, &number);
+
+    if (result == 0)
+    {
+        result = inode_get(number, &inode) != 0 ? E_IO
+                 : inode.type != KNOCFS_TYPE_LINK ? E_INVAL
+                                                  : read_locked(number, 0, buffer, size);
+    }
+
+    sleeplock_release(&fs_lock);
     return result;
 }
 
 int knocfs_create(const char *path, uint16_t type, uint32_t *number)
 {
     char name[KNOCFS_NAME_MAX];
+    char canonical[KNOCFS_PATH_WORK];
     uint32_t parent;
     uint32_t existing;
     uint32_t slot;
 
-    if (!mounted || (type != KNOCFS_TYPE_FILE && type != KNOCFS_TYPE_DIR))
+    if (!mounted || (type != KNOCFS_TYPE_FILE && type != KNOCFS_TYPE_DIR && type != KNOCFS_TYPE_LINK))
     {
         return E_INVAL;
     }
 
     sleeplock_acquire(&fs_lock);
 
-    int result = resolve(path, 0, &parent, name);
+    int result = expand_links(path, 0, canonical);
+
+    if (result == 0)
+    {
+        result = resolve(canonical, 0, &parent, name);
+    }
 
     if (result == 0 && name[0] == 0)
     {
@@ -821,9 +1077,16 @@ int knocfs_remove(const char *path)
         return E_IO;
     }
 
+    char canonical[KNOCFS_PATH_WORK];
+
     sleeplock_acquire(&fs_lock);
 
-    int result = resolve(path, 0, &parent, name);
+    int result = expand_links(path, 0, canonical);
+
+    if (result == 0)
+    {
+        result = resolve(canonical, 0, &parent, name);
+    }
 
     if (result == 0)
     {
@@ -902,13 +1165,26 @@ int knocfs_rename(const char *from, const char *to)
         return E_INVAL;
     }
 
+    char from_canonical[KNOCFS_PATH_WORK];
+    char to_canonical[KNOCFS_PATH_WORK];
+
     sleeplock_acquire(&fs_lock);
 
-    int result = resolve(from, 0, &old_parent, old_name);
+    int result = expand_links(from, 0, from_canonical);
 
     if (result == 0)
     {
-        result = resolve(to, 0, &new_parent, new_name);
+        result = expand_links(to, 0, to_canonical);
+    }
+
+    if (result == 0)
+    {
+        result = resolve(from_canonical, 0, &old_parent, old_name);
+    }
+
+    if (result == 0)
+    {
+        result = resolve(to_canonical, 0, &new_parent, new_name);
     }
 
     if (result == 0 && (old_name[0] == 0 || new_name[0] == 0))
@@ -1075,4 +1351,32 @@ int64_t knocfs_write(uint32_t number, uint64_t offset, const void *buffer, uint6
 
     sleeplock_release(&fs_lock);
     return result;
+}
+
+int knocfs_symlink(const char *target, const char *path)
+{
+    uint32_t number;
+    uint64_t length = 0;
+
+    while (target[length])
+    {
+        length++;
+    }
+
+    if (length == 0 || length >= KNOCFS_PATH_WORK)
+    {
+        return E_INVAL;
+    }
+
+    int result = knocfs_create(path, KNOCFS_TYPE_LINK, &number);
+
+    if (result != 0)
+    {
+        return result;
+    }
+
+    sleeplock_acquire(&fs_lock);
+    int64_t written = write_locked(number, 0, target, length);
+    sleeplock_release(&fs_lock);
+    return written == (int64_t)length ? 0 : E_IO;
 }

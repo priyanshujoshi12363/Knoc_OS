@@ -806,6 +806,28 @@ static int program_exists(const char *name)
     return stat(path, &info) == 0 && info.type == FILE_TYPE_FILE;
 }
 
+static int usr_bin_path(const char *name, char *path)
+{
+    file_stat_t info;
+
+    for (unsigned long i = 0; name[i]; i++)
+    {
+        if (name[i] == '/')
+        {
+            return 0;
+        }
+    }
+
+    if (strlen(name) >= PATH_MAX - 10)
+    {
+        return 0;
+    }
+
+    strcpy(path, "/usr/bin/");
+    strcpy(path + 9, name);
+    return stat(path, &info) == 0 && info.type == FILE_TYPE_FILE;
+}
+
 static void join_args(int argc, char **args, int first, char *out)
 {
     unsigned long length = 0;
@@ -1850,9 +1872,23 @@ static void put_number(char *out, unsigned long *length, unsigned long room, lon
 static void expand(const char *in, char *out, unsigned long room)
 {
     unsigned long length = 0;
+    int single = 0;
 
     for (unsigned long i = 0; in[i] && length < room - 1;)
     {
+        if (in[i] == '\'')
+        {
+            single = !single;
+            out[length++] = in[i++];
+            continue;
+        }
+
+        if (single)
+        {
+            out[length++] = in[i++];
+            continue;
+        }
+
         if (in[i] == '\\' && in[i + 1] == '$')
         {
             out[length++] = '$';
@@ -2527,6 +2563,10 @@ static int execute(int argc, char **args)
     else if (program_exists(command))
     {
         run_program(command, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
+    }
+    else if (usr_bin_path(command, path))
+    {
+        run_program(path, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
     }
     else if (busybox_applet(command))
     {

@@ -36,6 +36,10 @@ if [ -f build/linux/busybox ]; then
     $KNOCFS put "$DISK" build/linux/busybox /bin/busybox
 fi
 
+if [ -f build/linux/root/.complete ]; then
+    $KNOCFS put-tree "$DISK" build/linux/root /
+fi
+
 $KNOCFS mkdir "$DISK" /etc /etc/apps
 ./scripts/etc.sh "$DISK"
 for manifest in apps/*.app; do

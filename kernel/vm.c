@@ -446,7 +446,17 @@ static void destroy_slot(page_table_t *table, unsigned long i)
 
         if ((level1_entry & PTE_V) && !(level1_entry & PTE_LEAF))
         {
-            page_free((void *)PPN_TO_PA(level1_entry >> 10));
+            page_table_t *level0 = (page_table_t *)PPN_TO_PA(level1_entry >> 10);
+
+            for (unsigned long k = 0; k < 512; k++)
+            {
+                if ((*level0)[k] & PTE_OWNED)
+                {
+                    page_free((void *)PPN_TO_PA((*level0)[k] >> 10));
+                }
+            }
+
+            page_free(level0);
         }
     }
 
@@ -548,4 +558,128 @@ void vm_debug(uintptr_t virtual_address)
 
     uart_puts("Mapping Status  : VALID\n");
     uart_puts("================================\n");
+}
+static pte_t *vm_leaf(page_table_t *root, uintptr_t virtual_address, int create)
+{
+    if (!user_range_valid(virtual_address, VM_PAGE_SIZE))
+    {
+        return 0;
+    }
+
+    pte_t *top = &(*root)[VA_VPN2(virtual_address)];
+
+    if (!(*top & PTE_V))
+    {
+        if (!create)
+        {
+            return 0;
+        }
+
+        page_table_t *level1 = (page_table_t *)page_alloc();
+
+        if (level1 == 0)
+        {
+            return 0;
+        }
+
+        vm_clear_page_table(level1);
+        *top = vm_make_pte((uintptr_t)level1, PTE_V);
+    }
+
+    if (*top & PTE_LEAF)
+    {
+        return 0;
+    }
+
+    pte_t *middle = &(*(page_table_t *)PPN_TO_PA(*top >> 10))[VA_VPN1(virtual_address)];
+
+    if (!(*middle & PTE_V))
+    {
+        if (!create)
+        {
+            return 0;
+        }
+
+        page_table_t *level0 = (page_table_t *)page_alloc();
+
+        if (level0 == 0)
+        {
+            return 0;
+        }
+
+        vm_clear_page_table(level0);
+        *middle = vm_make_pte((uintptr_t)level0, PTE_V);
+    }
+
+    if (*middle & PTE_LEAF)
+    {
+        return 0;
+    }
+
+    return &(*(page_table_t *)PPN_TO_PA(*middle >> 10))[VA_VPN0(virtual_address)];
+}
+
+static pte_t page_entry(uintptr_t physical_address, uint64_t flags)
+{
+    uint64_t rwx = flags & PTE_LEAF;
+
+    if (rwx & PTE_W)
+    {
+        rwx |= PTE_R;
+    }
+
+    return vm_make_pte(physical_address, rwx | (flags & PTE_OWNED) | PTE_SLOT | (rwx ? (PTE_V | PTE_U) : 0));
+}
+
+int vm_page_set(uintptr_t root, uintptr_t virtual_address, uintptr_t physical_address, uint64_t flags)
+{
+    pte_t *leaf = vm_leaf((page_table_t *)root, virtual_address, 1);
+
+    if (leaf == 0 || (*leaf & (PTE_V | PTE_SLOT)))
+    {
+        return -1;
+    }
+
+    *leaf = page_entry(physical_address, flags);
+    return 0;
+}
+
+int vm_page_get(uintptr_t root, uintptr_t virtual_address, pte_t *entry)
+{
+    pte_t *leaf = vm_leaf((page_table_t *)root, virtual_address, 0);
+
+    if (leaf == 0 || !(*leaf & (PTE_V | PTE_SLOT)))
+    {
+        return -1;
+    }
+
+    *entry = *leaf;
+    return 0;
+}
+
+int vm_page_clear(uintptr_t root, uintptr_t virtual_address, pte_t *old)
+{
+    pte_t *leaf = vm_leaf((page_table_t *)root, virtual_address, 0);
+
+    if (leaf == 0 || !(*leaf & (PTE_V | PTE_SLOT)))
+    {
+        return -1;
+    }
+
+    *old = *leaf;
+    *leaf = 0;
+    return 0;
+}
+
+int vm_page_protect(uintptr_t root, uintptr_t virtual_address, uint64_t rwx)
+{
+    pte_t *leaf = vm_leaf((page_table_t *)root, virtual_address, 0);
+
+    if (leaf == 0 || !(*leaf & (PTE_V | PTE_SLOT)))
+    {
+        return -1;
+    }
+
+    *leaf = page_entry(PPN_TO_PA(*leaf >> 10), rwx | (*leaf & PTE_OWNED));
+    return 0;
 }

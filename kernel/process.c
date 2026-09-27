@@ -735,6 +735,78 @@ static void *load_from_disk(const program_t *program, uint64_t *size)
     return buffer;
 }
 
+static void *load_file(const char *path, uint64_t *size)
+{
+    uint32_t inode;
+    knocfs_stat_t stat;
+
+    if (!knocfs_mounted() || knocfs_lookup(path, &inode) != 0 || knocfs_stat(inode, &stat) != 0 ||
+        stat.type != KNOCFS_TYPE_FILE || stat.size == 0 || stat.size > PROGRAM_FILE_MAX)
+    {
+        return 0;
+    }
+
+    void *buffer = page_alloc_contiguous(stat.size);
+
+    if (buffer == 0)
+    {
+        return 0;
+    }
+
+    if (knocfs_read(inode, 0, buffer, stat.size) != (int64_t)stat.size)
+    {
+        page_free(buffer);
+        return 0;
+    }
+
+    *size = stat.size;
+    return buffer;
+}
+
+static uint8_t *page_in(process_t *owner, uintptr_t address, uint64_t rwx, int merge)
+{
+    pte_t entry;
+
+    if (vm_page_get(owner->user_root, address, &entry) == 0)
+    {
+        if (!merge)
+        {
+            return 0;
+        }
+
+        vm_page_protect(owner->user_root, address, (entry & (PTE_R | PTE_W | PTE_X)) | rwx);
+        return (uint8_t *)PPN_TO_PA(entry >> 10);
+    }
+
+    if (owner->mem_used + PAGE_SIZE > owner->mem_limit)
+    {
+        return 0;
+    }
+
+    uint8_t *page = page_alloc();
+
+    if (page == 0)
+    {
+        return 0;
+    }
+
+    memset(page, 0, PAGE_SIZE);
+
+    if (vm_page_set(owner->user_root, address, (uintptr_t)page, rwx | PTE_OWNED) != 0)
+    {
+        page_free(page);
+        return 0;
+    }
+
+    owner->mem_used += PAGE_SIZE;
+    return page;
+}
+
+static uint8_t *linux_page(void *context, uintptr_t address, uint64_t rwx)
+{
+    return page_in((process_t *)context, address, rwx, 1);
+}
+
 static int user_space_load(process_t *p)
 {
     const program_t *program = p->program;
@@ -762,16 +834,38 @@ static int user_space_load(process_t *p)
 
     if (p->user_root != 0 && linux)
     {
-        int result = elf_load_linux(p->user_root, image, size, user_block, p, &info);
-
-        loaded = result == 0;
+        p->mem_limit = LINUX_QUOTA;
+        loaded = elf_load_linux(image, size, LINUX_PIE_BASE, linux_page, p, &info) == 0;
         p->user_entry = info.entry;
+        info.interp_base = 0;
 
-        if (result == ELF_LINUX_DYNAMIC)
+        if (loaded && info.interp[0])
         {
-            uart_puts("[LINUX] ");
-            uart_puts(program->name);
-            uart_puts(" is a dynamically linked Linux program: only static Linux programs run for now\n");
+            uint64_t interp_size = 0;
+            void *interp = load_file(info.interp, &interp_size);
+            elf_linux_info_t interp_info;
+
+            loaded = interp != 0 &&
+                     elf_load_linux(interp, interp_size, LINUX_INTERP_BASE, linux_page, p, &interp_info) == 0;
+
+            if (interp != 0)
+            {
+                page_free(interp);
+            }
+
+            if (loaded)
+            {
+                p->user_entry = interp_info.entry;
+                info.interp_base = interp_info.base;
+            }
+            else
+            {
+                uart_puts("[LINUX] ");
+                uart_puts(program->name);
+                uart_puts(" needs the Linux loader ");
+                uart_puts(info.interp);
+                uart_puts(": not found (scripts/get-linux-base.sh installs it)\n");
+            }
         }
     }
     else if (p->user_root != 0)
@@ -1773,23 +1867,64 @@ void *process_linux_state(void)
     return current != 0 ? current->linux_state : 0;
 }
 
-int process_map_anonymous(uintptr_t address, uint64_t size)
+uint8_t *process_page_new(uintptr_t address, uint64_t rwx)
+{
+    return page_in(owner_of(current), address, rwx, 0);
+}
+
+int process_page_reserve(uintptr_t address)
+{
+    return vm_page_set(owner_of(current)->user_root, address, 0, 0);
+}
+
+int process_page_free(uintptr_t address)
 {
     process_t *owner = owner_of(current);
-    void *memory = user_block(owner, size);
+    pte_t old;
 
-    if (memory == 0)
+    if (vm_page_clear(owner->user_root, address, &old) != 0)
     {
         return -1;
     }
 
-    if (vm_user_map(owner->user_root, address, (uintptr_t)memory, size, PTE_R | PTE_W) != 0)
+    if (old & PTE_OWNED)
     {
-        return -1;
+        page_free((void *)PPN_TO_PA(old >> 10));
+        owner->mem_used -= owner->mem_used >= PAGE_SIZE ? PAGE_SIZE : owner->mem_used;
     }
 
-    asm volatile("sfence.vma zero, zero");
     return 0;
+}
+
+int process_page_protect(uintptr_t address, uint64_t rwx)
+{
+    process_t *owner = owner_of(current);
+    pte_t entry;
+
+    if (vm_page_get(owner->user_root, address, &entry) != 0)
+    {
+        return -1;
+    }
+
+    if (!(entry & PTE_OWNED) && PPN_TO_PA(entry >> 10) == 0)
+    {
+        if (rwx == 0)
+        {
+            return 0;
+        }
+
+        vm_page_clear(owner->user_root, address, &entry);
+        return page_in(owner, address, rwx, 0) ? 0 : -1;
+    }
+
+    return vm_page_protect(owner->user_root, address, rwx);
+}
+
+int process_page_exists(uintptr_t address)
+{
+    pte_t entry;
+
+    return vm_page_get(owner_of(current)->user_root, address, &entry) == 0;
 }
 
 void process_exit_if_killed(void)

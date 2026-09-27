@@ -11,6 +11,7 @@
 #include "tty.h"
 #include "uart.h"
 #include "page.h"
+#include "vm.h"
 
 #define FDS_MAX 32
 #define AT_FDCWD -100
@@ -83,6 +84,7 @@ typedef struct linux_state
     uintptr_t brk_start;
     uintptr_t brk_now;
     uintptr_t brk_mapped;
+    uintptr_t mmap_next;
     uint8_t termios[36];
     char line[LINE_MAX];
     uint32_t line_length;
@@ -268,11 +270,12 @@ void *linux_create(const char *exe, const char *name, const char *args, const ch
     s->brk_start = info->brk;
     s->brk_now = info->brk;
     s->brk_mapped = info->brk;
+    s->mmap_next = LINUX_MMAP_BASE;
     default_termios(s->termios);
     copy_text(s->exe, exe, sizeof(s->exe));
     copy_text(s->name, name, sizeof(s->name));
 
-    if (push_string(stack, stack_top, &used, stack_size, name, &argv[argc++]) != 0)
+    if (push_string(stack, stack_top, &used, stack_size, exe, &argv[argc++]) != 0)
     {
         kfree(s);
         return 0;
@@ -356,7 +359,7 @@ void *linux_create(const char *exe, const char *name, const char *args, const ch
     uint64_t hwcap = (1UL << ('I' - 'A')) | (1UL << ('M' - 'A')) | (1UL << ('A' - 'A')) | (1UL << ('F' - 'A')) |
                      (1UL << ('D' - 'A')) | (1UL << ('C' - 'A'));
     uint64_t auxv[] = {3,  info->phdr, 4,  info->phent, 5,  info->phnum,        6,  PAGE_SIZE,
-                       7,  0,          8,  0,           9,  info->entry,        11, 0,
+                       7,  info->interp_base, 8,  0,    9,  info->entry,        11, 0,
                        12, 0,          13, 0,           14, 0,                  16, hwcap,
                        17, 100,        23, 0,           25, random_bytes_address, 31, argv[0],
                        15, platform,   51, 4096,        0,  0};
@@ -844,7 +847,7 @@ static void fill_stat(linux_stat_t *st, uint32_t inode, const knocfs_stat_t *ks,
     memset(st, 0, sizeof(*st));
     st->dev = 1;
     st->ino = inode;
-    st->mode = ks->type == KNOCFS_TYPE_DIR ? 0040755 : in_bin ? 0100755 : 0100644;
+    st->mode = ks->type == KNOCFS_TYPE_DIR ? 0040755 : ks->type == KNOCFS_TYPE_LINK ? 0120777 : in_bin ? 0100755 : 0100644;
     st->nlink = ks->type == KNOCFS_TYPE_DIR ? 2 : 1;
     st->size = (int64_t)ks->size;
     st->blksize = 4096;
@@ -864,7 +867,14 @@ static void char_stat(linux_stat_t *st, uint64_t rdev, uint32_t mode)
     st->blksize = 1024;
 }
 
+static int64_t stat_path_mode(const char *path, linux_stat_t *st, int follow);
+
 static int64_t stat_path(const char *path, linux_stat_t *st)
+{
+    return stat_path_mode(path, st, 1);
+}
+
+static int64_t stat_path_mode(const char *path, linux_stat_t *st, int follow)
 {
     uint32_t inode;
     knocfs_stat_t ks;
@@ -911,7 +921,7 @@ static int64_t stat_path(const char *path, linux_stat_t *st)
         return -L_EACCES;
     }
 
-    int result = knocfs_lookup(path, &inode);
+    int result = follow ? knocfs_lookup(path, &inode) : knocfs_lookup_link(path, &inode);
 
     if (result == 0)
     {
@@ -1474,7 +1484,10 @@ static int64_t do_getdents(int64_t fd, uintptr_t buffer, uint64_t count)
 
             name = entry.name;
             inode = entry.inode;
-            type = knocfs_stat(entry.inode, &ks) == 0 && ks.type == KNOCFS_TYPE_DIR ? 4 : 8;
+            type = knocfs_stat(entry.inode, &ks) != 0 ? 8
+                   : ks.type == KNOCFS_TYPE_DIR ? 4
+                   : ks.type == KNOCFS_TYPE_LINK ? 10
+                                                  : 8;
         }
 
         uint64_t name_length = text_length(name);
@@ -1511,11 +1524,24 @@ static int64_t do_getdents(int64_t fd, uintptr_t buffer, uint64_t count)
     return result;
 }
 
+static uint64_t rwx_of(uint64_t prot)
+{
+    return ((prot & 1) ? PTE_R : 0) | ((prot & 2) ? PTE_W : 0) | ((prot & 4) ? PTE_X : 0);
+}
+
+static void release_range(uintptr_t address, uint64_t length)
+{
+    for (uintptr_t page = address; page < address + length; page += PAGE_SIZE)
+    {
+        process_page_free(page);
+    }
+}
+
 static int64_t do_brk(uintptr_t address)
 {
     linux_state_t *s = state();
 
-    if (address == 0 || address < s->brk_start || address >= LINUX_LOW_END)
+    if (address == 0 || address < s->brk_start || address >= LINUX_INTERP_BASE)
     {
         return (int64_t)s->brk_now;
     }
@@ -1523,97 +1549,141 @@ static int64_t do_brk(uintptr_t address)
     if (address > s->brk_mapped)
     {
         uintptr_t end = (address + BRK_STEP - 1) & ~(BRK_STEP - 1);
-        uintptr_t start = s->brk_mapped;
 
-        if (process_map_anonymous(start, end - start) != 0)
+        for (uintptr_t page = s->brk_mapped; page < end; page += PAGE_SIZE)
         {
-            return (int64_t)s->brk_now;
+            if (!process_page_new(page, PTE_R | PTE_W))
+            {
+                release_range(s->brk_mapped, page - s->brk_mapped);
+                return (int64_t)s->brk_now;
+            }
         }
 
         s->brk_mapped = end;
     }
 
     s->brk_now = address;
+    asm volatile("sfence.vma zero, zero");
     return (int64_t)address;
 }
 
 static int64_t do_mmap(uintptr_t address, uint64_t length, uint64_t prot, uint64_t flags, int64_t fd, uint64_t offset)
 {
-    (void)prot;
+    linux_state_t *s = state();
+    int anonymous = (flags & 0x20) != 0;
+    open_file_t *file = 0;
 
-    if (length == 0)
+    if (length == 0 || (offset & (PAGE_SIZE - 1)) || ((flags & 0x10) && (address & (PAGE_SIZE - 1))))
     {
         return -L_EINVAL;
     }
 
     length = (length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-    uintptr_t where;
-
-    if ((flags & 0x10) && address)
-    {
-        if (process_map_anonymous(address, length) != 0)
-        {
-            return -L_ENOMEM;
-        }
-
-        where = address;
-    }
-    else
-    {
-        int64_t got = process_mem_alloc(length);
-
-        if (got < 0)
-        {
-            return -L_ENOMEM;
-        }
-
-        where = (uintptr_t)got;
-    }
-
-    if (!(flags & 0x20))
+    if (!anonymous)
     {
         linux_fd_t *f = fd_get(fd);
 
-        if (!f || f->kind != FD_FILE)
+        if (!f || (f->kind != FD_FILE && f->kind != FD_NULL))
         {
-            return f && f->kind == FD_NULL ? (int64_t)where : -L_EBADF;
+            return -L_EBADF;
         }
 
-        open_file_t *file = process_file(f->knoc);
-        uint8_t *chunk = kmalloc(PAGE_SIZE);
+        file = f->kind == FD_FILE ? process_file(f->knoc) : 0;
+        anonymous = file == 0;
+    }
 
-        if (!file || !chunk)
+    uintptr_t where;
+
+    if (flags & 0x10)
+    {
+        where = address;
+        release_range(where, length);
+    }
+    else
+    {
+        where = s->mmap_next;
+        s->mmap_next += length + PAGE_SIZE;
+    }
+
+    uint64_t rwx = rwx_of(prot);
+
+    for (uint64_t done = 0; done < length; done += PAGE_SIZE)
+    {
+        if (rwx == 0 && anonymous)
         {
-            if (chunk)
+            if (process_page_reserve(where + done) != 0)
             {
-                kfree(chunk);
+                release_range(where, done);
+                return -L_ENOMEM;
             }
 
+            continue;
+        }
+
+        uint8_t *memory = process_page_new(where + done, rwx ? rwx : PTE_R);
+
+        if (!memory)
+        {
+            release_range(where, done);
             return -L_ENOMEM;
         }
 
-        for (uint64_t done = 0; done < length; done += PAGE_SIZE)
+        if (file)
         {
-            int64_t n = knocfs_read(file->inode, offset + done, chunk, PAGE_SIZE);
-
-            if (n <= 0)
-            {
-                break;
-            }
-
-            user_copy_out(where + done, chunk, (uint64_t)n);
-
-            if (n < (int64_t)PAGE_SIZE)
-            {
-                break;
-            }
+            knocfs_read(file->inode, offset + done, memory, PAGE_SIZE);
         }
 
-        kfree(chunk);
+        if (rwx == 0)
+        {
+            process_page_protect(where + done, 0);
+        }
     }
 
+    asm volatile("sfence.vma zero, zero");
     return (int64_t)where;
+}
+
+static int64_t do_munmap(uintptr_t address, uint64_t length)
+{
+    if (address & (PAGE_SIZE - 1))
+    {
+        return -L_EINVAL;
+    }
+
+    release_range(address, (length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+    asm volatile("sfence.vma zero, zero");
+    return 0;
+}
+
+static int64_t do_mprotect(uintptr_t address, uint64_t length, uint64_t prot)
+{
+    if (address & (PAGE_SIZE - 1))
+    {
+        return -L_EINVAL;
+    }
+
+    uint64_t rwx = rwx_of(prot);
+    uintptr_t end = address + ((length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+
+    for (uintptr_t page = address; page < end; page += PAGE_SIZE)
+    {
+        if (!process_page_exists(page))
+        {
+            return -L_ENOMEM;
+        }
+    }
+
+    for (uintptr_t page = address; page < end; page += PAGE_SIZE)
+    {
+        if (process_page_protect(page, rwx) != 0)
+        {
+            return -L_ENOMEM;
+        }
+    }
+
+    asm volatile("sfence.vma zero, zero");
+    return 0;
 }
 
 static int64_t put_time(uintptr_t address, uint64_t seconds, uint64_t nanoseconds)
@@ -2060,7 +2130,20 @@ static int64_t do_readlink(int64_t dirfd, uintptr_t path_address, uintptr_t buff
         return user_copy_out(buffer, s->exe, n) == 0 ? (int64_t)n : -L_EFAULT;
     }
 
-    return -L_EINVAL;
+    char target[PATH_MAX];
+    int64_t n = knocfs_readlink(path, target, sizeof(target));
+
+    if (n < 0)
+    {
+        return error_of(n);
+    }
+
+    if ((uint64_t)n > size)
+    {
+        n = (int64_t)size;
+    }
+
+    return user_copy_out(buffer, target, (uint64_t)n) == 0 ? n : -L_EFAULT;
 }
 
 static int64_t do_sysinfo(uintptr_t address)
@@ -2193,6 +2276,31 @@ int64_t linux_syscall(trap_frame_t *frame)
     case 35:
         r = full_path((int64_t)a0, a1, path);
         return r != 0 ? r : error_of(kfile_path_change(SYS_REMOVE, path));
+    case 36:
+    {
+        char target[PATH_MAX];
+
+        if (user_copy_string(target, a0, sizeof(target)) != 0)
+        {
+            return -L_EFAULT;
+        }
+
+        r = full_path((int64_t)a1, a2, path);
+
+        if (r != 0)
+        {
+            return r;
+        }
+
+        if (!syscall_allowed(SYS_OPEN, CAP_FILES_WRITE))
+        {
+            return -L_EACCES;
+        }
+
+        return error_of(knocfs_symlink(target, path));
+    }
+    case 37:
+        return -L_EPERM;
     case 38:
     case 276:
         r = full_path((int64_t)a0, a1, path);
@@ -2305,7 +2413,7 @@ int64_t linux_syscall(trap_frame_t *frame)
         else
         {
             r = full_path((int64_t)a0, a1, path);
-            r = r != 0 ? r : stat_path(path, &st);
+            r = r != 0 ? r : stat_path_mode(path, &st, !(a3 & 0x100));
         }
 
         return r != 0 ? r : user_copy_out(a2, &st, sizeof(st)) == 0 ? 0 : -L_EFAULT;
@@ -2331,8 +2439,6 @@ int64_t linux_syscall(trap_frame_t *frame)
     case 259:
     case 154:
     case 164:
-    case 215:
-    case 226:
     case 227:
     case 233:
         return 0;
@@ -2390,6 +2496,33 @@ int64_t linux_syscall(trap_frame_t *frame)
     case 156:
     case 157:
         return process_current_pid();
+    case 148:
+    case 150:
+    {
+        uint32_t zero = 0;
+
+        user_copy_out(a0, &zero, 4);
+        user_copy_out(a1, &zero, 4);
+        user_copy_out(a2, &zero, 4);
+        return 0;
+    }
+    case 198:
+    case 199:
+        return -97;
+    case 200:
+    case 201:
+    case 202:
+    case 203:
+    case 204:
+    case 205:
+    case 206:
+    case 207:
+    case 208:
+    case 209:
+    case 210:
+    case 211:
+    case 212:
+        return -88;
     case 158:
     case 174:
     case 175:
@@ -2423,8 +2556,12 @@ int64_t linux_syscall(trap_frame_t *frame)
         return do_sysinfo(a0);
     case 214:
         return do_brk(a0);
+    case 215:
+        return do_munmap(a0, a1);
     case 216:
         return -L_ENOMEM;
+    case 226:
+        return do_mprotect(a0, a1, a2);
     case 222:
         return do_mmap(a0, a1, a2, a3, (int64_t)frame->a4, frame->a5);
     case 278:
