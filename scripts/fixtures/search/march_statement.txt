@@ -1,0 +1,3 @@
+Electricity bill for March.
+Account 7741, amount due: 4,500 rupees.
+Please pay before April 10 to avoid a late fee.

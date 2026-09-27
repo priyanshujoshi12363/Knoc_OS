@@ -2,6 +2,20 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.30.0] - 2026-09-27
+
+Search by meaning: `find invoice from last month`.
+
+### Added
+- `find WORDS`: files ranked by what they are about, not only by their name ("invoice" finds a file that says "electricity bill"); dates in the question become filters (`today`, `yesterday`, `this week`, `last week`, `this month`, `last month`, `this year`, `last year`, `recently`, month names, years) and so do types (`photos`, `pdf`, `videos`, `songs`, `code`, `documents`); short forms like `cv` or `pic` are expanded; `find -v` shows how each file scored
+- KnocEmbed (`models/embed/knocembed.knm`, 8.5 MiB): a small embedding model that runs fast inside KnocOS (hashed words and letter pieces, 64 numbers per text), distilled on the host from the MiniLM sentence model on 266,000 texts and fine-tuned on file-search word pairs; `models/embed/train.py` retrains it
+- `indexd`, a background daemon on an AI core, and the index in `/var/index/files.idx`: every file in `/home` with its name, folder, type, a vector and the start of its text; only new or changed files are read again; `find` brings the index up to date before it searches, so a file written a moment ago is found
+- `index status` and `index rebuild`
+- Files have dates: created and modified times from the real-time clock, kept in the inode (old disks still work), shown by `ls -l`, in `stat` (and `st_mtime` / `st_ctime` in the C library) and in directory listings; `knocfs.py` keeps the host file's time when it copies a file and has a `touch` command
+- `ask`, `chat` and the agent find memory-graph facts by meaning when no word matches ("where is my spreadsheet about money" finds the moved `budget_2024.xlsx`)
+- Agent tool `find_by_meaning`; "find ..." requests use it
+- `make test` Run 18: files found by meaning with no shared words, the "last month" and "photos" filters, a new file found right after it was written, the agent searching, and a memory fact found by meaning
+
 ## [0.29.0] - 2026-09-27
 
 KnocNet: KnocOS machines talk to each other over encrypted links.

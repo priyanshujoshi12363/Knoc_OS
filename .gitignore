@@ -17,3 +17,4 @@ models/llm/*.kllm
 models/health/data/
 models/crash/data/
 build/
+models/embed/cache/

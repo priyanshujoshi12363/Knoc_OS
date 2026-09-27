@@ -1,4 +1,5 @@
 #include "knocfs.h"
+#include "rtc.h"
 #include "process.h"
 #include "string.h"
 #include "syscall_abi.h"
@@ -474,6 +475,13 @@ static int64_t write_locked(uint32_t number, uint64_t offset, const void *buffer
         inode.size = end;
     }
 
+    uint64_t now = rtc_seconds();
+
+    if (now != 0)
+    {
+        inode.modified = now;
+    }
+
     if (bitmap_flush() != 0 || inode_put(number, &inode) != 0)
     {
         return E_IO;
@@ -782,6 +790,8 @@ int knocfs_create(const char *path, uint16_t type, uint32_t *number)
 
         memset(&inode, 0, sizeof(inode));
         inode.type = type;
+        inode.created = rtc_seconds();
+        inode.modified = inode.created;
 
         memset(&entry, 0, sizeof(entry));
         entry.inode = *number;
@@ -963,6 +973,8 @@ int knocfs_stat(uint32_t number, knocfs_stat_t *stat)
         stat->type = inode.type;
         stat->extents = inode.extent_count;
         stat->size = inode.size;
+        stat->created = inode.created;
+        stat->modified = inode.modified;
     }
 
     return result;
@@ -1024,6 +1036,7 @@ int knocfs_truncate(uint32_t number)
     if (result == 0)
     {
         free_extents(&inode);
+        inode.modified = rtc_seconds() ? rtc_seconds() : inode.modified;
         result = bitmap_flush() == 0 && inode_put(number, &inode) == 0 ? 0 : E_IO;
     }
 

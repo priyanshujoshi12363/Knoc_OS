@@ -68,11 +68,12 @@ USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocs
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/pthread.o user/libc/setjmp.o
 LIBC_CRT = user/libc/crt1.o
-LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest knocnet knocnetd
+LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest knocnet knocnetd find index indexd
+SEARCH_PROGRAMS = find index indexd
 HTTP_PROGRAMS = fetch web
 KNOCNET_PROGRAMS = knocnet knocnetd
 USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
-USER_OBJS = $(USER_LIB_OBJS) user/http.o user/knocnet_proto.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
+USER_OBJS = $(USER_LIB_OBJS) user/http.o user/knocnet_proto.o user/search.o user/embed.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
@@ -151,15 +152,15 @@ knocos.elf: $(KERNEL_OBJS) boot/linker.ld
 user/%.elf: user/%.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) $<
 
-user/ask.elf: user/ask.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
-	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/ask.o user/llm.o user/rag.o
+user/ask.elf: user/ask.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/ask.o user/llm.o user/rag.o user/embed.o
 
-user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
-	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o
+user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o user/embed.o
 
-$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o) user/http.o user/knocnet_proto.o: CFLAGS += -isystem user/libc/include
+$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o) user/http.o user/knocnet_proto.o user/search.o: CFLAGS += -isystem user/libc/include
 
-$(filter-out $(HTTP_PROGRAMS:%=user/%.elf) $(KNOCNET_PROGRAMS:%=user/%.elf),$(LIBC_PROGRAMS:%=user/%.elf)): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+$(filter-out $(HTTP_PROGRAMS:%=user/%.elf) $(KNOCNET_PROGRAMS:%=user/%.elf) $(SEARCH_PROGRAMS:%=user/%.elf),$(LIBC_PROGRAMS:%=user/%.elf)): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< $(LIBC_OBJS) user/ulib.o $(LIBGCC)
 
 BEARSSL_DIR = third_party/bearssl
@@ -179,6 +180,11 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 user/http.o user/knocnet_proto.o: CFLAGS += -O2 -I$(BEARSSL_DIR)/inc
 
+user/embed.o user/search.o: CFLAGS += -O2
+
+$(SEARCH_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o user/search.o user/embed.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< user/search.o user/embed.o $(LIBC_OBJS) user/ulib.o $(LIBGCC)
+
 $(KNOCNET_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o user/knocnet_proto.o $(BEARSSL_LIB) $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< user/knocnet_proto.o $(BEARSSL_LIB) $(LIBC_OBJS) user/ulib.o $(LIBGCC)
 
@@ -188,8 +194,8 @@ $(HTTP_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o user/http.o $(BEARSSL_LIB) $
 user/organize.elf: user/organize.o user/learn.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/organize.o user/learn.o
 
-user/chat.elf: user/chat.o user/assist.o user/llm.o user/rag.o $(USER_LIB_OBJS) user/linker.ld
-	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/chat.o user/assist.o user/llm.o user/rag.o
+user/chat.elf: user/chat.o user/assist.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/chat.o user/assist.o user/llm.o user/rag.o user/embed.o
 
 kernel/programs.o: $(USER_ELFS)
 
@@ -227,6 +233,7 @@ sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	@$(KNOCFS) mkdir $(DISK) /etc /etc/apps 2>/dev/null || true
 	@./scripts/sdk.sh $(DISK)
 	@./scripts/etc.sh $(DISK)
+	@[ ! -f models/embed/knocembed.knm ] || $(KNOCFS) put $(DISK) models/embed/knocembed.knm /models/knocembed.knm
 	@for manifest in apps/*.app; do \
 		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done

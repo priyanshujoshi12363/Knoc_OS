@@ -1,5 +1,6 @@
 #include "ulib.h"
 #include "rag.h"
+#include "embed.h"
 
 #define WORDS_MAX 24
 #define WORD_LENGTH 64
@@ -10,6 +11,9 @@
 #define RECENT_SCAN 300
 #define SEEN_MAX 64
 #define HEALTH_EDGES_MAX 8
+#define MEANING_CANDIDATES 64
+#define MEANING_NODES 2
+#define MEANING_MIN 0.5f
 
 typedef struct builder
 {
@@ -521,6 +525,102 @@ static void node_links(rag_facts_t *facts, const graph_node_info_t *node)
     }
 }
 
+static embed_model_t embed_model;
+static int embed_state;
+static graph_node_info_t candidates[MEANING_CANDIDATES];
+
+static int candidate_known(int count, unsigned int kind, const char *name)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (candidates[i].kind == kind && strcmp(candidates[i].name, name) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void meaning_facts(rag_facts_t *facts, const char *question)
+{
+    graph_request_t request;
+    graph_edge_info_t edge;
+    int count = 0;
+
+    if (embed_state == 0)
+    {
+        embed_state = embed_load(&embed_model, EMBED_MODEL) == 0 ? 1 : -1;
+    }
+
+    if (embed_state < 0)
+    {
+        return;
+    }
+
+    for (unsigned long i = 0; i < RECENT_SCAN && count < MEANING_CANDIDATES; i++)
+    {
+        request_init(&request, GRAPH_OP_RECENT, i);
+
+        if (graph(&request, &edge) != 0)
+        {
+            break;
+        }
+
+        if (useful_kind(edge.from_kind) && !candidate_known(count, edge.from_kind, edge.from) &&
+            count < MEANING_CANDIDATES)
+        {
+            memset(&candidates[count], 0, sizeof(candidates[count]));
+            candidates[count].kind = edge.from_kind;
+            copy_text(candidates[count].name, edge.from, sizeof(candidates[count].name));
+            count++;
+        }
+
+        if (useful_kind(edge.to_kind) && !candidate_known(count, edge.to_kind, edge.to) && count < MEANING_CANDIDATES)
+        {
+            memset(&candidates[count], 0, sizeof(candidates[count]));
+            candidates[count].kind = edge.to_kind;
+            copy_text(candidates[count].name, edge.to, sizeof(candidates[count].name));
+            count++;
+        }
+    }
+
+    float q[EMBED_DIM_MAX];
+    float v[EMBED_DIM_MAX];
+    float best_score[MEANING_NODES] = {0};
+    int best[MEANING_NODES] = {-1, -1};
+
+    embed_text(&embed_model, question, strlen(question), q);
+
+    for (int i = 0; i < count; i++)
+    {
+        embed_text(&embed_model, candidates[i].name, strlen(candidates[i].name), v);
+
+        float score = embed_dot(q, v, embed_model.dim);
+
+        for (int slot = 0; slot < MEANING_NODES; slot++)
+        {
+            if (score >= MEANING_MIN && (best[slot] < 0 || score > best_score[slot]))
+            {
+                for (int move = MEANING_NODES - 1; move > slot; move--)
+                {
+                    best[move] = best[move - 1];
+                    best_score[move] = best_score[move - 1];
+                }
+
+                best[slot] = i;
+                best_score[slot] = score;
+                break;
+            }
+        }
+    }
+
+    for (int slot = 0; slot < MEANING_NODES && best[slot] >= 0 && facts->count < RAG_FACTS_MAX; slot++)
+    {
+        node_links(facts, &candidates[best[slot]]);
+    }
+}
+
 static void entity_facts(rag_facts_t *facts)
 {
     graph_request_t request;
@@ -921,6 +1021,11 @@ void rag_collect(const char *question, rag_facts_t *facts)
     int want_files = ASKS(file_words);
 
     entity_facts(facts);
+
+    if (facts->count == 0 && !want_health && !want_crash)
+    {
+        meaning_facts(facts, question);
+    }
 
     if (facts->count > 0)
     {

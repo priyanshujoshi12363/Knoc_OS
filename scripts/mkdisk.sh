@@ -45,6 +45,10 @@ if [ -f models/filenet/filenet.knm ]; then
     $KNOCFS put "$DISK" models/filenet/filenet.knm /models/filenet.knm
 fi
 
+if [ -f models/embed/knocembed.knm ]; then
+    $KNOCFS put "$DISK" models/embed/knocembed.knm /models/knocembed.knm
+fi
+
 if [ -f models/health/health.knm ]; then
     $KNOCFS put "$DISK" models/health/health.knm /models/health.knm
 fi

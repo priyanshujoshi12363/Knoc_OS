@@ -139,7 +139,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler healthd hello hog knocnetd knocnet knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler find healthd hello hog indexd index knocnetd knocnet knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -347,7 +347,7 @@ boot "agent --tools" "agent sort my downloads" "?n" "agent sort my downloads" "?
     'agent --call {"name": "list_folder", "arguments": {"path": "/home"}}' \
     'agent --call {"name": "write_file", "arguments": {"path": "/bin/evil", "text": "x"}}' \
     'agent --call {"name": "write_file", "arguments": {"path": "/home/todo.txt", "text": "buy milk"}}' "?y" \
-    "cat /home/todo.txt" "agent find todo" "agent write me a poem" "memory recent 4"
+    "cat /home/todo.txt" "agent find todo" "agent write me a poem" "memory recent 6"
 check \
     "organize  asks first: Sorts the files of a folder" \
     "[agent] skipped" \
@@ -686,6 +686,62 @@ fi
 if [ "$FAILED" -ne 0 ]; then
     echo "----- beta -----"
     cat "$LOG2"
+fi
+show_log_on_failure
+
+echo "Run 18: search by meaning: find files by what they are about, with dates and types"
+new_disk
+python3 tools/knocfs.py mkdir "$DISK" /home/Documents /home/recipes /home/code /home/Photos /home/work
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/march_statement.txt /home/Documents/march_statement.txt
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/old_statement.txt /home/Documents/old_statement.txt
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/pasta.txt /home/recipes/pasta.txt
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/fib.c /home/code/fib.c
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/profile_2026.txt /home/work/profile_2026.txt
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/sync_notes.md /home/work/sync_notes.md
+python3 tools/knocfs.py put "$DISK" scripts/fixtures/search/goa_beach_trip.jpg /home/Photos/goa_beach_trip.jpg
+LAST_MONTH=$(python3 -c 'import datetime as d; t = d.datetime.now(d.timezone.utc).replace(day=1) - d.timedelta(days=10); print(int(t.timestamp()))')
+python3 tools/knocfs.py touch "$DISK" /home/Documents/march_statement.txt "$LAST_MONTH"
+python3 tools/knocfs.py touch "$DISK" /home/Documents/old_statement.txt 1719800000
+boot "index status" "find invoice" "find cooking" "find program source" "find cv" "find holiday pictures" \
+    "find meeting minutes" "find invoice from last month" "find bill 2024" "find photos" \
+    "echo my passport number is K1234567 > /home/travel_papers.txt" "find passport" "index status" \
+    'agent find something about pasta' "organize /home/Downloads --apply" "ask where is my spreadsheet about money" "sleep 25"
+check \
+    "organize moved budget_2024.xlsx from /home/Downloads to /home/Downloads/Spreadsheets" \
+    "[INDEX] ready: " \
+    "find: image files" \
+    "find: from last month" \
+    "  /home/Documents/old_statement.txt  2024-07-01"
+FIRST_HIT() { tr -d '\r' < "$LOG" | awk -v q="knoc:/$ find $1" '$0 == q {f = 1; next} f && /%/ {print; exit} f && /^knoc:/ {exit}'; }
+for pair in "invoice|march_statement.txt" "cooking|pasta.txt" "program source|fib.c" "cv|profile_2026.txt" \
+    "holiday pictures|goa_beach_trip.jpg" "meeting minutes|sync_notes.md" "invoice from last month|march_statement.txt" \
+    "passport|travel_papers.txt"; do
+    QUERY=${pair%%|*}
+    WANT=${pair##*|}
+    if FIRST_HIT "$QUERY" | grep -qF "$WANT"; then
+        echo "  ok   find $QUERY -> $WANT first"
+    else
+        echo "  MISS find $QUERY -> $WANT first (got: $(FIRST_HIT "$QUERY"))"
+        FAILED=1
+    fi
+done
+if tr -d '\r' < "$LOG" | awk '/knoc:\/\$ find invoice from last month/,/knoc:\/\$ find bill 2024/' | grep -q old_statement; then
+    echo "  MISS last month must leave out the 2024 bill"
+    FAILED=1
+else
+    echo "  ok   last month leaves out the 2024 bill"
+fi
+if tr -d '\r' < "$LOG" | awk '/knoc:\/\$ find photos/,/knoc:\/\$ echo my passport/' | grep -E "^ +[0-9]+%" | grep -vq goa_beach_trip; then
+    echo "  MISS photos shows only pictures"
+    FAILED=1
+else
+    echo "  ok   photos shows only pictures"
+fi
+if tr -d '\r' < "$LOG" | awk '/agent find something about pasta/,0' | grep -qF "/home/recipes/pasta.txt"; then
+    echo "  ok   the agent finds files by meaning"
+else
+    echo "  MISS the agent finds files by meaning"
+    FAILED=1
 fi
 show_log_on_failure
 

@@ -59,7 +59,8 @@ typedef struct knocfs_inode
     uint32_t extent_count;
     uint64_t size;
     knocfs_extent_t extents[KNOCFS_EXTENTS];
-    uint64_t padding[2];
+    uint64_t created;
+    uint64_t modified;
 } knocfs_inode_t;
 
 typedef struct knocfs_dirent
@@ -73,6 +74,8 @@ typedef struct knocfs_stat
     uint32_t type;
     uint32_t extents;
     uint64_t size;
+    uint64_t created;
+    uint64_t modified;
 } knocfs_stat_t;
 
 int knocfs_mount(device_t *disk);

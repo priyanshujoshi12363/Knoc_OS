@@ -472,6 +472,13 @@ static void console_process(void *arg)
         {
             process_spawn(knocnetd);
         }
+
+        const program_t *indexd = program_installed("indexd");
+
+        if (indexd)
+        {
+            process_spawn(indexd);
+        }
     }
 
     if (!tty_has_owner() && process_spawn(program_find("knocsh")) < 0)

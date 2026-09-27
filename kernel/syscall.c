@@ -698,6 +698,8 @@ static int64_t sys_stat(uintptr_t path_address, uintptr_t out)
     result.type = stat.type;
     result.extents = stat.extents;
     result.size = stat.size;
+    result.created = stat.created;
+    result.modified = stat.modified;
 
     return copy_to_user(out, &result, sizeof(result)) == 0 ? 0 : E_FAULT;
 }
@@ -743,6 +745,7 @@ static int64_t sys_readdir(uintptr_t path_address, uint64_t index, uintptr_t out
     memcpy(result.name, entry.name, FILE_NAME_MAX);
     result.type = stat.type;
     result.size = stat.size;
+    result.modified = stat.modified;
 
     return copy_to_user(out, &result, sizeof(result)) == 0 ? 0 : E_FAULT;
 }

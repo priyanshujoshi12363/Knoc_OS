@@ -176,6 +176,11 @@ static const program_t *install(const char *path)
     program->flags = 0;
     program->path = installed_paths[installed_count];
 
+    if (names_equal(name, "indexd"))
+    {
+        program->process_class = PROCESS_CLASS_BACKGROUND;
+    }
+
     if (names_equal(name, "knocnetd"))
     {
         program->process_class = PROCESS_CLASS_BACKGROUND;

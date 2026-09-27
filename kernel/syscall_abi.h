@@ -120,6 +120,8 @@ typedef struct file_stat
     uint32_t type;
     uint32_t extents;
     uint64_t size;
+    uint64_t created;
+    uint64_t modified;
 } file_stat_t;
 
 typedef struct dir_entry
@@ -127,6 +129,7 @@ typedef struct dir_entry
     char name[FILE_NAME_MAX];
     uint32_t type;
     uint64_t size;
+    uint64_t modified;
 } dir_entry_t;
 
 /* System information for the shell (CAP_SYSTEM) */

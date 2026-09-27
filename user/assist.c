@@ -657,6 +657,31 @@ static int tool_run_app(const call_t *call, text_t *out)
     return 0;
 }
 
+static int tool_find_by_meaning(const call_t *call, text_t *out)
+{
+    const char *query = arg(call, "query");
+    static char captured_output[4096];
+
+    if (!query || !query[0])
+    {
+        return refuse(out, "missing query");
+    }
+
+    int pid = spawn_capture("find", query, 1);
+
+    if (pid < 0)
+    {
+        return refuse(out, "the search could not start");
+    }
+
+    wait(pid);
+
+    long length = captured(captured_output, sizeof(captured_output));
+
+    add_bytes(out, captured_output, length > 0 ? (int)length : 0);
+    return 0;
+}
+
 static int tool_run_script(const call_t *call, text_t *out)
 {
     const char *path = arg(call, "path");
@@ -737,6 +762,10 @@ static const tool_t tools[] = {
     {"read_file", "Read a text file", "path", "", RISK_READ, tool_read_file},
     {"find_files", "Find files whose name contains a text, searching a folder and its subfolders", "name,folder", "",
      RISK_READ, tool_find_files},
+    {"find_by_meaning",
+     "Find files by what they are about, also with dates like last month and types like photos (e.g. invoice from "
+     "last month)",
+     "query", "", RISK_READ, tool_find_by_meaning},
     {"system_status", "Show CPU, memory, disk, recent problems, fixes, crashes and running programs", "", "",
      RISK_READ, tool_system_status},
     {"memory_search", "Search the memory graph: what happened to a file, program or driver", "text", "", RISK_READ,
@@ -1363,6 +1392,33 @@ static void execute(const call_t *call, text_t *out)
     }
 }
 
+static const char *text_after(const char *request, const char *word)
+{
+    for (int i = 0; request[i]; i++)
+    {
+        int j = 0;
+
+        while (word[j] && lower(request[i + j]) == word[j])
+        {
+            j++;
+        }
+
+        if (word[j] == 0)
+        {
+            const char *p = request + i + j;
+
+            while (*p == ' ')
+            {
+                p++;
+            }
+
+            return p;
+        }
+    }
+
+    return 0;
+}
+
 static int word_after(const char *request, const char *word, char *out, int room)
 {
     for (int i = 0; request[i]; i++)
@@ -1481,10 +1537,20 @@ static int route(const char *request, call_t *calls)
         }
     }
 
-    if (count == 0 && word_after(request, "find ", word, sizeof(word)))
+    if (count == 0 && (word_after(request, "named ", word, sizeof(word)) ||
+                       word_after(request, "called ", word, sizeof(word))))
     {
         copy_text(calls[count].name, "find_files", sizeof(calls[count].name));
         set_arg(&calls[count], "name", word);
+        count++;
+    }
+
+    const char *rest = count == 0 ? text_after(request, "find ") : 0;
+
+    if (rest && rest[0])
+    {
+        copy_text(calls[count].name, "find_by_meaning", sizeof(calls[count].name));
+        set_arg(&calls[count], "query", rest);
         count++;
     }
 

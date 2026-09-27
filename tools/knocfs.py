@@ -14,6 +14,7 @@ Usage:
   knocfs.py make-test-model IMAGE DEST MIB  a file with a known byte pattern
   knocfs.py ls IMAGE [PATH]
   knocfs.py cat IMAGE PATH
+  knocfs.py touch IMAGE PATH EPOCH          set a file's modified time
   knocfs.py rm IMAGE PATH
   knocfs.py info IMAGE
 """
@@ -21,6 +22,7 @@ Usage:
 import os
 import struct
 import sys
+import time
 
 MAGIC = 0x31305346434F4E4B
 VERSION = 1
@@ -106,7 +108,8 @@ class KnocFS:
         offset = (number * INODE.size) % BLOCK
         fields = INODE.unpack_from(data, offset)
         extents = [(fields[4 + 2 * i], fields[5 + 2 * i]) for i in range(fields[2])]
-        return {"type": fields[0], "size": fields[3], "extents": extents}
+        return {"type": fields[0], "size": fields[3], "extents": extents,
+                "created": fields[-2], "modified": fields[-1]}
 
     def put_inode(self, number, inode):
         block = self.inode_start + number * INODE.size // BLOCK
@@ -114,7 +117,8 @@ class KnocFS:
         extents = inode["extents"] + [(0, 0)] * (EXTENTS - len(inode["extents"]))
         flat = [value for extent in extents for value in extent]
         INODE.pack_into(data, (number * INODE.size) % BLOCK,
-                        inode["type"], 0, len(inode["extents"]), inode["size"], *flat, 0, 0)
+                        inode["type"], 0, len(inode["extents"]), inode["size"], *flat,
+                        int(inode.get("created", 0)), int(inode.get("modified", 0)))
         self.write(block, bytes(data))
 
     def alloc_inode(self):
@@ -151,6 +155,7 @@ class KnocFS:
             self.write(start, chunk.ljust(count * BLOCK, b"\0"))
             position += count * BLOCK
         inode["size"] = len(data)
+        inode["modified"] = int(time.time())
         self.put_inode(number, inode)
 
     # directories
@@ -181,7 +186,8 @@ class KnocFS:
         if self.lookup(path) is not None:
             sys.exit(f"{path}: already exists")
         number = self.alloc_inode()
-        self.put_inode(number, {"type": kind, "size": 0, "extents": []})
+        now = int(time.time())
+        self.put_inode(number, {"type": kind, "size": 0, "extents": [], "created": now, "modified": now})
         data = bytearray(self.read_file(parent))
         entry = DIRENT.pack(number, name.encode())
         for index, entry_number, _ in self.entries(parent):
@@ -211,10 +217,22 @@ class KnocFS:
                 data[index * DIRENT.size:(index + 1) * DIRENT.size] = bytes(DIRENT.size)
         self.write_file(parent, bytes(data))
 
-    def put(self, path, data):
+    def put(self, path, data, modified=None):
         if self.lookup(path) is not None:
             self.remove(path)
-        self.write_file(self.create(path, TYPE_FILE), data)
+        number = self.create(path, TYPE_FILE)
+        self.write_file(number, data)
+        if modified is not None:
+            self.touch(path, modified)
+
+    def touch(self, path, modified):
+        number = self.lookup(path)
+        if number is None:
+            sys.exit(f"{path}: no such file")
+        inode = self.inode(number)
+        inode["modified"] = int(modified)
+        inode["created"] = min(int(inode["created"] or modified), int(modified))
+        self.put_inode(number, inode)
 
 
 def format_image(path):
@@ -265,13 +283,14 @@ def main(argv):
                     fs.create(path, TYPE_DIR)
         elif command == "put":
             with open(args[0], "rb") as source:
-                fs.put(args[1], source.read())
+                fs.put(args[1], source.read(), os.path.getmtime(args[0]))
         elif command == "put-many":
             if fs.lookup(args[0]) is None:
                 fs.create(args[0], TYPE_DIR)
             for source_path in args[1:]:
                 with open(source_path, "rb") as source:
-                    fs.put(args[0].rstrip("/") + "/" + os.path.basename(source_path), source.read())
+                    fs.put(args[0].rstrip("/") + "/" + os.path.basename(source_path), source.read(),
+                           os.path.getmtime(source_path))
         elif command == "put-text":
             fs.put(args[0], args[1].encode())
         elif command == "make-test-model":
@@ -288,7 +307,10 @@ def main(argv):
                 if entry:
                     inode = fs.inode(entry)
                     kind = "dir " if inode["type"] == TYPE_DIR else "file"
-                    print(f"{kind} {inode['size']:>12}  {name}")
+                    when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(inode["modified"])) if inode["modified"] else "-"
+                    print(f"{kind} {inode['size']:>12}  {when}  {name}")
+        elif command == "touch":
+            fs.touch(args[0], int(args[1]))
         elif command == "cat":
             number = fs.lookup(args[0])
             if number is None:

@@ -177,6 +177,8 @@ int stat(const char *path, struct stat *out)
     memset(out, 0, sizeof(*out));
     out->st_mode = info.type == FILE_TYPE_DIR ? S_IFDIR | 0755 : S_IFREG | 0644;
     out->st_size = (off_t)info.size;
+    out->st_mtime = (time_t)info.modified;
+    out->st_ctime = (time_t)info.created;
     out->st_nlink = 1;
     out->st_blksize = 4096;
     out->st_blocks = (blkcnt_t)((info.size + 511) / 512);

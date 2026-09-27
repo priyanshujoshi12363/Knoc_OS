@@ -292,11 +292,58 @@ static void resolve(const char *path, char *out)
 
 /* ---- Files ---- */
 
+static void put_two(char *out, unsigned long value)
+{
+    out[0] = (char)('0' + value / 10 % 10);
+    out[1] = (char)('0' + value % 10);
+}
+
+static void print_date(unsigned long seconds)
+{
+    char text[17] = "----------------";
+
+    if (seconds > 0)
+    {
+        long days = (long)(seconds / 86400) + 719468;
+        long era = days / 146097;
+        unsigned long doe = (unsigned long)(days - era * 146097);
+        unsigned long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        unsigned long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        unsigned long mp = (5 * doy + 2) / 153;
+        unsigned long day = doy - (153 * mp + 2) / 5 + 1;
+        unsigned long month = mp < 10 ? mp + 3 : mp - 9;
+        unsigned long year = yoe + (unsigned long)era * 400 + (month <= 2);
+        unsigned long clock = seconds % 86400;
+
+        put_two(text, year / 100);
+        put_two(text + 2, year);
+        text[4] = '-';
+        put_two(text + 5, month);
+        text[7] = '-';
+        put_two(text + 8, day);
+        text[10] = ' ';
+        put_two(text + 11, clock / 3600);
+        text[13] = ':';
+        put_two(text + 14, clock / 60 % 60);
+    }
+
+    text[16] = 0;
+    print(text);
+    print("  ");
+}
+
 static void cmd_ls(int argc, char **args)
 {
     char path[PATH_MAX];
     file_stat_t info;
     dir_entry_t entry;
+    int long_form = argc > 1 && strcmp(args[1], "-l") == 0;
+
+    if (long_form)
+    {
+        args++;
+        argc--;
+    }
 
     resolve(argc > 1 ? args[1] : ".", path);
 
@@ -312,6 +359,12 @@ static void cmd_ls(int argc, char **args)
     {
         print_size(info.size);
         print("  ");
+
+        if (long_form)
+        {
+            print_date(info.modified);
+        }
+
         print(path);
         print("\n");
         return;
@@ -323,6 +376,12 @@ static void cmd_ls(int argc, char **args)
         {
             print_padded("     <dir>", 10);
             print("  ");
+
+            if (long_form)
+            {
+                print_date(entry.modified);
+            }
+
             print(entry.name);
             print("/\n");
         }
@@ -330,6 +389,12 @@ static void cmd_ls(int argc, char **args)
         {
             print_size(entry.size);
             print("  ");
+
+            if (long_form)
+            {
+                print_date(entry.modified);
+            }
+
             print(entry.name);
             print("\n");
         }
@@ -1680,7 +1745,7 @@ static void cmd_cpus(void)
 
 static void cmd_help(void)
 {
-    print("Files:     ls [DIR]  cd DIR  pwd  cat FILE  echo TEXT  mkdir DIR  rm PATH  copy FROM TO  move FROM TO\n");
+    print("Files:     ls [-l] [DIR]  cd DIR  pwd  cat FILE  echo TEXT  mkdir DIR  rm PATH  copy FROM TO  move FROM TO\n");
     print("Output:    COMMAND > FILE  COMMAND >> FILE (works for every command and program)\n");
     print("Scripts:   run FILE.ksh [ARGS] or FILE.ksh  set NAME VALUE  inc NAME  $NAME $1 $# $?\n");
     print("           if COND / else / end  for X in A B C / end  while COND / end  exit N\n");

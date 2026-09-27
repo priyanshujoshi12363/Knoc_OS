@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.29.0-blue)
+![Version](https://img.shields.io/badge/version-v0.30.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.29.0 starting
+[INFO] KnocOS v0.30.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 8 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,30 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: KnocNet (v0.29.0)
+## ✅ Just Completed: Search by Meaning (v0.30.0)
+
+**Find files by what they are about.** Words don't have to match: "invoice" finds a file that says "electricity bill", "cooking" finds the pasta recipe, "program source" finds the C file:
+
+```text
+knoc:/$ find invoice from last month
+find: from last month
+   80%  /home/Documents/march_statement.txt  2026-08-22
+        "Electricity bill for March. Account 7741, amount due: 4,500 rupees. Pl..."
+knoc:/$ find resume
+   75%  /home/work/profile_2026.txt  2026-09-26
+        "Priya Sharma Software engineer Work experience: 4 years at a startup b..."
+knoc:/$ find photos
+find: image files
+  100%  /home/Photos/goa_beach_trip.jpg  2026-09-26
+```
+
+- Dates (`last month`, `yesterday`, `this week`, `in march`, `2024`...) and types (`photos`, `pdf`, `videos`, `songs`, `code`) become filters
+- KnocEmbed, a small model made for KnocOS (hashed words and letter pieces), learned meaning from the MiniLM sentence model on the host and runs in milliseconds inside KnocOS
+- `indexd` keeps an index of `/home` in `/var/index`; `find` updates it first, so new files are found at once; `index status` shows it
+- Files now have dates: `ls -l`
+- `ask`, `chat` and the agent find memory-graph facts by meaning too, and "agent find ..." searches by meaning
+
+## KnocNet (v0.29.0)
 
 **KnocOS machines talk to each other, encrypted.** Pair two machines once with a code, then send files, fetch shared files, check each other's health, and ask the other machine's AI:
 
@@ -510,7 +533,8 @@ Recent progress:
 | `677c7e7` | Networking: virtio-net, TCP/IP stack, `net` / `ping` / `fetch`, `NET` capability, version `v0.27.0` |
 | `3d801e2` | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
 | `6814f5d` | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
-| *(uncommitted)* | KnocNet: pairing, encrypted links, files and AI questions between machines, TCP servers, version `v0.29.0` |
+| `0cb52d1` | KnocNet: pairing, encrypted links, files and AI questions between machines, TCP servers, version `v0.29.0` |
+| *(uncommitted)* | Search by meaning: `find`, KnocEmbed, `indexd`, file dates, memory facts by meaning, version `v0.30.0` |
 
 What works right now:
 
@@ -548,7 +572,8 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.27.1: HTTPS + text browser
 - [x] v0.28.0: kernel on 8 cores (4 kernel + 4 AI)
 - [x] v0.29.0: KnocNet
-- [ ] v0.30.0 – v0.31.0: semantic search, Linux apps
+- [x] v0.30.0: search by meaning
+- [ ] v0.31.0: Linux apps
 - [ ] v0.32.0 – v0.35.0: the GUI (last)
 
 ---
