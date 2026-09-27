@@ -71,6 +71,10 @@ void assist_set_hooks(void (*output)(const char *text, int length), int (*approv
 #define FIND_HITS 20
 #define LIST_MAX 40
 #define PREFIX_PATH "/tmp/assistant-prefix.kv"
+#define TALK_PREFIX_PATH "/tmp/talk-prefix.kv"
+#define TALK_TEXT                                                                                           \
+    "You are Knoc, the assistant built into the KnocOS operating system, running on this computer. Answer " \
+    "briefly and clearly. When facts about this computer are given, answer from them."
 #define REPLY_MAX 2048
 #define ROOM_NEEDED 400
 #define SYSTEM_TEXT                                                                                      \
@@ -2074,20 +2078,51 @@ static void message_with_facts(const char *message, int with_facts, text_t *out)
     add(out, message);
 }
 
+static int talk_mode;
+
+static int needs_tools(const char *message)
+{
+    static call_t found[CALLS_MAX];
+    static const char *const words[] = {"move", "rename", "delete", "remove", "copy", "create", "make ", "write",
+                                        "save", "run ", "start", "stop", "kill", "organize", "sort", "tidy",
+                                        "clean", "find", "search", "list", "show", "open", "folder", "file",
+                                        "program", "lower", "slow", "status", "health", "download", "script", 0};
+
+    if (route(message, found) > 0)
+    {
+        return 1;
+    }
+
+    for (int i = 0; words[i]; i++)
+    {
+        if (contains(message, words[i]))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int assist_begin(const char *message, int with_facts)
 {
     static char full[4096];
     text_t t = {full, 0, sizeof(full)};
 
+    talk_mode = !needs_tools(message);
     full[0] = 0;
     message_with_facts(message, with_facts, &t);
-    llm_prompt_start(&prompt, system_prompt);
+    llm_prompt_start(&prompt, talk_mode ? TALK_TEXT : system_prompt);
 
     int prefix = prompt.count;
 
     llm_prompt_text(&prompt, full);
     llm_prompt_end(&prompt, 0);
-    llm_read_prompt(&prompt, prefix, PREFIX_PATH);
+    print(label);
+    print("reading ");
+    print_uint((unsigned long)prompt.count);
+    print(talk_mode ? " prompt tokens\n" : " prompt tokens with the tool list (slow the first time, then cached)\n");
+    llm_read_prompt(&prompt, prefix, talk_mode ? TALK_PREFIX_PATH : PREFIX_PATH);
     return 0;
 }
 
@@ -2095,6 +2130,11 @@ int assist_continue(const char *message, int with_facts)
 {
     static char full[4096];
     text_t t = {full, 0, sizeof(full)};
+
+    if (talk_mode && needs_tools(message))
+    {
+        return -2;
+    }
 
     full[0] = 0;
     message_with_facts(message, with_facts, &t);

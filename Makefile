@@ -307,8 +307,11 @@ run: knocos.elf sync-programs
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISK_FLAGS) -kernel knocos.elf
 
 GUI_DISPLAY ?= gtk,zoom-to-fit=off
+GUI_ENV = env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$$HOME" DISPLAY="$$DISPLAY" \
+          WAYLAND_DISPLAY="$$WAYLAND_DISPLAY" XAUTHORITY="$$XAUTHORITY" XDG_RUNTIME_DIR="$$XDG_RUNTIME_DIR" \
+          XDG_SESSION_TYPE="$$XDG_SESSION_TYPE" DBUS_SESSION_BUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS" qemu-system-riscv64
 run-gui: knocos.elf sync-programs
-	$(QEMU) -machine virt -smp 8 -m $(RAM) -bios none -serial mon:stdio -display $(GUI_DISPLAY) \
+	$(GUI_ENV) -machine virt -smp 8 -m $(RAM) -bios none -serial mon:stdio -display $(GUI_DISPLAY) \
 		$(QEMU_DISK_FLAGS) -device virtio-gpu-device,xres=1280,yres=800,bus=virtio-mmio-bus.3 \
 		-device virtio-keyboard-device,bus=virtio-mmio-bus.4 -device virtio-tablet-device,bus=virtio-mmio-bus.5 -kernel knocos.elf
 

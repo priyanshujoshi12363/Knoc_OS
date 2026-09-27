@@ -14,7 +14,11 @@ The boot screen, a desktop that starts by itself, and finishing touches.
 - `make test` Run 22 (the desktop: welcome, keyboard, mouse, windows, the Terminal) and Run 23 (Knoc Bar by meaning, a change set allowed and undone, the Paper theme)
 
 ### Changed
-- The health watch never lowers the desktop's priority
+- Knoc answers questions in about a minute: plain questions use a short prompt, and the long tool list is only read when you ask Knoc to do something (then cached in `/tmp`); `chat`, `agent` and Assist say how many prompt tokens they are reading
+- Assist talks to the language model through `chat` on a pseudo-terminal, so the model runs on the 3 AI cores instead of the desktop's cores, answers appear as they are generated, and the agent's y/n questions become change-set cards
+- The Knoc Bar offers **Web**: open an address or search the web with the text browser, in a Terminal window; apps come before files in the results
+- `make run-gui` passes the display variables to QEMU (it failed with "gtk initialization failed")
+- The health watch never lowers the desktop's priority, and doesn't report the desktop as a CPU hog
 - Window borders and shadows only touch their edges, and colour blending uses shifts instead of divisions: typing in a window costs about a third of the CPU it did
 
 ## [0.37.0] - 2026-09-27

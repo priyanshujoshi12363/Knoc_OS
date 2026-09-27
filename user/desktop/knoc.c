@@ -50,6 +50,7 @@ enum
     RESULT_SETTING,
     RESULT_FILE,
     RESULT_MEANING,
+    RESULT_WEB,
     RESULT_ASK,
     RESULT_RUN,
 };
@@ -106,6 +107,15 @@ static image_t preview_image;
 static char preview_image_path[200];
 static int preview_image_ok;
 static rect_t bar_box;
+static int chat_pty;
+static int chat_pid;
+static int chat_ready;
+static int chat_skip_echo;
+static int chat_live;
+static char chat_waiting[400];
+static char chat_line[ENTRY_TEXT];
+static int chat_length;
+static int card_chat[ENTRY_MAX];
 
 static const char *const scopes[] = {"All", "Files", "Apps", "Ask"};
 
@@ -416,6 +426,50 @@ void assist_toggle(void)
     }
 }
 
+static void chat_send(void)
+{
+    if (!chat_ready || !chat_waiting[0])
+    {
+        return;
+    }
+
+    pty_write(chat_pty, chat_waiting, strlen(chat_waiting));
+    pty_write(chat_pty, "\r", 1);
+    chat_waiting[0] = 0;
+    chat_ready = 0;
+    chat_skip_echo = 1;
+    chat_live = -1;
+}
+
+static int chat_start(void)
+{
+    if (chat_pty > 0)
+    {
+        return 0;
+    }
+
+    chat_pty = pty_open();
+
+    if (chat_pty < 0)
+    {
+        chat_pty = 0;
+        return -1;
+    }
+
+    chat_pid = pty_spawn(chat_pty, "chat", "");
+
+    if (chat_pid < 0)
+    {
+        chat_pty = 0;
+        return -1;
+    }
+
+    chat_ready = 0;
+    chat_length = 0;
+    snprintf(model_line, sizeof(model_line), "qwen2.5 0.5B · on the AI cores");
+    return 0;
+}
+
 void assist_ask(const char *question)
 {
     if (!assist_on)
@@ -424,13 +478,256 @@ void assist_ask(const char *question)
     }
 
     entry_add(ENTRY_YOU, question);
-    snprintf(ask_text, sizeof(ask_text), "%s", question);
-    ask_pending = 1;
 
     char text[460];
 
     snprintf(text, sizeof(text), "asked Knoc: %s", question);
     desktop_log(text);
+
+    if (file_exists("/models/qwen.kllm") && chat_start() == 0)
+    {
+        snprintf(chat_waiting, sizeof(chat_waiting), "%s", question);
+        worker_busy = 1;
+        chat_send();
+        return;
+    }
+
+    snprintf(ask_text, sizeof(ask_text), "%s", question);
+    ask_pending = 1;
+}
+
+static int tool_line(const char *text, char *tool, int room)
+{
+    int n = 0;
+
+    while (text[n] && ((text[n] >= 'a' && text[n] <= 'z') || text[n] == '_') && n < room - 1)
+    {
+        tool[n] = text[n];
+        n++;
+    }
+
+    tool[n] = 0;
+    return n > 2 && text[n] == '(';
+}
+
+static void tool_description(const char *call, char *out, int room)
+{
+    const char *open = strchr(call, '(');
+    const char *close = strrchr(call, ')');
+    int n = 0;
+
+    out[0] = 0;
+
+    if (!open || !close || close < open)
+    {
+        return;
+    }
+
+    for (const char *p = open + 1; p < close && n < room - 3; p++)
+    {
+        if (*p == '=')
+        {
+            out[n++] = ':';
+            out[n++] = ' ';
+        }
+        else if (*p == ',' && p[1] == ' ')
+        {
+            out[n++] = '\n';
+            p++;
+        }
+        else
+        {
+            out[n++] = *p;
+        }
+    }
+
+    out[n] = 0;
+}
+
+static void chat_complete_line(char *line)
+{
+    char tool[32];
+
+    if (chat_skip_echo)
+    {
+        chat_skip_echo = 0;
+        return;
+    }
+
+    if (strncmp(line, "knocos: ", 8) == 0)
+    {
+        const char *rest = line + 8;
+
+        if (tool_line(rest, tool, sizeof(tool)) || strncmp(rest, "using ", 6) == 0 ||
+            strncmp(rest, "reading ", 8) == 0 || strcmp(rest, "skipped") == 0)
+        {
+            if (chat_live >= 0 && chat_live < entry_count && entries[chat_live].kind == ENTRY_KNOC &&
+                strcmp(entries[chat_live].text, rest) == 0)
+            {
+                entries[chat_live].kind = ENTRY_LOG;
+            }
+            else
+            {
+                entry_add(ENTRY_LOG, rest);
+            }
+
+            chat_live = -1;
+            return;
+        }
+
+        if (chat_live >= 0 && chat_live < entry_count)
+        {
+            snprintf(entries[chat_live].text, sizeof(entries[chat_live].text), "%s", rest);
+        }
+        else if (rest[0])
+        {
+            entry_add(ENTRY_KNOC, rest);
+        }
+
+        chat_live = -1;
+        return;
+    }
+
+    if (line[0] == '(' || strncmp(line, "chat: ", 6) == 0)
+    {
+        if (strncmp(line, "chat: ", 6) == 0)
+        {
+            entry_add(ENTRY_LOG, line + 6);
+        }
+
+        chat_live = -1;
+        return;
+    }
+
+    if (line[0] && entry_count && entries[entry_count - 1].kind == ENTRY_KNOC)
+    {
+        entry_t *e = &entries[entry_count - 1];
+        int length = (int)strlen(e->text);
+
+        snprintf(e->text + length, sizeof(e->text) - (size_t)length, " %s", line);
+    }
+}
+
+static void chat_partial(void)
+{
+    char tool[32];
+
+    chat_line[chat_length] = 0;
+
+    if (strcmp(chat_line, "you: ") == 0)
+    {
+        chat_length = 0;
+        chat_ready = 1;
+        worker_busy = 0;
+        chat_live = -1;
+        chat_send();
+        damage_all();
+        return;
+    }
+
+    char *allow = strstr(chat_line, " Allow? (y/n) ");
+
+    if (allow && strncmp(chat_line, "knocos: ", 8) == 0)
+    {
+        *allow = 0;
+
+        char description[400];
+
+        tool_line(chat_line + 8, tool, sizeof(tool));
+        tool_description(chat_line + 8, description, sizeof(description));
+
+        entry_t *e = 0;
+
+        for (int i = 0; i < always_count; i++)
+        {
+            if (strcmp(always_allowed[i], tool) == 0)
+            {
+                e = entry_add(ENTRY_CARD, description);
+                snprintf(e->tool, sizeof(e->tool), "%s", tool);
+                e->status = CARD_ALLOWED;
+                pty_write(chat_pty, "y\r", 2);
+            }
+        }
+
+        if (!e)
+        {
+            e = entry_add(ENTRY_CARD, description);
+            snprintf(e->tool, sizeof(e->tool), "%s", tool);
+            e->status = CARD_PENDING;
+            card_chat[e - entries] = 1;
+            desktop_log("Knoc asks through chat");
+        }
+
+        chat_skip_echo = 1;
+        chat_length = 0;
+        return;
+    }
+
+    if (strncmp(chat_line, "knocos: ", 8) == 0 && !tool_line(chat_line + 8, tool, sizeof(tool)) && chat_length > 8)
+    {
+        if (chat_live < 0 || chat_live >= entry_count || entries[chat_live].kind != ENTRY_KNOC)
+        {
+            chat_live = (int)(entry_add(ENTRY_KNOC, chat_line + 8) - entries);
+        }
+        else
+        {
+            snprintf(entries[chat_live].text, sizeof(entries[chat_live].text), "%s", chat_line + 8);
+        }
+
+        damage(screen_w - assist_width(), 0, assist_width(), screen_h);
+    }
+}
+
+static void chat_tick(void)
+{
+    char chunk[1024];
+
+    if (!chat_pty)
+    {
+        return;
+    }
+
+    long n = pty_read(chat_pty, chunk, sizeof(chunk));
+
+    if (n <= 0)
+    {
+        return;
+    }
+
+    for (long i = 0; i < n; i++)
+    {
+        char c = chunk[i];
+
+        if (c == '\r')
+        {
+            continue;
+        }
+
+        if (c == '\n')
+        {
+            chat_line[chat_length] = 0;
+            chat_complete_line(chat_line);
+            chat_length = 0;
+            continue;
+        }
+
+        if (c == '\b')
+        {
+            if (chat_length)
+            {
+                chat_length--;
+            }
+
+            continue;
+        }
+
+        if (chat_length < ENTRY_TEXT - 1)
+        {
+            chat_line[chat_length++] = c;
+        }
+    }
+
+    chat_partial();
 }
 
 static int wrap_lines(font_t *font, float size, const char *text, int width, char lines[][160], int max)
@@ -909,6 +1206,12 @@ int assist_event(const input_event_t *e)
 
                     entries[i].status = k == 1 ? CARD_DENIED : CARD_ALLOWED;
                     desktop_log(k == 1 ? "change denied" : "change allowed");
+
+                    if (card_chat[i])
+                    {
+                        card_chat[i] = 0;
+                        pty_write(chat_pty, k == 1 ? "n\r" : "y\r", 2);
+                    }
                     damage(x0, 0, assist_width(), screen_h);
                     return 1;
                 }
@@ -994,6 +1297,8 @@ int assist_event(const input_event_t *e)
 
 void assist_tick(void)
 {
+    chat_tick();
+
     if (worker_busy && uptime() - last_pulse > 8)
     {
         last_pulse = uptime();
@@ -1065,6 +1370,7 @@ static const struct
     {"About KnocOS", "about version system memory disk", "Settings › About", &app_settings, "about"},
     {"Monitor", "monitor processes cpu cores memory task manager", "8 cores and every program", &app_monitor, 0},
     {"Editor", "editor text notes write code", "Edit text and code", &app_editor, "/home/notes.txt"},
+    {"Web", "web browser internet website google duckduckgo", "The text web browser, starting at DuckDuckGo", &app_terminal, "!web lite.duckduckgo.com"},
 };
 
 #define LAUNCHERS (int)(sizeof(launchers) / sizeof(launchers[0]))
@@ -1093,6 +1399,24 @@ void knoc_bar_rebuild(void)
 {
     result_count = 0;
 
+    if (query[0] && (scope == 0 || scope == 2))
+    {
+        for (int i = 0; i < LAUNCHERS && result_count < RESULT_MAX - 6; i++)
+        {
+            if (match(launchers[i].name, query) || match(launchers[i].words, query))
+            {
+                result_t *r = &results[result_count++];
+
+                memset(r, 0, sizeof(*r));
+                r->kind = launchers[i].arg && launchers[i].app == &app_settings ? RESULT_SETTING : RESULT_APP;
+                r->app = launchers[i].app;
+                snprintf(r->title, sizeof(r->title), "%s", launchers[i].name);
+                snprintf(r->detail, sizeof(r->detail), "%s", launchers[i].detail);
+                snprintf(r->target, sizeof(r->target), "%s", launchers[i].arg ? launchers[i].arg : "");
+            }
+        }
+    }
+
     if (query[0] && (scope == 0 || scope == 1))
     {
         char copy[4096];
@@ -1101,7 +1425,9 @@ void knoc_bar_rebuild(void)
 
         char *line = strtok(copy, "\n");
 
-        while (line && result_count < 5)
+        int meaning_added = 0;
+
+        while (line && meaning_added < 5 && result_count < RESULT_MAX - 6)
         {
             char *percent = strchr(line, '%');
             char *path = percent ? strchr(percent, '/') : 0;
@@ -1127,28 +1453,11 @@ void knoc_bar_rebuild(void)
                     snprintf(r->title, sizeof(r->title), "%s", base ? base + 1 : path);
                     snprintf(r->target, sizeof(r->target), "%s", path);
                     snprintf(r->detail, sizeof(r->detail), "by meaning · %.80s", path);
+                    meaning_added++;
                 }
             }
 
             line = strtok(0, "\n");
-        }
-    }
-
-    if (query[0] && (scope == 0 || scope == 2))
-    {
-        for (int i = 0; i < LAUNCHERS && result_count < RESULT_MAX - 6; i++)
-        {
-            if (match(launchers[i].name, query) || match(launchers[i].words, query))
-            {
-                result_t *r = &results[result_count++];
-
-                memset(r, 0, sizeof(*r));
-                r->kind = launchers[i].arg && launchers[i].app == &app_settings ? RESULT_SETTING : RESULT_APP;
-                r->app = launchers[i].app;
-                snprintf(r->title, sizeof(r->title), "%s", launchers[i].name);
-                snprintf(r->detail, sizeof(r->detail), "%s", launchers[i].detail);
-                snprintf(r->target, sizeof(r->target), "%s", launchers[i].arg ? launchers[i].arg : "");
-            }
         }
     }
 
@@ -1180,6 +1489,28 @@ void knoc_bar_rebuild(void)
                 snprintf(r->target, sizeof(r->target), "%s", name_index[i]);
                 snprintf(r->detail, sizeof(r->detail), "by name · %.80s", name_index[i]);
             }
+        }
+    }
+
+    if (query[0] && scope == 0)
+    {
+        int address = strchr(query, '.') && !strchr(query, ' ');
+        result_t *r = &results[result_count++];
+
+        memset(r, 0, sizeof(*r));
+        r->kind = RESULT_WEB;
+
+        if (address)
+        {
+            snprintf(r->title, sizeof(r->title), "Open %s", query);
+            snprintf(r->detail, sizeof(r->detail), "The web browser, in a Terminal window");
+            snprintf(r->target, sizeof(r->target), "!web %s", query);
+        }
+        else
+        {
+            snprintf(r->title, sizeof(r->title), "Search the web: %s", query);
+            snprintf(r->detail, sizeof(r->detail), "DuckDuckGo, in the web browser");
+            snprintf(r->target, sizeof(r->target), "!web -s %s", query);
         }
     }
 
@@ -1281,6 +1612,9 @@ static void activate(int index, int how)
     case RESULT_FILE:
     case RESULT_MEANING:
         open_path(r.target);
+        break;
+    case RESULT_WEB:
+        window_open(&app_terminal, r.target);
         break;
     case RESULT_ASK:
         assist_ask(q);
@@ -1412,6 +1746,8 @@ static const char *kind_group(int kind)
         return "Apps";
     case RESULT_SETTING:
         return "Settings";
+    case RESULT_WEB:
+        return "Web";
     case RESULT_ASK:
         return "Ask";
     default:
@@ -1550,12 +1886,13 @@ static void draw_preview(canvas_t *view, int x, int y, int w, int h)
     }
 
     char lines[6][160];
-    const char *text = r->kind == RESULT_ASK ? "Knoc answers in the Assist panel. Changes to your files show up there as a list you allow or deny."
+    const char *text = r->kind == RESULT_WEB ? "Opens the KnocOS web browser in a Terminal window. It shows the page as text with numbered links: type a number to follow a link, s WORDS to search, u to go back, q to quit."
+                       : r->kind == RESULT_ASK ? "Knoc answers in the Assist panel. Changes to your files show up there as a list you allow or deny."
                        : r->kind == RESULT_RUN ? "Opens a Terminal window and types this command into knocsh."
                                                : r->detail;
     int n = wrap_lines(font_ui, S(12.5f), text, w - 32, lines, 6);
 
-    draw_text(view, font_bold, S(15), x + 16, y + 34, r->kind == RESULT_ASK ? "Ask Knoc" : r->kind == RESULT_RUN ? "Run" : r->title, T.i);
+    draw_text(view, font_bold, S(15), x + 16, y + 34, r->kind == RESULT_ASK ? "Ask Knoc" : r->kind == RESULT_RUN ? "Run" : r->kind == RESULT_WEB ? "Web" : r->title, T.i);
 
     for (int k = 0; k < n; k++)
     {
@@ -1588,6 +1925,11 @@ void knoc_bar_draw(canvas_t *view, int ox, int oy)
     int by = 92;
 
     bar_box = (rect_t){bx, by, w, h};
+
+    if (bx + w + 12 < ox || bx - 12 > ox + view->width || by + h + 16 < oy || by - 12 > oy + view->height)
+    {
+        return;
+    }
 
     int x = bx - ox;
     int y = by - oy;
@@ -1672,7 +2014,8 @@ void knoc_bar_draw(canvas_t *view, int ox, int oy)
         }
         else
         {
-            int icon = r->kind == RESULT_RUN ? ICON_TERMINAL
+            int icon = r->kind == RESULT_WEB ? ICON_NETWORK
+                       : r->kind == RESULT_RUN ? ICON_TERMINAL
                        : r->app == &app_files ? ICON_FOLDER
                        : r->app == &app_terminal ? ICON_TERMINAL
                        : r->app == &app_monitor ? ICON_MONITOR

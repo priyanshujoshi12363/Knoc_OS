@@ -79,6 +79,7 @@ Type what you want and press **Enter** for the top result:
 
 - `terminal`, `files`, `monitor`, `editor`, `settings`, `text size`, `about`: apps and settings open directly
 - `groceries` or `the invoice from last month`: **files by meaning** (the KnocEmbed index) and files by name, with a live preview on the right
+- `web`, an address like `example.com`, or any words: **Web** opens the text web browser (the address, or a DuckDuckGo search) in a Terminal window
 - **Ctrl Enter** asks Knoc about what you typed; the answer appears in Assist
 - **Shift Enter** runs what you typed as a command in a new Terminal
 - **Tab** changes the scope (All, Files, Apps, Ask), **↑ ↓** move, **Esc** closes
@@ -99,6 +100,8 @@ to:   /home/Documents/notes.txt
 - The **Health** tab shows crash reports from the AI space
 - The **Sees** line shows the window Knoc is looking at
 
+With the model on the disk (`/models/qwen.kllm`), Knoc runs it on the 3 AI cores. The first question loads the model (about 12 seconds), and a plain question is answered in about a minute. When you ask Knoc to *do* something, it first reads its tool list, which takes several minutes the first time and is then cached. Assist shows each step while it works.
+
 Without a language model on the disk, Knoc still runs direct commands: `find the invoice`, `move /home/a.txt to /home/Documents`, `stop spin`, `organize my downloads`. To talk to it freely, put the Qwen model on the disk (`make reset-disk DISK_MB=1024` puts `/models/qwen.kllm` there).
 
 ### Apps
@@ -111,6 +114,7 @@ Without a language model on the disk, Knoc still runs direct commands: `find the
 | **Monitor** | Knoc Bar → `monitor` | Load on all 8 cores, memory, and every program with its class, state, CPU time and memory; **Stop program** |
 | **Editor** | Open a text file, or Knoc Bar → `editor` | Line numbers, arrows, Home/End, Page Up/Down, Ctrl S saves |
 | **Viewer** | Open a PNG, JPEG or PPM file | Shows the image scaled to the window |
+| **Web** | Knoc Bar → `web`, an address, or search words | The HTTPS text browser in a Terminal window: page text with numbered links. Type a link's number to open it, `s WORDS` to search, `g ADDRESS` to go somewhere, `u` to go back, `h` for help, `q` to quit |
 
 Your look is saved in `/etc/desktop.conf`. The first time the desktop starts it opens Settings, so you can choose it.
 

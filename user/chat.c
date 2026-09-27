@@ -18,7 +18,7 @@ static void read_line(void)
 
         if (read(FD_STDIN, &c, 1) <= 0)
         {
-            continue;
+            exit(0);
         }
 
         if (c == '\r' || c == '\n')
@@ -192,9 +192,15 @@ int main(void)
 
         remember("you: ", line);
 
-        if (started && assist_continue(line, 1) != 0)
+        int continued = started ? assist_continue(line, 1) : 0;
+
+        if (continued == -1)
         {
             print("chat: the conversation is full, starting a new one\n");
+        }
+
+        if (continued != 0)
+        {
             started = 0;
         }
 

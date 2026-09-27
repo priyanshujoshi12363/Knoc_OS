@@ -591,7 +591,8 @@ int main(void)
             }
 
             int foreground = 0;
-            int expected = !running(culprit_pid(label), &foreground) || (label == 2 && foreground);
+            int expected = !running(culprit_pid(label), &foreground) || (label == 2 && foreground) ||
+                           (label == 2 && strcmp(culprit(label), "desktop") == 0);
 
             if (confidence >= MIN_CONFIDENCE && !expected && (label != 1 || steady_growth()) &&
                 (label != 2 || window[WINDOW - 1].top_cpu >= HOG_TOP_CPU) &&
