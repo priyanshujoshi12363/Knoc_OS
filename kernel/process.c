@@ -19,6 +19,8 @@
 #include "cpu.h"
 #include "aispace.h"
 #include "linux.h"
+#include "screen.h"
+#include "pty.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -94,6 +96,8 @@ typedef struct process
     uintptr_t thread_argument;
     void *linux_state;
     uintptr_t user_sp;
+    int pty;
+    int spawn_pty;
 } process_t;
 
 typedef struct class_info
@@ -550,6 +554,8 @@ static process_t *create_locked(const char *name,
     p->cwd[0] = '/';
     p->cwd[1] = 0;
     p->capture_owner = 0;
+    p->pty = 0;
+    p->spawn_pty = 0;
     p->capture_pid = 0;
     p->capture_quiet = 0;
     p->capture_length = 0;
@@ -658,6 +664,9 @@ static void *user_block(void *context, uint64_t bytes)
 
 static void user_space_free(process_t *p)
 {
+    screen_release(p->pid);
+    pty_release_owner(p->pid);
+
     if (p->linux_state != 0)
     {
         linux_destroy(p->linux_state);
@@ -1002,6 +1011,7 @@ static int spawn(const program_t *program, const char *args, int capture)
     if (current != 0)
     {
         memcpy(p->cwd, current->cwd, PATH_MAX);
+        p->pty = current->spawn_pty ? current->spawn_pty : owner_of(current)->pty;
     }
 
     if (capture && current != 0)
@@ -1012,7 +1022,7 @@ static int spawn(const program_t *program, const char *args, int capture)
         current->capture_length = 0;
     }
 
-    p->mem_limit = program->process_class == PROCESS_CLASS_AI_AGENT
+    p->mem_limit = program->process_class == PROCESS_CLASS_AI_AGENT || (program->flags & PROGRAM_BIG_MEMORY)
                        ? PROCESS_QUOTA_AI_AGENT
                        : PROCESS_QUOTA_DEFAULT;
 
@@ -1035,7 +1045,7 @@ static int spawn(const program_t *program, const char *args, int capture)
 
     int pid = p->pid;
 
-    if ((program->flags & PROGRAM_TERMINAL) && args[0] == 0)
+    if ((program->flags & PROGRAM_TERMINAL) && args[0] == 0 && p->pty == 0)
     {
         tty_set_owner(pid);
     }
@@ -1289,6 +1299,42 @@ void process_note_denied(void)
 {
     count_denied++;
     current->denied++;
+}
+
+int process_map_device(uintptr_t address, uintptr_t physical, uint64_t bytes)
+{
+    process_t *owner = owner_of(current);
+
+    if (!owner->user || owner->user_root == 0 ||
+        vm_user_map(owner->user_root, address, physical, bytes, PTE_R | PTE_W) != 0)
+    {
+        return -1;
+    }
+
+    asm volatile("sfence.vma zero, zero");
+    return owner->pid;
+}
+
+int process_pty(void)
+{
+    return current ? owner_of(current)->pty : 0;
+}
+
+void process_set_spawn_pty(int pty)
+{
+    current->spawn_pty = pty;
+}
+
+int process_pty_of(int pid)
+{
+    process_t *p = find_live(pid);
+
+    return p ? owner_of(p)->pty : 0;
+}
+
+int process_owner_pid(void)
+{
+    return owner_of(current)->pid;
 }
 
 int64_t process_mem_alloc(uint64_t bytes)
@@ -1763,6 +1809,7 @@ int process_thread_spawn(uintptr_t entry, uintptr_t argument, uintptr_t stack)
     p->pin_mask = owner->pin_mask;
     p->capture_owner = owner->capture_owner;
     p->capture_quiet = owner->capture_quiet;
+    p->pty = owner->pty;
     memcpy(p->cwd, owner->cwd, PATH_MAX);
     memcpy(p->args, owner->args, ARGS_MAX);
 
@@ -2417,7 +2464,7 @@ int process_restart(int pid)
 
     int new_pid = p->pid;
 
-    if (p->user && (p->program->flags & PROGRAM_TERMINAL))
+    if (p->user && (p->program->flags & PROGRAM_TERMINAL) && p->pty == 0)
     {
         tty_set_owner(new_pid);
     }

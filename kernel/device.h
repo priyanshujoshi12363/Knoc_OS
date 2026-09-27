@@ -5,6 +5,7 @@
 
 #define DEVICE_MAX 16
 #define DEVICE_NO_IRQ 0
+#define DEVICE_ABSENT -2
 
 typedef struct device
 {

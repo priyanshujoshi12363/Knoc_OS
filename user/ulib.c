@@ -267,6 +267,63 @@ int thread_spawn(void (*function)(void *), void *argument, void *stack, unsigned
     return (int)syscall(SYS_THREAD, (long)thread_entry, (long)start, (long)top);
 }
 
+int knoc_open(const char *path, int flags)
+{
+    return (int)syscall(SYS_OPEN, (long)path, flags, 0);
+}
+
+int knoc_stat(const char *path, file_stat_t *info)
+{
+    return (int)syscall(SYS_STAT, (long)path, (long)info, 0);
+}
+
+int screen_info(screen_info_t *info)
+{
+    return (int)syscall(SYS_SCREEN_INFO, (long)info, 0, 0);
+}
+
+void *screen_map(void)
+{
+    long address = syscall(SYS_SCREEN_MAP, 0, 0, 0);
+
+    return address < 0 ? 0 : (void *)address;
+}
+
+int screen_flush(unsigned int x, unsigned int y, unsigned int width, unsigned int height)
+{
+    return (int)syscall(SYS_SCREEN_FLUSH, x, y, ((long)width << 32) | height);
+}
+
+int input_read(input_event_t *events, unsigned int max, unsigned long timeout)
+{
+    return (int)syscall(SYS_INPUT_READ, (long)events, max, (long)timeout);
+}
+
+int screen_cursor(const uint32_t *pixels, unsigned int hot_x, unsigned int hot_y)
+{
+    return (int)syscall(SYS_SCREEN_CURSOR, (long)pixels, ((long)hot_x << 16) | hot_y, 0);
+}
+
+int pty_open(void)
+{
+    return (int)syscall(SYS_PTY_OPEN, 0, 0, 0);
+}
+
+int pty_spawn(int pty, const char *name, const char *args)
+{
+    return (int)syscall(SYS_PTY_SPAWN, pty, (long)name, (long)(args ? args : ""));
+}
+
+long pty_read(int pty, void *buffer, unsigned long length)
+{
+    return syscall(SYS_PTY_READ, pty, (long)buffer, (long)length);
+}
+
+long pty_write(int pty, const void *buffer, unsigned long length)
+{
+    return syscall(SYS_PTY_WRITE, pty, (long)buffer, (long)length);
+}
+
 int cpuinfo(unsigned long index, cpu_info_t *info)
 {
     return (int)syscall(SYS_CPUINFO, (long)index, (long)info, 0);

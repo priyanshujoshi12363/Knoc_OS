@@ -27,6 +27,9 @@
 #include "virtio_rng.h"
 #include "rtc.h"
 #include "cpu.h"
+#include "virtio_gpu.h"
+#include "virtio_input.h"
+#include "fbcon.h"
 
 #define TIMER_TEST_TICKS 5
 #define TIMER_RUNAWAY_WINDOW 3
@@ -35,7 +38,7 @@
 #define KEY_CTRL_D 0x04
 #define KEY_CTRL_E 0x05
 #define KEY_CTRL_U 0x15
-#define KEY_BACKSPACE 0x7F
+#define CHAR_BACKSPACE 0x7F
 #define KEY_CTRL_F 0x06
 #define KEY_CTRL_K 0x0B
 #define KEY_CTRL_O 0x0F
@@ -451,6 +454,8 @@ static void start_program(const char *name)
     }
 }
 
+static int text_mode;
+
 static void console_process(void *arg)
 {
     (void)arg;
@@ -478,6 +483,17 @@ static void console_process(void *arg)
         if (indexd)
         {
             process_spawn(indexd);
+        }
+
+        const program_t *session = gpu_ready() && !text_mode ? program_installed("session") : 0;
+
+        if (session)
+        {
+            process_spawn(session);
+        }
+        else if (gpu_ready())
+        {
+            fbcon_reveal();
         }
     }
 
@@ -589,7 +605,7 @@ static void console_process(void *arg)
         {
             device_write(console, "\n", 1);
         }
-        else if (c == KEY_BACKSPACE)
+        else if (c == CHAR_BACKSPACE)
         {
             device_write(console, "\b \b", 3);
         }
@@ -733,6 +749,15 @@ void kernel_main(uintptr_t dtb)
     uart_put_uint(fdt.cpu_count);
     uart_puts(" CPUs\n");
     cpu_set_present((int)fdt.cpu_count);
+
+    for (int i = 0; fdt.bootargs[i]; i++)
+    {
+        if (fdt.bootargs[i] == 't' && fdt.bootargs[i + 1] == 'e' && fdt.bootargs[i + 2] == 'x' && fdt.bootargs[i + 3] == 't' &&
+            (i == 0 || fdt.bootargs[i - 1] == ' ') && (fdt.bootargs[i + 4] == 0 || fdt.bootargs[i + 4] == ' '))
+        {
+            text_mode = 1;
+        }
+    }
 
     for (int i = 0; fdt.bootargs[i]; i++)
     {
@@ -987,10 +1012,18 @@ void kernel_main(uintptr_t dtb)
     virtio_blk_register();
     virtio_net_register();
     virtio_rng_register();
+    virtio_gpu_register();
+    virtio_input_register();
     rtc_register();
     faulty_register();
 
+    if (!text_mode)
+    {
+        fbcon_init_splash();
+    }
+
     device_init_all();
+    fbcon_init();
     device_list();
 
     console = device_find("uart0");
@@ -1002,7 +1035,7 @@ void kernel_main(uintptr_t dtb)
         panic("Required device missing");
     }
 
-    if (device_count() != 7 || device_find("missing0") != 0)
+    if (device_count() != 10 || device_find("missing0") != 0)
     {
         panic("Device table test failed");
     }

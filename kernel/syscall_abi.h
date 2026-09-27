@@ -49,7 +49,16 @@
 #define SYS_THREAD 41
 #define SYS_TCP_LISTEN 42
 #define SYS_TCP_ACCEPT 43
-#define SYS_COUNT 44
+#define SYS_SCREEN_INFO 44
+#define SYS_SCREEN_MAP 45
+#define SYS_SCREEN_FLUSH 46
+#define SYS_INPUT_READ 47
+#define SYS_SCREEN_CURSOR 48
+#define SYS_PTY_OPEN 49
+#define SYS_PTY_SPAWN 50
+#define SYS_PTY_READ 51
+#define SYS_PTY_WRITE 52
+#define SYS_COUNT 53
 
 #define RANDOM_MAX 256
 
@@ -91,6 +100,7 @@
 #define E_REFUSED -17
 #define E_NETDOWN -18
 #define E_NODEV -19
+#define E_BUSY -20
 
 /* Capabilities: what a program is allowed to ask the kernel for */
 #define CAP_CONSOLE 0x1
@@ -101,12 +111,14 @@
 #define CAP_SYSTEM 0x20
 #define CAP_KNOWLEDGE 0x40
 #define CAP_NET 0x80
+#define CAP_SCREEN 0x100
 
 /* User address space (Sv39 root slots 64-127, never used by the kernel) */
 #define USER_BASE 0x1000000000UL
 #define USER_CODE_END 0x1040000000UL
 #define USER_HEAP_BASE 0x1100000000UL
 #define USER_HEAP_END 0x1F00000000UL
+#define USER_SCREEN_BASE 0x1F00000000UL
 #define USER_STACK_TOP 0x1F80000000UL
 #define USER_STACK_SIZE (64UL * 1024)
 #define USER_END 0x2000000000UL
@@ -133,6 +145,63 @@ typedef struct dir_entry
     uint64_t size;
     uint64_t modified;
 } dir_entry_t;
+
+typedef struct screen_info
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t format;
+    int32_t owner;
+    uint32_t console_columns;
+    uint32_t console_rows;
+    uint32_t reserved;
+} screen_info_t;
+
+#define SCREEN_FORMAT_XRGB8888 1
+
+#define INPUT_KEY 1
+#define INPUT_MOVE 2
+#define INPUT_BUTTON 3
+#define INPUT_WHEEL 4
+
+#define INPUT_SHIFT 1
+#define INPUT_CTRL 2
+#define INPUT_ALT 4
+#define INPUT_SUPER 8
+
+#define KEY_ESC 1
+#define KEY_BACKSPACE 14
+#define KEY_TAB 15
+#define KEY_ENTER 28
+#define KEY_SPACE 57
+#define KEY_F1 59
+#define KEY_HOME 102
+#define KEY_UP 103
+#define KEY_PAGEUP 104
+#define KEY_LEFT 105
+#define KEY_RIGHT 106
+#define KEY_END 107
+#define KEY_DOWN 108
+#define KEY_PAGEDOWN 109
+#define KEY_DELETE 111
+#define KEY_SUPER 125
+#define KEY_PRINT 99
+
+#define BUTTON_LEFT 1
+#define BUTTON_RIGHT 2
+#define BUTTON_MIDDLE 3
+
+typedef struct input_event
+{
+    uint16_t type;
+    uint16_t code;
+    int32_t value;
+    int32_t x;
+    int32_t y;
+    uint32_t modifiers;
+    uint32_t text;
+} input_event_t;
 
 /* System information for the shell (CAP_SYSTEM) */
 

@@ -3,6 +3,58 @@
 #include "rag.h"
 #include "assist.h"
 
+static void (*output_hook)(const char *text, int length);
+static int (*approve_hook)(const char *tool, const char *description);
+
+static void hooked_write(const void *data, unsigned long length)
+{
+    const char *text = data;
+
+    if (output_hook)
+    {
+        output_hook(text, (int)length);
+    }
+    else
+    {
+        write(FD_STDOUT, text, length);
+    }
+}
+
+static void hooked_print(const char *text)
+{
+    hooked_write(text, strlen(text));
+}
+
+static void hooked_print_uint(unsigned long value)
+{
+    char digits[24];
+    int n = 0;
+
+    do
+    {
+        digits[n++] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value);
+
+    char text[24];
+
+    for (int i = 0; i < n; i++)
+    {
+        text[i] = digits[n - 1 - i];
+    }
+
+    hooked_write(text, (unsigned long)n);
+}
+
+void assist_set_hooks(void (*output)(const char *text, int length), int (*approve)(const char *tool, const char *description))
+{
+    output_hook = output;
+    approve_hook = approve;
+}
+
+#define print hooked_print
+#define print_uint hooked_print_uint
+
 #define APPS_DIR "/etc/apps"
 #define APPS_MAX 16
 #define STEPS_MAX 8
@@ -745,7 +797,7 @@ static void show_script(const char *path)
     print("\n----- ");
     print(path);
     print(" -----\n");
-    write(FD_STDOUT, data, got > 0 ? (unsigned long)got : 0);
+    hooked_write(data, got > 0 ? (unsigned long)got : 0);
 
     if (got > 0 && data[got - 1] != '\n')
     {
@@ -1203,7 +1255,7 @@ static void describe_call(const call_t *call)
         print(i ? ", " : "");
         print(call->args[i].key);
         print("=");
-        write(FD_STDOUT, call->args[i].value, (unsigned long)(length > 60 ? 60 : length));
+        hooked_write(call->args[i].value, (unsigned long)(length > 60 ? 60 : length));
         print(length > 60 ? "..." : "");
     }
 
@@ -1354,7 +1406,20 @@ static void execute(const call_t *call, text_t *out)
         show_script(arg(call, "path"));
     }
 
-    if (risk == RISK_CHANGE && !ask_user())
+    char description[400];
+    text_t d = {description, 0, sizeof(description)};
+
+    description[0] = 0;
+
+    for (int i = 0; i < call->count; i++)
+    {
+        add(&d, i ? "\n" : "");
+        add(&d, call->args[i].key);
+        add(&d, ": ");
+        add(&d, call->args[i].value);
+    }
+
+    if (risk == RISK_CHANGE && !(approve_hook ? approve_hook(call->name, description) : ask_user()))
     {
         add(out, "the user did not allow this");
         print(label);
@@ -1545,6 +1610,64 @@ static int route(const char *request, call_t *calls)
         count++;
     }
 
+    const char *moving = count == 0 ? text_after(request, "move ") : 0;
+
+    if (moving && moving[0] == '/')
+    {
+        char from[160];
+        int n = 0;
+
+        while (moving[n] && moving[n] != ' ' && n < (int)sizeof(from) - 1)
+        {
+            from[n] = moving[n];
+            n++;
+        }
+
+        from[n] = 0;
+
+        const char *target = text_after(moving + n, " to ");
+
+        if (target && target[0] == '/')
+        {
+            char to[160];
+            int m = 0;
+
+            while (target[m] && target[m] != ' ' && m < (int)sizeof(to) - 1)
+            {
+                to[m] = target[m];
+                m++;
+            }
+
+            to[m] = 0;
+
+            file_stat_t target_info;
+            const char *base = 0;
+
+            for (const char *q = from; *q; q++)
+            {
+                if (*q == '/')
+                {
+                    base = q;
+                }
+            }
+
+            if (stat(to, &target_info) == 0 && target_info.type == FILE_TYPE_DIR && base)
+            {
+                int length = (int)strlen(to);
+
+                if (length + (int)strlen(base) < (int)sizeof(to))
+                {
+                    copy_text(to + length, base, (int)sizeof(to) - length);
+                }
+            }
+
+            copy_text(calls[count].name, "move", sizeof(calls[count].name));
+            set_arg(&calls[count], "from", from);
+            set_arg(&calls[count], "to", to);
+            count++;
+        }
+    }
+
     const char *rest = count == 0 ? text_after(request, "find ") : 0;
 
     if (rest && rest[0])
@@ -1705,7 +1828,7 @@ static int generate_step(void)
                 shown = 1;
             }
 
-            write(FD_STDOUT, text, size);
+            hooked_write(text, size);
 
             for (unsigned int i = 0; i < size && reply_length < REPLY_MAX - 1; i++)
             {

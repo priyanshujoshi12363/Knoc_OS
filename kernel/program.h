@@ -20,6 +20,7 @@ typedef struct program
 
 /* The program owns the terminal: it gets the keys the console doesn't use */
 #define PROGRAM_TERMINAL 0x1
+#define PROGRAM_BIG_MEMORY 0x2
 
 const program_t *program_find(const char *name);
 const program_t *program_installed(const char *name);

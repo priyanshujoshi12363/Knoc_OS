@@ -448,3 +448,58 @@ double hypot(double x, double y)
 {
     return sqrt(x * x + y * y);
 }
+
+float floorf(float x)
+{
+    return (float)floor(x);
+}
+
+float ceilf(float x)
+{
+    return (float)ceil(x);
+}
+
+float roundf(float x)
+{
+    return (float)round(x);
+}
+
+long lround(double x)
+{
+    return (long)round(x);
+}
+
+long lroundf(float x)
+{
+    return (long)round(x);
+}
+
+float expf(float x)
+{
+    return (float)exp(x);
+}
+
+float powf(float x, float y)
+{
+    return (float)pow(x, y);
+}
+
+float sinf(float x)
+{
+    return (float)sin(x);
+}
+
+float cosf(float x)
+{
+    return (float)cos(x);
+}
+
+float logf(float x)
+{
+    return (float)log(x);
+}
+
+float fmodf(float x, float y)
+{
+    return (float)fmod(x, y);
+}

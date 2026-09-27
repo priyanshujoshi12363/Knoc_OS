@@ -1,6 +1,8 @@
 #include "tty.h"
 #include "process.h"
 #include "spinlock.h"
+#include "pty.h"
+#include "uart.h"
 
 #define TTY_BUFFER_SIZE 256
 
@@ -29,6 +31,11 @@ void tty_input(char c)
 /* Waits until at least one character is there */
 int64_t tty_read(char *out, uint64_t length)
 {
+    if (process_pty())
+    {
+        return pty_read_input(process_pty(), out, length);
+    }
+
     uint64_t enabled = irq_save();
     uint64_t count = 0;
 
@@ -67,13 +74,44 @@ int tty_foreground(void)
     return foreground_pid != 0 && process_alive(foreground_pid) ? foreground_pid : 0;
 }
 
+void tty_echo(char c)
+{
+    if (process_pty())
+    {
+        pty_output(process_pty(), &c, 1);
+    }
+    else
+    {
+        uart_putc(c);
+    }
+}
+
+void tty_echo_text(const char *text)
+{
+    while (*text)
+    {
+        tty_echo(*text++);
+    }
+}
+
 int tty_has_input(void)
 {
+    if (process_pty())
+    {
+        return pty_has_input(process_pty());
+    }
+
     return head != tail;
 }
 
 void tty_wait_input(uint64_t ticks)
 {
+    if (process_pty())
+    {
+        pty_wait_input(process_pty(), ticks);
+        return;
+    }
+
     uint64_t enabled = irq_save();
 
     if (head == tail && ticks > 0)

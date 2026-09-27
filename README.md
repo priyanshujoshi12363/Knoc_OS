@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.32.0-blue)
+![Version](https://img.shields.io/badge/version-v0.38.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -10,6 +10,114 @@
 It is a bare-metal **RISC-V 64-bit** kernel that runs on the QEMU `virt` machine, written in C and RISC-V assembly with no standard library and no firmware (`-bios none`).
 
 > **Learn → Build → Inspect → Debug → Understand → Repeat**
+
+![The KnocOS desktop: Files and a Terminal running knocsh, over the Ridge wallpaper](docs/screenshots/desktop.png)
+
+| | |
+|---|---|
+| ![Boot screen](docs/screenshots/boot.png) | ![Knoc Bar: search by meaning with a live preview](docs/screenshots/knocbar.png) |
+| **Boot screen** | **Knoc Bar**: open apps, find files by name and by meaning, ask, run |
+| ![Assist asking before a change](docs/screenshots/assist.png) | ![Settings: theme, accent, wallpaper](docs/screenshots/settings.png) |
+| **Assist**: the AI shows every change first, you allow or deny it | **Settings**: Graphite or Paper, five accents, four drawn wallpapers |
+
+![The Paper theme with the Moss accent and the Dune wallpaper](docs/screenshots/paper.png)
+
+The screenshots are real: `scripts/screenshots.sh` boots KnocOS in QEMU, types and clicks through it and saves them.
+
+---
+
+## Quick Start
+
+You need `riscv64-unknown-elf-gcc`, `qemu-system-riscv64` and `python3` (with Pillow for screenshots).
+
+```bash
+make            # build the kernel and every program
+make linux-apps # optional: download BusyBox and the Debian base (bash, Lua) once
+make run-gui    # start KnocOS in a QEMU window with the desktop
+```
+
+`make run-gui` opens a QEMU window (1280 × 800). KnocOS shows its boot screen, then the desktop. The terminal you started it from is the **serial console**: it shows the kernel log and has its own `knocsh`, which keeps working while the desktop runs.
+
+- **Power off:** press Ctrl-D in the serial console (the terminal you ran `make` in), or close the QEMU window
+- **Text only:** `make run` starts KnocOS without a screen, in your terminal
+- **Keyboard grab:** QEMU captures the keyboard when you click into its window. Ctrl-Alt-G releases it
+- **Super key:** if your computer's own desktop takes the Super (Windows) key, use QEMU's window menu *View → Grab input* first
+- **Boot log on screen:** press Esc during the boot screen. Boot with the `text` option (`QEMU_APPEND=text`) to skip the desktop
+
+---
+
+## How to Use KnocOS
+
+### The desktop
+
+| Part | What it does |
+|---|---|
+| **Strip** (bottom) | The Knoc mark and the **Open, find or ask** box, your open windows (numbered 1–9), the core meter (4 kernel cores in grey, 4 AI cores in the accent colour), the network, the clock and the **Knoc** button |
+| **Windows** | Drag a title bar to move a window, drag the bottom-right corner to resize it, double-click the title bar to maximize it. Drag a window to the left or right edge to fill that half, or to the top to maximize it |
+| **Knoc Bar** | Press **Super**, or click the box in the strip. Type anything: apps, settings, files by name, files by meaning, a question for Knoc or a command |
+| **Assist** | Press **Super A**, or click **Knoc** in the strip. The AI panel: talk to Knoc, see what it can see, allow or deny each change it wants to make, undo changes, and read crash reports |
+
+### Keys
+
+| Keys | Action |
+|---|---|
+| **Super** | Open or close the Knoc Bar |
+| **Super A** | Show or hide Assist (Ctrl Space does the same) |
+| **Super T** | New Terminal |
+| **Super E** | Files |
+| **Super 1** … **Super 9** | Switch to window 1–9 in the strip |
+| **Super ←** / **Super →** | Snap the window to the left or right half |
+| **Super ↑** | Maximize the window |
+| **Super ↓** | Restore it, or minimize it |
+| **Super Q** | Close the window |
+| **Alt Tab** | Switch between windows |
+| **Print** | Save a screenshot to `/home/Pictures/Screenshots` |
+
+### Knoc Bar
+
+Type what you want and press **Enter** for the top result:
+
+- `terminal`, `files`, `monitor`, `editor`, `settings`, `text size`, `about`: apps and settings open directly
+- `groceries` or `the invoice from last month`: **files by meaning** (the KnocEmbed index) and files by name, with a live preview on the right
+- **Ctrl Enter** asks Knoc about what you typed; the answer appears in Assist
+- **Shift Enter** runs what you typed as a command in a new Terminal
+- **Tab** changes the scope (All, Files, Apps, Ask), **↑ ↓** move, **Esc** closes
+
+### Assist and change sets
+
+Knoc can read and search on its own. Anything that changes your files or programs becomes a **change set** card that lists exactly what will happen:
+
+```text
+Move a file                                   NEEDS YOU
+from: /home/notes.txt
+to:   /home/Documents/notes.txt
+[Allow]  [Deny]                            Always allow
+```
+
+- **Allow** runs it, **Deny** skips it, **Always allow** stops asking for that kind of change
+- The **Activity** tab lists every allowed change with **Undo**
+- The **Health** tab shows crash reports from the AI space
+- The **Sees** line shows the window Knoc is looking at
+
+Without a language model on the disk, Knoc still runs direct commands: `find the invoice`, `move /home/a.txt to /home/Documents`, `stop spin`, `organize my downloads`. To talk to it freely, put the Qwen model on the disk (`make reset-disk DISK_MB=1024` puts `/models/qwen.kllm` there).
+
+### Apps
+
+| App | How to open | What it does |
+|---|---|---|
+| **Terminal** | Super T | `knocsh`, `bash`, `lua5.4`, BusyBox, `vi`: a real terminal on a kernel pseudo-terminal. Ctrl-C stops the running program |
+| **Files** | Super E | Places, list with size, date and **Placed by** (who put the file there: you, or Knoc's organizer). Type to filter; switch the search to **Meaning**. Double-click or Enter opens; Backspace goes up; Delete twice deletes |
+| **Settings** | Knoc Bar → `settings` | Appearance (Graphite or Paper, five accents, four wallpapers), Display (text size 100–200%), About |
+| **Monitor** | Knoc Bar → `monitor` | Load on all 8 cores, memory, and every program with its class, state, CPU time and memory; **Stop program** |
+| **Editor** | Open a text file, or Knoc Bar → `editor` | Line numbers, arrows, Home/End, Page Up/Down, Ctrl S saves |
+| **Viewer** | Open a PNG, JPEG or PPM file | Shows the image scaled to the window |
+
+Your look is saved in `/etc/desktop.conf`. The first time the desktop starts it opens Settings, so you can choose it.
+
+### Programs you can run in a Terminal
+
+`help` lists everything. Some favourites: `ls`, `cat`, `find the invoice`, `chat` (talk to the LLM), `agent`, `organize`, `web example.com`, `tcc` (the C compiler), `gfx` (the graphics demo), `cpus`, `ps`, `memory recent`, `knocnet`, and Linux programs such as `bash`, `lua5.4`, `vi` and every BusyBox tool.
+
 
 ---
 
@@ -136,7 +244,18 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Dynamic Linux Programs (v0.32.0)
+## ✅ Just Completed: The Desktop (v0.33.0 – v0.38.0)
+
+**KnocOS has a graphical desktop, with the AI built in.** Everything on the screen is drawn by KnocOS itself: no X11, no GTK, no GPU.
+
+- **Graphics (v0.33):** a virtio-gpu screen driver, 32-bit colour, the kernel console drawn on screen with a smooth JetBrains Mono font and coloured log tags, a graphics library (`user/draw.c`: shapes, transparency, smooth text through stb_truetype, PNG and JPEG through stb_image), four drawn wallpapers, and `gfx`
+- **Input (v0.34):** virtio keyboard and mouse drivers; the kernel moves the hardware cursor itself, so it stays smooth when programs are busy
+- **Window system (v0.35):** the `desktop` compositor redraws only what changed; kernel pseudo-terminals give the Terminal a real `knocsh`, `bash` or `vi`
+- **Desktop (v0.36):** the strip, Files with **Placed by**, Settings, Monitor, Editor, Viewer, notifications, screenshots
+- **Knoc (v0.37):** the Knoc Bar (search by name and by meaning, live preview, ask, run) and Assist (session log, change sets with Allow and Deny, Activity with Undo, Health)
+- **Finish (v0.38):** the boot screen, the desktop starting on its own with a `session` that restarts it after a crash, the first-start welcome, text size from 100% to 200%
+
+## Dynamic Linux Programs (v0.32.0)
 
 **Normal Linux programs, with shared libraries, run on KnocOS.** glibc's own loader starts them and loads their libraries from a Debian base on the disk:
 
@@ -1210,7 +1329,8 @@ Requirements: `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-ld`, `qemu-system-
 
 ```bash
 make            # build knocos.elf
-make run        # boot KnocOS in QEMU (power off: Ctrl-D, force quit: Ctrl-A then X)
+make run        # boot KnocOS in QEMU, text only (power off: Ctrl-D, force quit: Ctrl-A then X)
+make run-gui    # boot KnocOS in a QEMU window with the desktop (GUI_DISPLAY=sdl to use SDL instead of GTK)
 make test       # boot twice with a fresh test disk, run every self-test, print PASS/FAIL
 make clean      # remove build artifacts (keeps disk.img)
 make reset-disk # recreate disk.img: 64 MiB KnocFS with /bin, /models, /home, /tmp (DISK_MB=4096 for a bigger one)
@@ -1219,6 +1339,7 @@ make ls DIR=/models             # list a directory on the disk
 make size       # kernel / stack size info
 make pages      # physical page layout summary
 make timer-test # run the standalone mtime printer (timer.elf)
+./scripts/screenshots.sh  # boot KnocOS, click through the desktop and save docs/screenshots/*.png
 ```
 
 Compiler flags:

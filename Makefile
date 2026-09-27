@@ -61,24 +61,33 @@ KERNEL_OBJS = boot/boot.o \
               kernel/rtc.o \
               kernel/cpu.o \
               kernel/linux.o \
-              kernel/aispace.o
+              kernel/aispace.o \
+              kernel/virtio_gpu.o \
+              kernel/fbcon.o \
+              kernel/screen.o \
+              kernel/input.o \
+              kernel/virtio_input.o \
+              kernel/pty.o
 
 TIMER_OBJS = timer/timer.o
 
-USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat organized
+USER_PROGRAMS = hello badcall noperm hog bigmem crash spy files modelcheck knocsh counter organize leak spin diskload quiet spawner filler recorder healthd ask agent chat organized session
 USER_LIB_OBJS = user/crt0.o user/ulib.o user/nn.o
 LIBC_OBJS = user/libc/stdio.o user/libc/stdlib.o user/libc/string.o user/libc/ctype.o user/libc/math.o user/libc/misc.o user/libc/posix.o user/libc/pthread.o user/libc/setjmp.o
 LIBC_CRT = user/libc/crt1.o
-LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest knocnet knocnetd find index indexd
+LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest knocnet knocnetd find index indexd gfx
 SEARCH_PROGRAMS = find index indexd
+GUI_PROGRAMS = gfx
+GUI_OBJS = user/draw.o user/wallpaper.o user/stb.o
+DESKTOP_OBJS = user/desktop/main.o user/desktop/ui.o user/desktop/term.o user/desktop/apps.o user/desktop/knoc.o
 HTTP_PROGRAMS = fetch web
 KNOCNET_PROGRAMS = knocnet knocnetd
-USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf) user/linuxtest.elf
-USER_OBJS = $(USER_LIB_OBJS) user/http.o user/knocnet_proto.o user/search.o user/embed.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
+USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf) user/linuxtest.elf user/desktop.elf
+USER_OBJS = $(USER_LIB_OBJS) $(GUI_OBJS) $(DESKTOP_OBJS) user/http.o user/knocnet_proto.o user/search.o user/embed.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
-DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
+DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d) $(DESKTOP_AI_OBJS:.o=.d)
 
-.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls tcc-sdk linux-apps
+.PHONY: all clean run run-gui test timer-test size pages reset-disk sync-programs put ls tcc-sdk linux-apps
 
 
 all: knocos.elf tcc-sdk
@@ -164,9 +173,30 @@ user/ask.elf: user/ask.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) use
 user/agent.elf: user/agent.o user/assist.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/agent.o user/assist.o user/llm.o user/rag.o user/embed.o
 
-$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o) user/http.o user/knocnet_proto.o user/search.o: CFLAGS += -isystem user/libc/include
+$(LIBC_OBJS) $(LIBC_CRT) $(LIBC_PROGRAMS:%=user/%.o) $(GUI_OBJS) user/http.o user/knocnet_proto.o user/search.o: CFLAGS += -isystem user/libc/include
 
-$(filter-out $(HTTP_PROGRAMS:%=user/%.elf) $(KNOCNET_PROGRAMS:%=user/%.elf) $(SEARCH_PROGRAMS:%=user/%.elf),$(LIBC_PROGRAMS:%=user/%.elf)): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+user/draw.o user/wallpaper.o: CFLAGS += -O2
+
+KNOC_NAMES = -Dopen=knoc_open -Dstat=knoc_stat
+DESKTOP_AI_OBJS = build/desktop/assist.o build/desktop/llm.o build/desktop/rag.o build/desktop/embed.o build/desktop/nn.o
+
+$(DESKTOP_OBJS): CFLAGS += -isystem user/libc/include -O2 $(KNOC_NAMES)
+
+build/desktop/%.o: user/%.c
+	@mkdir -p build/desktop
+	$(CC) $(CFLAGS) $(KNOC_NAMES) -O3 -funroll-loops -c -o $@ $<
+
+user/desktop.elf: $(DESKTOP_OBJS) $(GUI_OBJS) $(DESKTOP_AI_OBJS) $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $(DESKTOP_OBJS) $(GUI_OBJS) $(DESKTOP_AI_OBJS) $(LIBC_OBJS) user/ulib.o $(LIBGCC)
+
+user/stb.o: user/stb.c third_party/stb/stb_truetype.h third_party/stb/stb_image.h
+	$(CC) -march=rv64g -mabi=lp64d -mcmodel=medany -ffreestanding -fno-pie -fno-pic -nostdlib -O2 -w \
+		-isystem user/libc/include -c -o $@ $<
+
+$(GUI_PROGRAMS:%=user/%.elf): user/%.elf: user/%.o $(GUI_OBJS) $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
+	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< $(GUI_OBJS) $(LIBC_OBJS) user/ulib.o $(LIBGCC)
+
+$(filter-out $(HTTP_PROGRAMS:%=user/%.elf) $(KNOCNET_PROGRAMS:%=user/%.elf) $(SEARCH_PROGRAMS:%=user/%.elf) $(GUI_PROGRAMS:%=user/%.elf),$(LIBC_PROGRAMS:%=user/%.elf)): user/%.elf: user/%.o $(LIBC_CRT) $(LIBC_OBJS) user/ulib.o user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(LIBC_CRT) $< $(LIBC_OBJS) user/ulib.o $(LIBGCC)
 
 BEARSSL_DIR = third_party/bearssl
@@ -220,6 +250,19 @@ timer.elf: $(TIMER_OBJS) timer/linker.ld
 
 kernel/main.o: VERSION
 
+build/mkfont: tools/mkfont.c third_party/stb/stb_truetype.h
+	@mkdir -p build
+	gcc -O2 -w -o $@ tools/mkfont.c -lm
+
+build/console_font.h: build/mkfont third_party/fonts/JetBrainsMono-Regular.ttf
+	build/mkfont third_party/fonts/JetBrainsMono-Regular.ttf 16 $@
+
+build/splash_font.h: build/mkfont third_party/fonts/HankenGrotesk-SemiBold.ttf
+	build/mkfont third_party/fonts/HankenGrotesk-SemiBold.ttf 46 $@ splash
+
+kernel/fbcon.o: build/console_font.h build/splash_font.h
+kernel/fbcon.o: CFLAGS += -Ibuild
+
 user/ask.o user/llm.o: CFLAGS += -O3 -funroll-loops
 
 -include $(DEPS)
@@ -236,7 +279,7 @@ reset-disk: $(USER_ELFS) tcc-sdk
 
 # Copy freshly built programs into /bin, keeping every other file on the disk
 sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
-	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS) linuxtest; do \
+	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS) linuxtest desktop; do \
 		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
 			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
 	done
@@ -244,6 +287,8 @@ sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	@./scripts/sdk.sh $(DISK)
 	@./scripts/etc.sh $(DISK)
 	@[ ! -f models/embed/knocembed.knm ] || $(KNOCFS) put $(DISK) models/embed/knocembed.knm /models/knocembed.knm
+	@$(KNOCFS) mkdir $(DISK) /fonts 2>/dev/null || true
+	@for font in third_party/fonts/*.ttf; do $(KNOCFS) put $(DISK) $$font /fonts/$$(basename $$font); done
 	@[ ! -f build/linux/busybox ] || $(KNOCFS) put $(DISK) build/linux/busybox /bin/busybox
 	@[ ! -f build/linux/root/.complete ] || $(KNOCFS) put-tree $(DISK) build/linux/root /
 	@for manifest in apps/*.app; do \
@@ -260,6 +305,12 @@ ls: $(DISK)
 
 run: knocos.elf sync-programs
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISK_FLAGS) -kernel knocos.elf
+
+GUI_DISPLAY ?= gtk,zoom-to-fit=off
+run-gui: knocos.elf sync-programs
+	$(QEMU) -machine virt -smp 8 -m $(RAM) -bios none -serial mon:stdio -display $(GUI_DISPLAY) \
+		$(QEMU_DISK_FLAGS) -device virtio-gpu-device,xres=1280,yres=800,bus=virtio-mmio-bus.3 \
+		-device virtio-keyboard-device,bus=virtio-mmio-bus.4 -device virtio-tablet-device,bus=virtio-mmio-bus.5 -kernel knocos.elf
 
 test: knocos.elf tcc-sdk
 	./scripts/test.sh

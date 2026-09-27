@@ -31,3 +31,16 @@ KnocOS changes, all behind `TCC_KNOCOS`:
 - `riscv64-link.c`: programs start at `0x1000000000`, the start of KnocOS user space
 - `libtcc.c`: programs are linked statically by default
 - `config.h`: replaced by a minimal KnocOS version (the rest comes from `TCC_DEFS` in the `Makefile`)
+
+## stb (`stb/`)
+
+- Source: https://github.com/nothings/stb, commit `2c980bb`: `stb_truetype.h` (v1.26) and `stb_image.h` (v2.30), unchanged
+- License: public domain or MIT, your choice (at the end of each file)
+- Used for: drawing fonts (`stb_truetype`) and reading PNG and JPEG images (`stb_image`) in the graphics library `user/gfx.c`, and at build time by `tools/mkfont.c`, which makes the kernel's console font
+
+## Fonts (`fonts/`)
+
+- JetBrains Mono Regular (https://github.com/JetBrains/JetBrainsMono), Hanken Grotesk (https://github.com/marcologous/hanken-grotesk), Martian Mono (https://github.com/evilmartians/mono)
+- License: SIL Open Font License 1.1, no Reserved Font Names (see `fonts/OFL-*.txt`)
+- Hanken Grotesk and Martian Mono come as variable fonts from Google Fonts (`ofl/hankengrotesk`, `ofl/martianmono`). They were turned into fixed instances with fontTools `instancer`: Hanken Grotesk Regular (weight 400) and SemiBold (600), Martian Mono Regular (weight 400, width 100)
+- Used for: the KnocOS interface (Hanken Grotesk), labels and numbers (Martian Mono), the terminal and the kernel console (JetBrains Mono); they are copied to `/fonts` on the disk

@@ -148,7 +148,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler find healthd hello hog indexd index knocnetd knocnet knocsh leak libctest linuxtest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web busybox" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date desktop diskload fetch files filler find gfx healthd hello hog indexd index knocnetd knocnet knocsh leak libctest linuxtest modelcheck net noperm organized organize ping quiet recorder session spawner spin spy tcc threadtest web busybox" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -876,6 +876,90 @@ else
     echo "  MISS readlink shows the link target"
     FAILED=1
 fi
+show_log_on_failure
+
+screen_check() {
+    if python3 scripts/pixels.py "$@"; then
+        return 0
+    fi
+    FAILED=1
+}
+
+echo "Run 21: graphics: the console on the screen, smooth fonts, drawn wallpapers, a program taking the screen"
+new_disk
+rm -f "$WWW/qmp.sock"
+QMP_SOCKET="$WWW/qmp.sock" QEMU_APPEND=text boot "echo console on screen" "@shot $WWW/console.ppm" "gfx 8" "@wait 5" \
+    "@shot $WWW/gfx.ppm" "sleep 5" "echo back to text" "@shot $WWW/back.ppm"
+check \
+    "Screen: 1280x800 pixels, 32-bit colour (virtio-gpu)" \
+    "Device ready: gpu0 (IRQ 4)" \
+    "[SCREEN] gfx took the screen" \
+    "gfx: 1280x800, ridge wallpaper, ember accent, graphite theme, fonts ok" \
+    "[SCREEN] the console is back on the screen"
+check_absent "Unexpected external interrupt"
+screen_check "$WWW/console.ppm" is:1270,790=121416 "bright:0,0,1280,400>2000"
+screen_check "$WWW/gfx.ppm" is:136,400=F08A5D is:200,400=9CC58A is:264,400=D9BC8C is:328,400=E892AE \
+    is:392,400=E8E9EA is:600,300=1A1D20 not:1000,250=121416 "bright:100,140,500,40>400"
+screen_check "$WWW/back.ppm" is:1270,790=121416 not:136,400=F08A5D
+show_log_on_failure
+
+echo "Run 22: the desktop: boot screen, first-start welcome, keyboard and mouse, windows, the Terminal on a pseudo-terminal"
+new_disk
+rm -f "$WWW/qmp.sock"
+QMP_SOCKET="$WWW/qmp.sock" boot "@wait 8" "@shot $WWW/welcome.ppm" "@keys {meta_l+q}" "@wait 3" "@shot $WWW/desktop.ppm" "@keys {meta_l+t}" "@wait 5" \
+    "@keys echo typed in a window > /home/term.txt{ret}" "@wait 4" "@shot $WWW/terminal.ppm" "@click 747 53" "@wait 3" \
+    "@keys {meta_l+e}" "@wait 4" "@shot $WWW/files.ppm" "@keys {meta_l+q}" "@wait 3" "cat /home/term.txt" "sleep 2"
+check \
+    "Device ready: keyboard0 (IRQ 5)" \
+    "Device ready: mouse0 (IRQ 6)" \
+    "[SCREEN] desktop took the screen" \
+    "[DESKTOP] ready: 1280x800, graphite theme, ember accent, ridge wallpaper" \
+    "[DESKTOP] first start: welcome" \
+    "notification: Welcome to KnocOS" \
+    "[DESKTOP] opened Terminal" \
+    "[DESKTOP] closed Terminal" \
+    "[DESKTOP] opened Files" \
+    "[DESKTOP] closed Files" \
+    "typed in a window"
+check_absent "CPU hog in desktop" "[OOPS]"
+screen_check "$WWW/desktop.ppm" not:640,250=121416 "bright:700,745,240,36>60"
+screen_check "$WWW/terminal.ppm" is:400,300=0D0F11 "bright:60,80,700,380>200"
+screen_check "$WWW/files.ppm" is:120,420=1A1D20
+show_log_on_failure
+
+echo "Run 23: Knoc: the Knoc Bar finds by meaning, Assist asks before a change, undo, Settings"
+new_disk
+python3 tools/knocfs.py put-text "$DISK" /home/notes.txt "Groceries: milk, eggs, bread. Call the bank about the invoice."
+python3 tools/knocfs.py mkdir "$DISK" /home/Documents
+python3 tools/knocfs.py put-text "$DISK" /etc/desktop.conf "theme=graphite
+accent=ember
+wallpaper=ridge
+scale=100"
+rm -f "$WWW/qmp.sock"
+QMP_SOCKET="$WWW/qmp.sock" boot "@wait 8" "@keys {meta_l}" "@wait 2" "@keys groceries" "@wait 15" "@shot $WWW/bar.ppm" \
+    "@keys {esc}" "@wait 2" "@keys {meta_l+a}" "@wait 2" "@keys move /home/notes.txt to /home/Documents{ret}" "@wait 8" \
+    "@shot $WWW/card.ppm" "@click 942 326" "@wait 5" "ls /home/Documents" "@click 989 71" "@wait 2" "@click 1225 172" \
+    "@wait 4" "ls /home" "@keys {meta_l+a}" "@wait 2" "@keys {meta_l}" "@wait 1" "@keys settings{ret}" "@wait 5" \
+    "@click 505 164" "@wait 8" "@shot $WWW/paper.ppm" "cat /etc/desktop.conf" "sleep 2"
+check \
+    "[DESKTOP] knoc bar open" \
+    "[DESKTOP] asked Knoc: move /home/notes.txt to /home/Documents" \
+    "[DESKTOP] Knoc asks: move" \
+    "[DESKTOP] change allowed" \
+    "[DESKTOP] change undone" \
+    "[DESKTOP] opened Settings" \
+    "[DESKTOP] theme paper" \
+    "theme=paper"
+DOC_COUNT=$(tr -d '\r' < "$LOG" | grep -cE "^ +[0-9]+ +notes\.txt$")
+if [ "$DOC_COUNT" -ge 2 ]; then
+    echo "  ok   the file moved to Documents, then Undo brought it back"
+else
+    echo "  MISS the file moved to Documents and back (found $DOC_COUNT listings)"
+    FAILED=1
+fi
+screen_check "$WWW/bar.ppm" "bright:240,160,500,300>300"
+screen_check "$WWW/card.ppm" is:1100,700=1A1D20 "bright:900,150,370,200>300"
+screen_check "$WWW/paper.ppm" is:700,500=FBFBFC not:1100,30=121416
 show_log_on_failure
 
 echo "RESULT: PASS"

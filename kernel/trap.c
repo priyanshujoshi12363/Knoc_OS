@@ -8,6 +8,7 @@
 #include "uart.h"
 #include "syscall.h"
 #include "cpu.h"
+#include "fbcon.h"
 
 #define SCAUSE_INTERRUPT (1UL << 63)
 #define SCAUSE_CODE_MASK (~SCAUSE_INTERRUPT)
@@ -164,6 +165,7 @@ static void handle_trap(trap_frame_t *frame)
             {
                 timer_tick(1);
                 guardian_heartbeat();
+                fbcon_tick();
             }
 
             scheduler_tick();

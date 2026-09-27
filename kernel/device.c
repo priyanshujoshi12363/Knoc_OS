@@ -75,10 +75,16 @@ void device_init_all(void)
         }
 
         const char *previous = process_driver_enter(dev->name);
-        int failed = dev->init != 0 && dev->init(dev) != 0;
+        int result = dev->init != 0 ? dev->init(dev) : 0;
         process_driver_leave(previous);
 
-        if (failed)
+        if (result == DEVICE_ABSENT)
+        {
+            print_device("Device not present: ", dev);
+            continue;
+        }
+
+        if (result != 0)
         {
             print_device("Device failed: ", dev);
             continue;

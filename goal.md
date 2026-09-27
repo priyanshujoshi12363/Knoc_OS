@@ -184,12 +184,18 @@ People can move to KnocOS without losing their software.
 | v0.30.0 | 2026-09-27 | Search by meaning: `find` with dates and types, the KnocEmbed model, the `indexd` index, file dates, memory facts by meaning |
 | v0.31.0 | 2026-09-27 | Linux programs: a Linux system call layer, BusyBox from Debian runs unchanged (`grep`, `tar`, `vi`, `top`...), `/proc`, devices moved high in memory |
 | v0.32.0 | 2026-09-27 | Dynamic Linux programs: glibc's loader and libraries, page-by-page `mmap` / `mprotect` / `munmap`, symbolic links, a Debian base with bash and Lua |
+| v0.33.0 | 2026-09-27 | Graphics: virtio-gpu, the console on screen, the drawing library with fonts and images, drawn wallpapers, `gfx` |
+| v0.34.0 | 2026-09-27 | Keyboard and mouse: virtio-input, an input event queue, a hardware cursor moved by the kernel |
+| v0.35.0 | 2026-09-27 | Window system: the `desktop` compositor, kernel pseudo-terminals, the Terminal app |
+| v0.36.0 | 2026-09-27 | Desktop: the strip, Files with Placed by, Settings, Monitor, Editor, Viewer |
+| v0.37.0 | 2026-09-27 | Knoc: the Knoc Bar (search by meaning, preview, ask, run) and Assist (change sets, undo, health) |
+| v0.38.0 | 2026-09-27 | The boot screen, the desktop starting by itself with a restarting session, first-start welcome, README screenshots and guide |
 
 ---
 
 ## 4c. Roadmap (next)
 
-Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI last**. Each version is one milestone; big ones are split into sub-steps when we reach them.
+Order: **features first, speed later** (no RISC-V hardware yet). The GUI moved ahead of the remaining Linux work on 2026-09-27; Windows programs come last. Each version is one milestone; big ones are split into sub-steps when we reach them.
 
 ### Phase 1: Automation and conversation
 
@@ -229,27 +235,36 @@ Order: **features first, speed later** (no RISC-V hardware yet), and **the GUI l
 |---|---|---|---|
 | **v0.31.0** ✅ | Linux app compatibility | Linux ELF loader and system call layer, static programs (BusyBox) | Linux programs run on KnocOS |
 | **v0.32.0** ✅ | Dynamic Linux programs | Linux's loader and shared libraries from a Debian base on the disk, real `mmap` / `munmap` / `mprotect` | Most normal Linux programs run |
-| v0.33.0 | Linux processes | `fork`, `exec`, `wait`, pipes, signals (Ctrl-C, Ctrl-Z), process groups | `bash`, `busybox sh`, pipelines, `make` |
-| v0.34.0 | Linux threads + network | `clone` threads, `futex`, sockets, `epoll` | `curl`, `git`, `python3`, `pip` |
-| v0.35.0 | App installer | `knoc install NAME`: Debian RISC-V packages with their dependencies | Thousands of Linux programs |
 
 macOS programs are not planned: their apps need Apple's closed frameworks (Cocoa, Metal). Most tools Mac users need also exist for Linux.
 
-### Phase 6: Smooth GUI
+### Phase 6: The desktop ✅
 
 | Version | Milestone | What we build |
 |---|---|---|
-| v0.36.0 | Graphics | virtio-gpu framebuffer, pixels, fonts |
-| v0.37.0 | Input | Mouse and keyboard events |
-| v0.38.0 | Window system | Windows, compositing, apps drawing on screen |
-| v0.39.0 | Desktop + AI panel | Desktop, chat with the LLM, memory graph viewer, organizer, health |
+| **v0.33.0** ✅ | Graphics | virtio-gpu, the console on screen, fonts, drawn wallpapers |
+| **v0.34.0** ✅ | Input | Keyboard and mouse, a hardware cursor |
+| **v0.35.0** ✅ | Window system | The `desktop` compositor, pseudo-terminals, the Terminal |
+| **v0.36.0** ✅ | Desktop | The strip, Files, Settings, Monitor, Editor, Viewer |
+| **v0.37.0** ✅ | Knoc | The Knoc Bar and Assist with change sets |
+| **v0.38.0** ✅ | Finish | Boot screen, automatic start, restart after a crash, welcome |
 
-### Phase 7: Windows programs (last)
+### Phase 7: More Linux software
+
+| Version | Milestone | What we build | Result |
+|---|---|---|---|
+| v0.39.0 | Linux processes | `fork`, `exec`, `wait`, pipes, signals (Ctrl-C, Ctrl-Z), process groups, terminal size from the pseudo-terminal | `bash`, `busybox sh`, pipelines, `make` |
+| v0.40.0 | Linux threads + network | `clone` threads, `futex`, sockets, `epoll`; a small X11/Wayland bridge for Linux GUI apps | `curl`, `git`, `python3`, `pip` |
+| v0.41.0 | App installer | `knoc install NAME`: Debian RISC-V packages with their dependencies | Thousands of Linux programs |
+
+Desktop follow-ups (alongside): programs in their own processes drawing their own windows, a Memory Graph app, Web in a window, the clipboard, animations, a high-contrast theme, screen resizing.
+
+### Phase 8: Windows programs (last)
 
 | Version | Milestone | What we build |
 |---|---|---|
-| v0.40.0 | Windows command-line programs | Box64 (x86-64 to RISC-V) and Wine running on KnocOS's Linux layer |
-| v0.41.0 | Windows programs with windows | Wine on the KnocOS window system |
+| v0.42.0 | Windows command-line programs | Box64 (x86-64 to RISC-V) and Wine running on KnocOS's Linux layer |
+| v0.43.0 | Windows programs with windows | Wine on the KnocOS window system |
 
 ### Hardware track (when a board arrives, alongside the phases above)
 

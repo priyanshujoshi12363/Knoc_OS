@@ -325,7 +325,8 @@ static int running(int pid, int *foreground)
 
 static int protected_program(const char *name)
 {
-    return strcmp(name, "knocsh") == 0 || strcmp(name, "healthd") == 0 || strcmp(name, "unknown") == 0;
+    return strcmp(name, "knocsh") == 0 || strcmp(name, "healthd") == 0 || strcmp(name, "unknown") == 0 ||
+           strcmp(name, "desktop") == 0;
 }
 
 static int disk_full_soon(void)

@@ -3,6 +3,7 @@
 #include "guardian.h"
 #include "trap.h"
 #include "spinlock.h"
+#include "fbcon.h"
 
 void log_info(const char *message)
 {

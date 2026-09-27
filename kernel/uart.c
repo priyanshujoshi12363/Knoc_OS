@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "fbcon.h"
 #include "mmio.h"
 #include "device.h"
 #include "mailbox.h"
@@ -105,6 +106,7 @@ void uart_putc(char c)
     }
 
     uart_write_reg(UART_THR, (uint8_t)c);
+    fbcon_putc(c);
 
     if (c == '\n')
     {
@@ -171,6 +173,21 @@ static void uart_interrupt(void)
     }
 
     process_wake(&rx_channel);
+}
+
+void uart_inject(char c)
+{
+    uint64_t enabled = irq_save();
+    uint32_t next = (rx_head + 1) % UART_RX_BUFFER_SIZE;
+
+    if (next != rx_tail)
+    {
+        rx_buffer[rx_head] = c;
+        rx_head = next;
+    }
+
+    process_wake(&rx_channel);
+    irq_restore(enabled);
 }
 
 /* Sleep until a key arrives (no polling): the RX interrupt wakes us */

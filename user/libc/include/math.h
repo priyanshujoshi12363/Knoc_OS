@@ -46,5 +46,16 @@ double frexp(double x, int *exponent);
 double modf(double x, double *whole);
 float sqrtf(float x);
 float fabsf(float x);
+float floorf(float x);
+float ceilf(float x);
+float roundf(float x);
+long lround(double x);
+long lroundf(float x);
+float expf(float x);
+float powf(float x, float y);
+float sinf(float x);
+float cosf(float x);
+float logf(float x);
+float fmodf(float x, float y);
 
 #endif

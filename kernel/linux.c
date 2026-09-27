@@ -1126,7 +1126,7 @@ static int64_t console_read_line(linux_state_t *s, uintptr_t buffer, uint64_t le
         {
             for (int64_t i = 0; i < n; i++)
             {
-                uart_putc(chunk[i]);
+                tty_echo(chunk[i]);
             }
         }
 
@@ -1150,7 +1150,7 @@ static int64_t console_read_line(linux_state_t *s, uintptr_t buffer, uint64_t le
 
                 if (local & 010)
                 {
-                    uart_putc('\n');
+                    tty_echo('\n');
                 }
 
                 break;
@@ -1174,7 +1174,7 @@ static int64_t console_read_line(linux_state_t *s, uintptr_t buffer, uint64_t le
 
                     if (local & 010)
                     {
-                        uart_puts("\b \b");
+                        tty_echo_text("\b \b");
                     }
                 }
 
@@ -1187,7 +1187,7 @@ static int64_t console_read_line(linux_state_t *s, uintptr_t buffer, uint64_t le
 
                 if (local & 010)
                 {
-                    uart_putc(c);
+                    tty_echo(c);
                 }
             }
         }

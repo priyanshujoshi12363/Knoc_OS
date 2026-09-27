@@ -32,6 +32,11 @@ done
 
 ./scripts/sdk.sh "$DISK"
 
+$KNOCFS mkdir "$DISK" /fonts
+for font in third_party/fonts/*.ttf; do
+    $KNOCFS put "$DISK" "$font" "/fonts/$(basename "$font")"
+done
+
 if [ -f build/linux/busybox ]; then
     $KNOCFS put "$DISK" build/linux/busybox /bin/busybox
 fi

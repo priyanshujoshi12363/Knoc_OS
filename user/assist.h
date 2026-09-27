@@ -29,5 +29,6 @@ int assist_begin(const char *message, int with_facts);
 int assist_continue(const char *message, int with_facts);
 int assist_reply(void);
 const char *assist_last_reply(void);
+void assist_set_hooks(void (*output)(const char *text, int length), int (*approve)(const char *tool, const char *description));
 
 #endif

@@ -2,6 +2,76 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.38.0] - 2026-09-27
+
+The boot screen, a desktop that starts by itself, and finishing touches.
+
+### Added
+- A boot screen: the KnocOS wordmark (Hanken Grotesk, baked into the kernel at build time), Knoc's four squares, a progress bar and the current boot step; Esc shows the boot log, and a program taking the screen (or 30 seconds without one) ends it
+- The desktop starts by itself when there is a screen: `session` starts `desktop` and starts it again after a crash, up to 3 times in a row; the `text` boot option keeps the text console
+- First start: the desktop opens Settings › Appearance with a welcome note, then saves `/etc/desktop.conf`
+- `scripts/screenshots.sh` boots KnocOS, clicks through the desktop and saves `docs/screenshots/*.png`; the README shows them, with a guide to the desktop, the keys, the Knoc Bar, Assist and the apps
+- `make test` Run 22 (the desktop: welcome, keyboard, mouse, windows, the Terminal) and Run 23 (Knoc Bar by meaning, a change set allowed and undone, the Paper theme)
+
+### Changed
+- The health watch never lowers the desktop's priority
+- Window borders and shadows only touch their edges, and colour blending uses shifts instead of divisions: typing in a window costs about a third of the CPU it did
+
+## [0.37.0] - 2026-09-27
+
+Knoc in the desktop: the Knoc Bar and Assist.
+
+### Added
+- The Knoc Bar (Super): apps, settings, files by name and files by meaning (the KnocEmbed index, searched on a thread), a question for Knoc and a command, in one ranked list with a live preview (text and images) and scopes (Tab)
+- Assist (Super A): a session log with each tool step, the "Sees" and "Can" lines, change sets (every change the agent wants to make, listed exactly, with Allow, Deny and Always allow), an Activity tab with Undo for allowed moves, and a Health tab with the AI space's crash reports; the agent runs on its own thread
+- The agent library reports through hooks (`assist_set_hooks`), so the desktop shows its output and asks for approval with cards instead of `(y/n)` on the console; direct commands like `move /home/a.txt to /home/Documents` work without a language model
+- `knoc_open` and `knoc_stat` in `ulib`, and the AI libraries built a second time for programs that use the C library, so libc's POSIX `open` and `stat` can't be mixed up with the kernel's
+
+## [0.36.0] - 2026-09-27
+
+The desktop and its apps.
+
+### Added
+- The strip: the Knoc mark and the Knoc Bar box, numbered windows, a core meter (4 kernel cores and 4 AI cores, updated every second), the network and the clock, and the Knoc button
+- Files: places, a list with size, date and **Placed by** (from the memory graph: you or Knoc's organizer), filter by name, search by meaning, open, go up, delete with a confirmation
+- Settings: Graphite or Paper, five accents (Ember, Moss, Sand, Rose, Mono), four wallpapers with live thumbnails, text size from 100% to 200%, About
+- Monitor (8 cores, memory, every program; stop a program), Editor (line numbers, Ctrl S saves), Viewer (PNG, JPEG, PPM)
+- Notifications, and screenshots with the Print key
+
+## [0.35.0] - 2026-09-27
+
+A window system.
+
+### Added
+- `desktop`: a compositor that redraws only the changed part of the screen, with windows that move, resize, snap to halves, maximize, minimize and close, drawn to the approved design (7 px corners, hairline borders, soft shadows)
+- Pseudo-terminals in the kernel: `pty_open`, `pty_spawn`, `pty_read`, `pty_write`; a program started on one (and everything it starts) reads and writes it instead of the serial console, Linux programs too, and Ctrl-C stops its foreground program
+- The Terminal app: a terminal emulator (colours, cursor movement, scroll regions) on a pseudo-terminal, running `knocsh`
+- Installed programs can ask for more memory (`desktop` gets the AI quota) and the desktop gets the SPAWN, SYSTEM and KNOWLEDGE capabilities
+
+## [0.34.0] - 2026-09-27
+
+Keyboard and mouse.
+
+### Added
+- virtio-input drivers: `keyboard0` and `mouse0` (an absolute-position tablet)
+- An input event queue for the program that owns the screen (`input_read`: keys with text and modifiers, pointer moves, buttons, the wheel); without one, keys go to the text console like serial input (arrow keys as escape sequences)
+- A hardware cursor (`screen_cursor`) that the kernel moves itself on every pointer event
+- The test driver types on the virtual keyboard and clicks and drags the mouse through QEMU's control socket
+
+## [0.33.0] - 2026-09-27
+
+Graphics.
+
+### Added
+- A virtio-gpu driver: display size from the device, a 32-bit screen buffer, updates of the changed area only, a hardware cursor
+- The console on the screen: JetBrains Mono baked into the kernel at build time (`tools/mkfont.c`, smooth edges), 124 × 35 characters at 1280 × 800, a VT100 subset for `vi` and `top`, coloured log tags, drawn at most 100 times a second
+- A program can take the screen (`screen_info`, `screen_map`, `screen_flush`, the new SCREEN capability for programs in `/bin`); the console comes back when it exits or crashes
+- The graphics library `user/draw.c`: rectangles, rounded corners, transparency, lines, circles, PNG and JPEG images (stb_image), smooth text in any size (stb_truetype) with a glyph cache
+- Four wallpapers drawn by KnocOS (Ridge, Dune, Strata, Grid) in the theme and accent colours, and `gfx`, a demo
+- Fonts in `/fonts` (Hanken Grotesk, Martian Mono, JetBrains Mono) and `third_party/stb`; `make run-gui` opens a QEMU window
+- `make test` Run 21: screenshots through QEMU's control socket, checked pixel by pixel
+- Devices that aren't plugged in are reported as "not present" instead of "failed"
+
 ## [0.32.0] - 2026-09-27
 
 Dynamically linked Linux programs.

@@ -18,6 +18,9 @@
 #include "rtc.h"
 #include "virtio_rng.h"
 #include "linux.h"
+#include "screen.h"
+#include "pty.h"
+#include "virtio_gpu.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -70,6 +73,15 @@ static const char *syscall_names[SYS_COUNT] = {
     [SYS_THREAD] = "thread",
     [SYS_TCP_LISTEN] = "tcp_listen",
     [SYS_TCP_ACCEPT] = "tcp_accept",
+    [SYS_SCREEN_INFO] = "screen_info",
+    [SYS_SCREEN_MAP] = "screen_map",
+    [SYS_SCREEN_FLUSH] = "screen_flush",
+    [SYS_INPUT_READ] = "input_read",
+    [SYS_SCREEN_CURSOR] = "screen_cursor",
+    [SYS_PTY_OPEN] = "pty_open",
+    [SYS_PTY_SPAWN] = "pty_spawn",
+    [SYS_PTY_READ] = "pty_read",
+    [SYS_PTY_WRITE] = "pty_write",
 };
 
 const char *syscall_name(uint64_t number)
@@ -314,6 +326,11 @@ static int64_t sys_getcwd(uintptr_t buffer, uint64_t length)
 
 static const char *capability_name(uint32_t capability)
 {
+    if (capability == CAP_SCREEN)
+    {
+        return "SCREEN";
+    }
+
     if (capability == CAP_NET)
     {
         return "NET";
@@ -429,7 +446,14 @@ static int64_t console_write(uintptr_t buffer, uint64_t length)
             return written > 0 ? (int64_t)written : E_FAULT;
         }
 
-        if (!process_capture(chunk, size))
+        if (process_pty())
+        {
+            if (!process_capture(chunk, size))
+            {
+                pty_output(process_pty(), chunk, size);
+            }
+        }
+        else if (!process_capture(chunk, size))
         {
             console_claim_line();
             device_write(console, chunk, size);
@@ -756,9 +780,27 @@ static int64_t sys_wait(uint64_t pid)
     int exit_code = 0;
 
     /* Ctrl-C stops the program the shell is waiting for */
-    tty_set_foreground((int)pid);
+    int pty = process_pty();
+
+    if (pty)
+    {
+        pty_set_foreground(pty, (int)pid);
+    }
+    else
+    {
+        tty_set_foreground((int)pid);
+    }
+
     int result = process_wait((int)pid, &exit_code);
-    tty_set_foreground(0);
+
+    if (pty)
+    {
+        pty_set_foreground(pty, 0);
+    }
+    else
+    {
+        tty_set_foreground(0);
+    }
 
     if (result == -1)
     {
@@ -1254,6 +1296,114 @@ int64_t syscall_handle(trap_frame_t *frame)
 
     case SYS_THREAD:
         return process_thread_spawn(frame->a0, frame->a1, frame->a2);
+
+    case SYS_SCREEN_INFO:
+    {
+        screen_info_t info;
+        int result = screen_info(&info);
+
+        if (result != 0)
+        {
+            return result;
+        }
+
+        return copy_to_user(frame->a0, &info, sizeof(info)) == 0 ? 0 : E_FAULT;
+    }
+
+    case SYS_SCREEN_MAP:
+        if (!allowed(number, CAP_SCREEN))
+        {
+            return E_PERM;
+        }
+
+        return screen_map();
+
+    case SYS_SCREEN_FLUSH:
+        return screen_flush((uint32_t)frame->a0, (uint32_t)frame->a1, (uint32_t)(frame->a2 >> 32),
+                            (uint32_t)frame->a2);
+
+    case SYS_INPUT_READ:
+    {
+        input_event_t events[32];
+        uint32_t max = frame->a1 < 32 ? (uint32_t)frame->a1 : 32;
+        int64_t count = screen_input(events, max, frame->a2 < 1000 ? frame->a2 : 1000);
+
+        if (count <= 0)
+        {
+            return count;
+        }
+
+        return copy_to_user(frame->a0, events, (uint64_t)count * sizeof(input_event_t)) == 0 ? count : E_FAULT;
+    }
+
+    case SYS_SCREEN_CURSOR:
+    {
+        static uint32_t pixels[GPU_CURSOR_SIZE * GPU_CURSOR_SIZE];
+
+        if (copy_from_user(pixels, frame->a0, sizeof(pixels)) != 0)
+        {
+            return E_FAULT;
+        }
+
+        return screen_cursor(pixels, (uint32_t)(frame->a1 >> 16), (uint32_t)(frame->a1 & 0xFFFF));
+    }
+
+    case SYS_PTY_OPEN:
+        if (!allowed(number, CAP_SPAWN))
+        {
+            return E_PERM;
+        }
+
+        return pty_open(process_owner_pid());
+
+    case SYS_PTY_SPAWN:
+    {
+        if (!allowed(number, CAP_SPAWN))
+        {
+            return E_PERM;
+        }
+
+        if (!pty_owned((int)frame->a0, process_owner_pid()))
+        {
+            return E_BADF;
+        }
+
+        process_set_spawn_pty((int)frame->a0);
+        int64_t pid = sys_spawn(frame->a1, frame->a2, 0, 0);
+        process_set_spawn_pty(0);
+        return pid;
+    }
+
+    case SYS_PTY_READ:
+    case SYS_PTY_WRITE:
+    {
+        char chunk[SYSCALL_CHUNK];
+        uint64_t length = frame->a2 < sizeof(chunk) ? frame->a2 : sizeof(chunk);
+
+        if (!pty_owned((int)frame->a0, process_owner_pid()))
+        {
+            return E_BADF;
+        }
+
+        if (number == SYS_PTY_READ)
+        {
+            int64_t count = pty_take_output((int)frame->a0, chunk, length);
+
+            if (count <= 0)
+            {
+                return count;
+            }
+
+            return copy_to_user(frame->a1, chunk, (uint64_t)count) == 0 ? count : E_FAULT;
+        }
+
+        if (copy_from_user(chunk, frame->a1, length) != 0)
+        {
+            return E_FAULT;
+        }
+
+        return pty_give_input((int)frame->a0, chunk, length);
+    }
 
     case SYS_CPUINFO:
     {
