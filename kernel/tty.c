@@ -66,3 +66,20 @@ int tty_foreground(void)
 {
     return foreground_pid != 0 && process_alive(foreground_pid) ? foreground_pid : 0;
 }
+
+int tty_has_input(void)
+{
+    return head != tail;
+}
+
+void tty_wait_input(uint64_t ticks)
+{
+    uint64_t enabled = irq_save();
+
+    if (head == tail && ticks > 0)
+    {
+        process_block(&input_channel, ticks);
+    }
+
+    irq_restore(enabled);
+}

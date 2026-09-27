@@ -11,6 +11,11 @@
 #define ELF_MAGIC 0x464C457FU
 #define ELF_CLASS_64 2
 #define ELF_TYPE_EXEC 2
+#define ELF_TYPE_DYN 3
+#define ELF_OSABI_LINUX 3
+#define ELF_PT_INTERP 3
+#define ELF_PT_PHDR 6
+#define LINUX_PIE_BASE 0x40000000UL
 #define ELF_MACHINE_RISCV 243
 #define ELF_PT_LOAD 1
 #define ELF_PF_X 1
@@ -129,5 +134,127 @@ int elf_load(uintptr_t root,
     }
 
     *entry = header->entry;
+    return 0;
+}
+
+int elf_is_linux(const uint8_t *image, uint64_t size)
+{
+    const elf64_header_t *header = (const elf64_header_t *)image;
+
+    if (size < sizeof(*header) || header->magic != ELF_MAGIC || header->class != ELF_CLASS_64 ||
+        header->machine != ELF_MACHINE_RISCV)
+    {
+        return 0;
+    }
+
+    return header->padding[0] == ELF_OSABI_LINUX || header->type == ELF_TYPE_DYN || header->entry < USER_BASE;
+}
+
+int elf_load_linux(uintptr_t root, const uint8_t *image, uint64_t size, elf_alloc_t alloc, void *context,
+                   elf_linux_info_t *info)
+{
+    const elf64_header_t *header = (const elf64_header_t *)image;
+
+    if (!elf_is_linux(image, size) || (header->type != ELF_TYPE_EXEC && header->type != ELF_TYPE_DYN) ||
+        header->phentsize != sizeof(elf64_program_header_t) ||
+        header->phoff + (uint64_t)header->phnum * sizeof(elf64_program_header_t) > size)
+    {
+        return -1;
+    }
+
+    const elf64_program_header_t *segments = (const elf64_program_header_t *)(image + header->phoff);
+    uintptr_t lowest = (uintptr_t)-1;
+
+    for (uint16_t i = 0; i < header->phnum; i++)
+    {
+        if (segments[i].type == ELF_PT_INTERP)
+        {
+            return ELF_LINUX_DYNAMIC;
+        }
+
+        if (segments[i].type == ELF_PT_LOAD && segments[i].memsz && segments[i].vaddr < lowest)
+        {
+            lowest = segments[i].vaddr;
+        }
+    }
+
+    if (lowest == (uintptr_t)-1)
+    {
+        return -1;
+    }
+
+    uintptr_t bias = header->type == ELF_TYPE_DYN ? LINUX_PIE_BASE - (lowest & ~(PAGE_SIZE - 1)) : 0;
+    uintptr_t mapped_end = 0;
+
+    info->phdr = 0;
+    info->brk = 0;
+
+    for (uint16_t i = 0; i < header->phnum; i++)
+    {
+        const elf64_program_header_t *segment = &segments[i];
+
+        if (segment->type == ELF_PT_PHDR)
+        {
+            info->phdr = segment->vaddr + bias;
+        }
+
+        if (segment->type != ELF_PT_LOAD || segment->memsz == 0)
+        {
+            continue;
+        }
+
+        uintptr_t vaddr = segment->vaddr + bias;
+
+        if (segment->filesz > segment->memsz || segment->offset + segment->filesz > size || vaddr < LINUX_LOW_BASE ||
+            vaddr + segment->memsz > LINUX_LOW_END)
+        {
+            return -1;
+        }
+
+        uintptr_t start = vaddr & ~(PAGE_SIZE - 1);
+        uintptr_t end = (vaddr + segment->memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+        if (start < mapped_end)
+        {
+            return -1;
+        }
+
+        mapped_end = end;
+
+        uint8_t *memory = alloc(context, end - start);
+
+        if (memory == 0)
+        {
+            return -1;
+        }
+
+        memcpy(memory + (vaddr - start), image + segment->offset, segment->filesz);
+
+        uint64_t flags = 0;
+
+        flags |= (segment->flags & ELF_PF_R) ? PTE_R : 0;
+        flags |= (segment->flags & ELF_PF_W) ? PTE_W : 0;
+        flags |= (segment->flags & ELF_PF_X) ? PTE_X : 0;
+
+        if (vm_user_map(root, start, (uintptr_t)memory, end - start, flags) != 0)
+        {
+            return -1;
+        }
+
+        if (segment->offset == 0 && info->phdr == 0)
+        {
+            info->phdr = vaddr + header->phoff;
+        }
+
+        if (end > info->brk)
+        {
+            info->brk = end;
+        }
+    }
+
+    info->entry = header->entry + bias;
+    info->base = bias;
+    info->phnum = header->phnum;
+    info->phent = header->phentsize;
     return 0;
 }

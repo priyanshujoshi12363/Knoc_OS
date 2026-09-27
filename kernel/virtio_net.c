@@ -1,5 +1,6 @@
 #include "virtio_net.h"
 #include "virtio.h"
+#include "mmio.h"
 #include "device.h"
 #include "page.h"
 #include "spinlock.h"
@@ -49,12 +50,12 @@ static int ready;
 
 static uint32_t reg_read(uint32_t reg)
 {
-    return *(volatile uint32_t *)(NET_BASE + reg);
+    return *(volatile uint32_t *)MMIO(NET_BASE + reg);
 }
 
 static void reg_write(uint32_t reg, uint32_t value)
 {
-    *(volatile uint32_t *)(NET_BASE + reg) = value;
+    *(volatile uint32_t *)MMIO(NET_BASE + reg) = value;
 }
 
 static void zero(void *memory, uint64_t length)
@@ -163,7 +164,7 @@ static int virtio_net_init(device_t *dev)
 
     for (int i = 0; i < 6; i++)
     {
-        mac[i] = *(volatile uint8_t *)(NET_BASE + VIRTIO_MMIO_CONFIG + i);
+        mac[i] = *(volatile uint8_t *)MMIO(NET_BASE + VIRTIO_MMIO_CONFIG + i);
     }
 
     for (uint16_t i = 0; i < QUEUE_SIZE; i++)

@@ -3,6 +3,7 @@
 #include "spinlock.h"
 #include "timer.h"
 #include "virtio.h"
+#include "mmio.h"
 #include "device.h"
 #include "page.h"
 
@@ -60,12 +61,12 @@ static volatile uint8_t request_status;
 
 static uint32_t virtio_read(uint32_t reg)
 {
-    return *(volatile uint32_t *)(VIRTIO0_BASE + reg);
+    return *(volatile uint32_t *)MMIO(VIRTIO0_BASE + reg);
 }
 
 static void virtio_write(uint32_t reg, uint32_t value)
 {
-    *(volatile uint32_t *)(VIRTIO0_BASE + reg) = value;
+    *(volatile uint32_t *)MMIO(VIRTIO0_BASE + reg) = value;
 }
 
 static void clear_page(void *page)

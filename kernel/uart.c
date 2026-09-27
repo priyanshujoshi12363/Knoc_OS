@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "mmio.h"
 #include "device.h"
 #include "mailbox.h"
 #include "timer.h"
@@ -30,13 +31,13 @@ static char rx_channel;
 
 static uint8_t uart_read_reg(uint32_t reg)
 {
-    volatile uint8_t *uart = (volatile uint8_t *)UART_BASE;
+    volatile uint8_t *uart = (volatile uint8_t *)MMIO(UART_BASE);
     return uart[reg];
 }
 
 static void uart_write_reg(uint32_t reg, uint8_t value)
 {
-    volatile uint8_t *uart = (volatile uint8_t *)UART_BASE;
+    volatile uint8_t *uart = (volatile uint8_t *)MMIO(UART_BASE);
     uart[reg] = value;
 }
 

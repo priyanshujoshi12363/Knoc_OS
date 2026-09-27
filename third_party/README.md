@@ -1,5 +1,11 @@
 # Third-party code
 
+## BusyBox (downloaded, not stored here)
+
+- Source: Debian package `busybox-static_1.37.0-6+b9_riscv64.deb` (a static RISC-V Linux build), downloaded by `scripts/get-busybox.sh` from deb.debian.org or snapshot.debian.org and checked with SHA-256
+- License: GNU GPL 2 (source: https://sources.debian.org/src/busybox/1:1.37.0-6/)
+- Used for: Linux programs on KnocOS: `/bin/busybox` and its tools (`grep`, `sed`, `awk`, `tar`, `vi`, `top`...); KnocOS runs the Debian binary unchanged
+
 ## BearSSL (`bearssl/`)
 
 - Source: https://www.bearssl.org/git/BearSSL, commit `7bea48e`

@@ -736,7 +736,7 @@ static void cmd_ps(void)
         print_padded_uint(info.cpu_ticks, 5);
         print_padded_uint(info.memory / 1024, 6);
         print_padded("KiB", 4);
-        print_padded(info.user ? "user" : "kernel", 8);
+        print_padded(info.user ? ((info.flags & PROCESS_FLAG_LINUX) ? "linux" : "user") : "kernel", 8);
 
         if (info.reserved > 0 && info.pid != 0)
         {
@@ -845,6 +845,61 @@ static void join_args(int argc, char **args, int first, char *out)
 
         out[length] = 0;
     }
+}
+
+static char applets[4096];
+static int applets_loaded;
+
+static int busybox_applet(const char *command)
+{
+    if (!applets_loaded)
+    {
+        applets_loaded = 1;
+
+        if (!program_exists("busybox"))
+        {
+            return 0;
+        }
+
+        int pid = spawn_capture("busybox", "--list", 1);
+
+        if (pid >= 0)
+        {
+            wait(pid);
+
+            long length = captured(applets, sizeof(applets) - 1);
+
+            applets[length > 0 ? length : 0] = 0;
+        }
+    }
+
+    unsigned long n = strlen(command);
+
+    for (char *p = applets; *p;)
+    {
+        char *end = p;
+
+        while (*end && *end != '\n')
+        {
+            end++;
+        }
+
+        unsigned long i = 0;
+
+        while (i < n && p + i < end && p[i] == command[i])
+        {
+            i++;
+        }
+
+        if (i == n && p + n == end)
+        {
+            return 1;
+        }
+
+        p = *end ? end + 1 : end;
+    }
+
+    return 0;
 }
 
 static void run_program(const char *name, int background, int argc, char **args, int first)
@@ -1758,6 +1813,8 @@ static void cmd_help(void)
     print("Code:      tcc FILE.c -o NAME  then ./NAME   (C compiler with the standard C library)\n");
     print("Network:   net  ping HOST [COUNT]  fetch URL [FILE]  web URL  web -s WORDS  date\n");
     print("           (http:// and https://; KnocOS is 10.0.2.15, your PC is 10.0.2.2 = host)\n");
+    print("Linux:     Linux programs run too (static RISC-V): ./program, or put them in /bin\n");
+    print("           with BusyBox in /bin, its tools work directly: grep, sed, awk, tar, vi, top, df...\n");
     print("KnocNet:   knocnet id | pair wait | pair ADDRESS CODE | peers | ping | status | send | get | ask\n");
     print("Keys:      Ctrl-C stops the running program, Ctrl-D powers off\n");
 }
@@ -2470,6 +2527,10 @@ static int execute(int argc, char **args)
     else if (program_exists(command))
     {
         run_program(command, argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 1);
+    }
+    else if (busybox_applet(command))
+    {
+        run_program("busybox", argc > 1 && strcmp(args[argc - 1], "&") == 0, argc, args, 0);
     }
     else
     {

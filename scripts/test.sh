@@ -17,6 +17,11 @@ trap 'rm -f "$LOG" "$DISK" "$LOG2" "$DISK2"; rm -rf "$WWW"; [ -n "$WEB_PID" ] &&
 
 FAILED=0
 
+if ! ./scripts/get-busybox.sh > /dev/null; then
+    echo "  MISS BusyBox could not be downloaded (Linux program tests need it)"
+    FAILED=1
+fi
+
 new_disk() {
     ./scripts/mkdisk.sh "$DISK" > /dev/null
 }
@@ -139,7 +144,7 @@ check \
     "[noperm] spawn and open were refused" \
     "[files] no note yet, writing /home/note.txt" \
     "[files] /hello.txt says: Hello from a file on KnocFS!" \
-    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler find healthd hello hog indexd index knocnetd knocnet knocsh leak libctest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web" \
+    "[files] /bin: agent ask badcall bigmem calc chat counter crash date diskload fetch files filler find healthd hello hog indexd index knocnetd knocnet knocsh leak libctest linuxtest modelcheck net noperm organized organize ping quiet recorder spawner spin spy tcc threadtest web busybox" \
     "[files] 20000 bytes written across 5 blocks, read back, removed" \
     "[modelcheck] loaded 8 MiB model from /models/test-model.bin (1 extent)" \
     "User memory verified" \
@@ -741,6 +746,84 @@ if tr -d '\r' < "$LOG" | awk '/agent find something about pasta/,0' | grep -qF "
     echo "  ok   the agent finds files by meaning"
 else
     echo "  MISS the agent finds files by meaning"
+    FAILED=1
+fi
+show_log_on_failure
+
+echo "Run 19: Linux programs: a test program, BusyBox tools, vi, and a crash contained by the AI"
+new_disk
+printf 'pear\napple pie\nbanana\napple juice\ncherry\n' > "$WWW/data.txt"
+python3 tools/knocfs.py put "$DISK" "$WWW/data.txt" /home/data.txt
+DATA_MD5=$(md5sum "$WWW/data.txt" | cut -d' ' -f1)
+boot "linuxtest hello" 'echo linux exit $?' "busybox uname -m" "busybox wc -l /home/data.txt" \
+    "busybox md5sum /home/data.txt" "busybox sed s/apple/APPLE/ /home/data.txt" "busybox sort /home/data.txt" \
+    "grep -c apple /home/data.txt" "busybox tar -cf /tmp/d.tar /home/data.txt" "busybox tar -tf /tmp/d.tar" \
+    "busybox gzip -c /home/data.txt > /tmp/d.gz" "busybox gunzip -c /tmp/d.gz" "busybox df" "busybox ps" \
+    "linuxtest crash" "sleep 4"
+check \
+    "linuxtest: hello from a Linux program, argc 2" \
+    "linuxtest: argv[1] = hello" \
+    "linuxtest: environment has PATH=/bin" \
+    "linuxtest: uname says Linux riscv64" \
+    "linuxtest: read 28 bytes from /hello.txt" \
+    "linuxtest: write, read back and lseek ok" \
+    "linuxtest: stat size 17, a regular file" \
+    "linuxtest: missing file gives -2" \
+    "linuxtest: brk grew the heap by 100000 bytes" \
+    "linuxtest: mmap gave 1048576 zeroed bytes" \
+    "linuxtest: the clock says year 20" \
+    "linuxtest: getrandom gave 16 random bytes" \
+    "linuxtest: getdents64 found /bin" \
+    "linuxtest: mkdirat and unlinkat ok" \
+    "linuxtest: an unknown system call gives -38" \
+    "linux exit 3" \
+    "riscv64" \
+    "5 /home/data.txt" \
+    "$DATA_MD5  /home/data.txt" \
+    "APPLE pie" \
+    "home/data.txt" \
+    "knocfs " \
+    "busybox" \
+    "[OOPS] Store page fault in user program linuxtest" \
+    "[AI] Diagnosis: Null pointer"
+if tr -d '\r' < "$LOG" | awk '/knoc:\/\$ busybox sort/,/knoc:\/\$ grep -c apple/' | tr '\n' ' ' | \
+    grep -q "apple juice apple pie banana cherry pear"; then
+    echo "  ok   sort gives the lines in order"
+else
+    echo "  MISS sort gives the lines in order"
+    FAILED=1
+fi
+if tr -d '\r' < "$LOG" | awk '/knoc:\/\$ grep -c apple/ {getline; print; exit}' | grep -qx "2"; then
+    echo "  ok   grep runs from BusyBox without typing busybox"
+else
+    echo "  MISS grep runs from BusyBox without typing busybox"
+    FAILED=1
+fi
+if tr -d '\r' < "$LOG" | awk '/knoc:\/\$ busybox gunzip/,/knoc:\/\$ busybox df/' | grep -q "apple juice"; then
+    echo "  ok   gzip and gunzip give the file back"
+else
+    echo "  MISS gzip and gunzip give the file back"
+    FAILED=1
+fi
+show_log_on_failure
+
+new_disk
+(
+    sleep 8;  printf 'busybox vi /tmp/edit.txt\r'
+    sleep 5;  printf 'ihello from vi on KnocOS'
+    sleep 2;  printf '\033'
+    sleep 2;  printf ':wq\r'
+    sleep 4;  printf 'cat /tmp/edit.txt\r'
+    sleep 2;  printf '\004'
+    sleep 3
+) | qemu "$TIMEOUT"
+STATUS=$?
+check_status "$TIMEOUT" no-panic
+check "'/tmp/edit.txt' 1L, 24C"
+if tr -d '\r' < "$LOG" | grep -qx "hello from vi on KnocOS"; then
+    echo "  ok   vi edited and saved a file"
+else
+    echo "  MISS vi edited and saved a file"
     FAILED=1
 fi
 show_log_on_failure

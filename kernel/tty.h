@@ -9,6 +9,8 @@
 
 void tty_input(char c);
 int64_t tty_read(char *buffer, uint64_t length);
+int tty_has_input(void);
+void tty_wait_input(uint64_t ticks);
 
 void tty_set_owner(int pid);
 int tty_has_owner(void);

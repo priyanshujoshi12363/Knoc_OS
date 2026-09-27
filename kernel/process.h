@@ -9,9 +9,9 @@
 #define PROCESS_CAPTURE_MAX 4096
 #define PROCESS_STACK_SIZE (16 * 1024)
 #define PROCESS_TRACE_MAX 8
-#define PROCESS_BLOCKS_MAX 32
+#define PROCESS_BLOCKS_MAX 256
 #define PROCESS_LOCKS_MAX 4
-#define PROCESS_FILES_MAX 8
+#define PROCESS_FILES_MAX 16
 
 /* Memory quota for user programs, by class: AI agents get room for models */
 #define PROCESS_QUOTA_AI_AGENT (1024UL * 1024 * 1024)
@@ -105,6 +105,10 @@ int process_create_pinned(const char *name,
                           uint32_t cpu_mask);
 void process_init_cpu(int id);
 void process_exit_if_killed(void);
+int process_is_linux(void);
+void *process_linux_state(void);
+int process_map_anonymous(uintptr_t address, uint64_t size);
+int64_t process_mem_alloc(uint64_t bytes);
 int process_thread_spawn(uintptr_t entry, uintptr_t argument, uintptr_t stack);
 struct cpu_info;
 int process_cpu_info(uint32_t index, struct cpu_info *info);

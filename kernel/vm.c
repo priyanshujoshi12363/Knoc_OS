@@ -1,4 +1,5 @@
 #include "vm.h"
+#include "mmio.h"
 #include "page.h"
 #include "uart.h"
 #include "plic.h"
@@ -9,6 +10,7 @@
 #include "syscall_abi.h"
 
 static page_table_t *root_page_table;
+uintptr_t mmio_offset;
 static uint64_t megapages_mapped;
 
 #define PTE_LEAF (PTE_R | PTE_W | PTE_X)
@@ -33,6 +35,7 @@ void vm_enable(void)
 
     asm volatile("csrw satp, %0" :: "r"(satp_value));
     asm volatile("sfence.vma zero, zero");
+    mmio_offset = MMIO_ALIAS;
 }
 uint64_t vm_megapage_count(void)
 {
@@ -49,6 +52,7 @@ void vm_init(uintptr_t ram_start, uintptr_t ram_end)
     }
 
     vm_clear_page_table(root_page_table);
+    (*root_page_table)[MMIO_SLOT] = vm_make_pte(0, PTE_R | PTE_W | PTE_V);
 
     if (vm_map_range(ram_start,
                      ram_start,
@@ -332,14 +336,19 @@ uintptr_t vm_user_create(void)
         (*root)[i] = 0;
     }
 
+    for (unsigned long i = VA_VPN2(LINUX_LOW_BASE); i < VA_VPN2(LINUX_LOW_END); i++)
+    {
+        (*root)[i] = 0;
+    }
+
     return (uintptr_t)root;
 }
 
 static int user_range_valid(uintptr_t virtual_address, uint64_t size)
 {
-    return virtual_address >= USER_BASE &&
-           virtual_address < USER_END &&
-           size <= USER_END - virtual_address;
+    return (virtual_address >= USER_BASE && virtual_address < USER_END && size <= USER_END - virtual_address) ||
+           (virtual_address >= LINUX_LOW_BASE && virtual_address < LINUX_LOW_END &&
+            size <= LINUX_LOW_END - virtual_address);
 }
 
 int vm_user_map(uintptr_t root,
@@ -401,35 +410,47 @@ int vm_user_translate(uintptr_t root,
     return 0;
 }
 
+static void destroy_slot(page_table_t *table, unsigned long i);
+
 void vm_user_destroy(uintptr_t root)
 {
     page_table_t *table = (page_table_t *)root;
 
+    for (unsigned long i = VA_VPN2(LINUX_LOW_BASE); i < VA_VPN2(LINUX_LOW_END); i++)
+    {
+        destroy_slot(table, i);
+    }
+
     for (unsigned long i = VA_VPN2(USER_BASE); i < VA_VPN2(USER_END); i++)
     {
-        pte_t entry = (*table)[i];
-
-        if (!(entry & PTE_V) || (entry & PTE_LEAF))
-        {
-            continue;
-        }
-
-        page_table_t *level1 = (page_table_t *)PPN_TO_PA(entry >> 10);
-
-        for (unsigned long j = 0; j < 512; j++)
-        {
-            pte_t level1_entry = (*level1)[j];
-
-            if ((level1_entry & PTE_V) && !(level1_entry & PTE_LEAF))
-            {
-                page_free((void *)PPN_TO_PA(level1_entry >> 10));
-            }
-        }
-
-        page_free(level1);
+        destroy_slot(table, i);
     }
 
     page_free(table);
+}
+
+static void destroy_slot(page_table_t *table, unsigned long i)
+{
+    pte_t entry = (*table)[i];
+
+    if (!(entry & PTE_V) || (entry & PTE_LEAF))
+    {
+        return;
+    }
+
+    page_table_t *level1 = (page_table_t *)PPN_TO_PA(entry >> 10);
+
+    for (unsigned long j = 0; j < 512; j++)
+    {
+        pte_t level1_entry = (*level1)[j];
+
+        if ((level1_entry & PTE_V) && !(level1_entry & PTE_LEAF))
+        {
+            page_free((void *)PPN_TO_PA(level1_entry >> 10));
+        }
+    }
+
+    page_free(level1);
 }
 
 void vm_debug(uintptr_t virtual_address)

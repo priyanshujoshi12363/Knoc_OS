@@ -1,4 +1,5 @@
 #include "plic.h"
+#include "mmio.h"
 
 #define PLIC_PRIORITY(irq) (PLIC_BASE + (irq) * 4)
 #define PLIC_SUPERVISOR_ENABLE (PLIC_BASE + 0x2080)
@@ -9,12 +10,12 @@
 
 static uint32_t plic_read(uintptr_t address)
 {
-    return *(volatile uint32_t *)address;
+    return *(volatile uint32_t *)MMIO(address);
 }
 
 static void plic_write(uintptr_t address, uint32_t value)
 {
-    *(volatile uint32_t *)address = value;
+    *(volatile uint32_t *)MMIO(address) = value;
 }
 
 void plic_init(void)

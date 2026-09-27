@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "power.h"
+#include "mmio.h"
 #include "device.h"
 
 #define POWER_OFF_VALUE 0x5555
@@ -7,7 +8,7 @@
 
 static void power_write(uint32_t value)
 {
-    volatile uint32_t *power = (volatile uint32_t *)POWER_BASE;
+    volatile uint32_t *power = (volatile uint32_t *)MMIO(POWER_BASE);
     *power = value;
 
     while (1)

@@ -32,6 +32,10 @@ done
 
 ./scripts/sdk.sh "$DISK"
 
+if [ -f build/linux/busybox ]; then
+    $KNOCFS put "$DISK" build/linux/busybox /bin/busybox
+fi
+
 $KNOCFS mkdir "$DISK" /etc /etc/apps
 ./scripts/etc.sh "$DISK"
 for manifest in apps/*.app; do

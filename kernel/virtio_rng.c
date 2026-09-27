@@ -1,5 +1,6 @@
 #include "virtio_rng.h"
 #include "virtio.h"
+#include "mmio.h"
 #include "device.h"
 #include "page.h"
 #include "spinlock.h"
@@ -37,12 +38,12 @@ static device_t *self;
 
 static uint32_t reg_read(uint32_t reg)
 {
-    return *(volatile uint32_t *)(RNG_BASE + reg);
+    return *(volatile uint32_t *)MMIO(RNG_BASE + reg);
 }
 
 static void reg_write(uint32_t reg, uint32_t value)
 {
-    *(volatile uint32_t *)(RNG_BASE + reg) = value;
+    *(volatile uint32_t *)MMIO(RNG_BASE + reg) = value;
 }
 
 static void zero(void *memory, uint64_t length)

@@ -60,6 +60,7 @@ KERNEL_OBJS = boot/boot.o \
               kernel/virtio_rng.o \
               kernel/rtc.o \
               kernel/cpu.o \
+              kernel/linux.o \
               kernel/aispace.o
 
 TIMER_OBJS = timer/timer.o
@@ -72,12 +73,15 @@ LIBC_PROGRAMS = libctest calc net ping fetch web date threadtest knocnet knocnet
 SEARCH_PROGRAMS = find index indexd
 HTTP_PROGRAMS = fetch web
 KNOCNET_PROGRAMS = knocnet knocnetd
-USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf)
+USER_ELFS = $(USER_PROGRAMS:%=user/%.elf) $(LIBC_PROGRAMS:%=user/%.elf) user/linuxtest.elf
 USER_OBJS = $(USER_LIB_OBJS) user/http.o user/knocnet_proto.o user/search.o user/embed.o user/rag.o user/llm.o user/assist.o user/learn.o $(LIBC_OBJS) $(LIBC_CRT) $(USER_PROGRAMS:%=user/%.o) $(LIBC_PROGRAMS:%=user/%.o)
 
 DEPS = $(KERNEL_OBJS:.o=.d) $(TIMER_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
-.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls tcc-sdk
+.PHONY: all clean run test timer-test size pages reset-disk sync-programs put ls tcc-sdk linux-apps
+
+linux-apps:
+	./scripts/get-busybox.sh
 
 all: knocos.elf tcc-sdk
 
@@ -197,6 +201,10 @@ user/organize.elf: user/organize.o user/learn.o $(USER_LIB_OBJS) user/linker.ld
 user/chat.elf: user/chat.o user/assist.o user/llm.o user/rag.o user/embed.o $(USER_LIB_OBJS) user/linker.ld
 	$(LD) -T user/linker.ld -s -o $@ $(USER_LIB_OBJS) user/chat.o user/assist.o user/llm.o user/rag.o user/embed.o
 
+user/linuxtest.elf: user/linux/linuxtest.c user/linux/linux.ld
+	$(CC) -march=rv64gc -mabi=lp64d -mcmodel=medany -ffreestanding -fno-pie -fno-pic -nostdlib -static -O2 \
+		-Wall -Wextra -Werror -fno-builtin -T user/linux/linux.ld -s -o $@ $<
+
 kernel/programs.o: $(USER_ELFS)
 
 timer.elf: $(TIMER_OBJS) timer/linker.ld
@@ -226,7 +234,7 @@ reset-disk: $(USER_ELFS) tcc-sdk
 
 # Copy freshly built programs into /bin, keeping every other file on the disk
 sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
-	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS); do \
+	@for program in $(USER_PROGRAMS) $(LIBC_PROGRAMS) linuxtest; do \
 		$(KNOCFS) put $(DISK) user/$$program.elf /bin/$$program 2>/dev/null || \
 			{ echo "$(DISK) has no KnocFS: run make reset-disk"; break; }; \
 	done
@@ -234,6 +242,7 @@ sync-programs: $(USER_ELFS) tcc-sdk $(DISK)
 	@./scripts/sdk.sh $(DISK)
 	@./scripts/etc.sh $(DISK)
 	@[ ! -f models/embed/knocembed.knm ] || $(KNOCFS) put $(DISK) models/embed/knocembed.knm /models/knocembed.knm
+	@[ ! -f build/linux/busybox ] || $(KNOCFS) put $(DISK) build/linux/busybox /bin/busybox
 	@for manifest in apps/*.app; do \
 		$(KNOCFS) put $(DISK) $$manifest /etc/apps/$$(basename $$manifest) 2>/dev/null || break; \
 	done

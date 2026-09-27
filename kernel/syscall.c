@@ -17,6 +17,7 @@
 #include "heap.h"
 #include "rtc.h"
 #include "virtio_rng.h"
+#include "linux.h"
 
 #define SYSCALL_WRITE_MAX 4096
 #define SYSCALL_CHUNK 64
@@ -569,9 +570,8 @@ static int64_t sys_read(uint64_t fd, uintptr_t buffer, uint64_t length)
     return file_io(file, buffer, length, 0);
 }
 
-static int64_t sys_open(uintptr_t path_address, uint64_t flags)
+int64_t kfile_open(const char *path, uint64_t flags)
 {
-    char path[PATH_MAX];
     uint32_t inode;
     knocfs_stat_t stat;
 
@@ -585,13 +585,6 @@ static int64_t sys_open(uintptr_t path_address, uint64_t flags)
     else if (!allowed(SYS_OPEN, CAP_FILES_READ))
     {
         return E_PERM;
-    }
-
-    int64_t path_result = user_path(path, path_address);
-
-    if (path_result != 0)
-    {
-        return path_result;
     }
 
     int result = knocfs_lookup(path, &inode);
@@ -624,6 +617,14 @@ static int64_t sys_open(uintptr_t path_address, uint64_t flags)
     int fd = process_file_open(inode, (uint32_t)flags);
 
     return fd < 0 ? E_NOSPACE : fd;
+}
+
+static int64_t sys_open(uintptr_t path_address, uint64_t flags)
+{
+    char path[PATH_MAX];
+    int64_t path_result = user_path(path, path_address);
+
+    return path_result != 0 ? path_result : kfile_open(path, flags);
 }
 
 static int64_t sys_close(uint64_t fd)
@@ -903,21 +904,13 @@ static int64_t sys_graph(uintptr_t request_address, uintptr_t out)
     return E_INVAL;
 }
 
-static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
+int64_t kfile_path_change(uint64_t number, const char *path)
 {
-    char path[PATH_MAX];
     uint32_t inode;
 
     if (!allowed(number, CAP_FILES_WRITE))
     {
         return E_PERM;
-    }
-
-    int64_t path_result = user_path(path, path_address);
-
-    if (path_result != 0)
-    {
-        return path_result;
     }
 
     if (number == SYS_MKDIR)
@@ -926,6 +919,14 @@ static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
     }
 
     return knocfs_remove(path);
+}
+
+static int64_t sys_path_change(uint64_t number, uintptr_t path_address)
+{
+    char path[PATH_MAX];
+    int64_t path_result = user_path(path, path_address);
+
+    return path_result != 0 ? path_result : kfile_path_change(number, path);
 }
 
 static int64_t sys_spawn(uintptr_t name_address, uintptr_t args_address, int capture, int quiet)
@@ -1015,6 +1016,16 @@ static int64_t sys_getargs(uintptr_t buffer, uint64_t length)
     return (int64_t)size;
 }
 
+int64_t kfile_rename(const char *from, const char *to)
+{
+    if (!allowed(SYS_RENAME, CAP_FILES_WRITE))
+    {
+        return E_PERM;
+    }
+
+    return knocfs_rename(from, to);
+}
+
 static int64_t sys_rename(uintptr_t from_address, uintptr_t to_address)
 {
     char from[PATH_MAX];
@@ -1040,9 +1051,49 @@ static int64_t sys_rename(uintptr_t from_address, uintptr_t to_address)
     return knocfs_rename(from, to);
 }
 
+int user_copy_in(void *destination, uintptr_t source, uint64_t length)
+{
+    return copy_from_user(destination, source, length);
+}
+
+int user_copy_out(uintptr_t destination, const void *source, uint64_t length)
+{
+    return copy_to_user(destination, source, length);
+}
+
+int user_copy_string(char *destination, uintptr_t source, uint64_t max)
+{
+    return copy_string_from_user(destination, source, max);
+}
+
+int syscall_allowed(uint64_t number, uint32_t capability)
+{
+    return allowed(number, capability);
+}
+
+int64_t kfile_read(uint64_t fd, uintptr_t buffer, uint64_t length)
+{
+    return sys_read(fd, buffer, length);
+}
+
+int64_t kfile_write(uint64_t fd, uintptr_t buffer, uint64_t length)
+{
+    return sys_write(fd, buffer, length);
+}
+
+int64_t kfile_close(uint64_t fd)
+{
+    return sys_close(fd);
+}
+
 int64_t syscall_handle(trap_frame_t *frame)
 {
     uint64_t number = frame->a7;
+
+    if (process_is_linux())
+    {
+        return linux_syscall(frame);
+    }
 
     process_record_syscall(number);
 

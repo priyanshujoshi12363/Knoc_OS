@@ -1,4 +1,5 @@
 #include "rtc.h"
+#include "mmio.h"
 #include "device.h"
 
 #define RTC_TIME_LOW 0x00
@@ -10,8 +11,8 @@ static int ready;
 
 static uint64_t rtc_nanoseconds(void)
 {
-    uint32_t low = *(volatile uint32_t *)(RTC_BASE + RTC_TIME_LOW);
-    uint32_t high = *(volatile uint32_t *)(RTC_BASE + RTC_TIME_HIGH);
+    uint32_t low = *(volatile uint32_t *)MMIO(RTC_BASE + RTC_TIME_LOW);
+    uint32_t high = *(volatile uint32_t *)MMIO(RTC_BASE + RTC_TIME_HIGH);
 
     return ((uint64_t)high << 32) | low;
 }

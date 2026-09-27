@@ -110,6 +110,8 @@
 #define USER_STACK_TOP 0x1F80000000UL
 #define USER_STACK_SIZE (64UL * 1024)
 #define USER_END 0x2000000000UL
+#define LINUX_LOW_BASE 0x1000UL
+#define LINUX_LOW_END 0x80000000UL
 
 #ifndef __ASSEMBLER__
 
@@ -137,6 +139,7 @@ typedef struct dir_entry
 #define INFO_NAME_MAX 16
 #define CLASS_BACKGROUND 3
 #define PROCESS_FLAG_FOREGROUND 0x1
+#define PROCESS_FLAG_LINUX 0x2
 #define INFO_DISABLED_MAX 4
 
 typedef struct process_info

@@ -2,7 +2,7 @@
 # KnocOS
 
 [![CI](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/priyanshujoshi12363/Knoc_OS/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-v0.30.0-blue)
+![Version](https://img.shields.io/badge/version-v0.31.0-blue)
 ![Stage](https://img.shields.io/badge/stage-early%20development-orange)
 
 **KnocOS** is being built as a **production-grade, AI-native operating system**, written from scratch. It is currently in **early development** (kernel foundation stage). See [`goal.md`](goal.md) for the long-term vision, [`notes.md`](notes.md) for a guided explanation of how everything works, and [`CHANGELOG.md`](CHANGELOG.md) for release history.
@@ -50,7 +50,7 @@ KnocOS currently has:
 ### Boot output
 
 ```text
-[INFO] KnocOS v0.30.0 starting
+[INFO] KnocOS v0.31.0 starting
 [INFO] Supervisor interrupts enabled
 [INFO] Device tree at 0x00000000BFE00000: RAM 2048 MiB at 0x0000000080000000, 8 CPUs
 [INFO] Page memory initialized: 1791 MiB free, largest block 1024 MiB (buddy allocator)
@@ -136,7 +136,31 @@ Example of an unhandled kernel fault (a store to an unmapped address):
 
 ---
 
-## ✅ Just Completed: Search by Meaning (v0.30.0)
+## ✅ Just Completed: Linux Programs on KnocOS (v0.31.0)
+
+**Real Linux programs run on KnocOS, unchanged.** Debian's BusyBox (a static RISC-V Linux build, 300 standard tools) runs as it is:
+
+```text
+knoc:/$ busybox uname -a
+Linux knocos 6.1.0-knocos v0.31.0 (KnocOS Linux layer) riscv64 GNU/Linux
+knoc:/$ busybox ls -l /home/Downloads
+-rw-r--r--    1 0        0             3141 Sep 27 06:50 335505283.pdf
+...
+knoc:/$ grep -r milk /home
+/home/Downloads/notes.txt:- milk
+knoc:/$ df -h
+Filesystem                Size      Used Available Use% Mounted on
+knocfs                   62.9M     21.8M     41.0M  35% /
+knoc:/$ vi /home/notes.txt          ← the real editor, saving works
+```
+
+- `make linux-apps` (or `scripts/get-busybox.sh`) downloads BusyBox; `make run` puts it in `/bin`, and its tools work by name (`grep`, `sed`, `awk`, `tar`, `gzip`, `vi`, `top`, `ps`, `free`, `df`, `find`, `md5sum`...)
+- Any static Linux RISC-V program works the same way: copy it with `make put` or `fetch` it, then run it
+- A Linux system call layer translates about 90 Linux calls; `/proc` and `/dev` basics are there for tools that read them
+- Linux programs have the same permissions, quotas and crash protection as KnocOS programs; `ps` shows them as `linux`
+- Not yet: dynamically linked programs, `fork` / `exec` (so no `busybox sh` pipelines or `tar -z`), Linux sockets
+
+## Search by Meaning (v0.30.0)
 
 **Find files by what they are about.** Words don't have to match: "invoice" finds a file that says "electricity bill", "cooking" finds the pasta recipe, "program source" finds the C file:
 
@@ -534,7 +558,8 @@ Recent progress:
 | `3d801e2` | HTTPS (BearSSL), the `web` text browser, real-time clock, random numbers, `/etc/hosts`, version `v0.27.1` |
 | `6814f5d` | 8 cores (4 kernel, AI space, 3 AI), big kernel lock, threads, LLM on the AI cores, `cpus`, version `v0.28.0` |
 | `0cb52d1` | KnocNet: pairing, encrypted links, files and AI questions between machines, TCP servers, version `v0.29.0` |
-| *(uncommitted)* | Search by meaning: `find`, KnocEmbed, `indexd`, file dates, memory facts by meaning, version `v0.30.0` |
+| `d681062` | Search by meaning: `find`, KnocEmbed, `indexd`, file dates, memory facts by meaning, version `v0.30.0` |
+| *(uncommitted)* | Linux programs: system call layer, BusyBox, `/proc`, devices moved high, version `v0.31.0` |
 
 What works right now:
 
@@ -573,7 +598,7 @@ Next steps (full list in `goal.md`, section 4c):
 - [x] v0.28.0: kernel on 8 cores (4 kernel + 4 AI)
 - [x] v0.29.0: KnocNet
 - [x] v0.30.0: search by meaning
-- [ ] v0.31.0: Linux apps
+- [x] v0.31.0: Linux programs (static, BusyBox)
 - [ ] v0.32.0 – v0.35.0: the GUI (last)
 
 ---

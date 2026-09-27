@@ -18,6 +18,7 @@
 #include "net.h"
 #include "cpu.h"
 #include "aispace.h"
+#include "linux.h"
 
 #define VRUNTIME_SCALE 600
 
@@ -91,6 +92,8 @@ typedef struct process
     int space_pending;
     uintptr_t thread_stack;
     uintptr_t thread_argument;
+    void *linux_state;
+    uintptr_t user_sp;
 } process_t;
 
 typedef struct class_info
@@ -557,6 +560,8 @@ static process_t *create_locked(const char *name,
     p->space_pending = 0;
     p->thread_stack = 0;
     p->thread_argument = 0;
+    p->linux_state = 0;
+    p->user_sp = 0;
 
     for (int i = 0; i < PROCESS_LOCKS_MAX; i++)
     {
@@ -653,6 +658,12 @@ static void *user_block(void *context, uint64_t bytes)
 
 static void user_space_free(process_t *p)
 {
+    if (p->linux_state != 0)
+    {
+        linux_destroy(p->linux_state);
+        p->linux_state = 0;
+    }
+
     if (p->user_root != 0)
     {
         vm_user_destroy(p->user_root);
@@ -743,8 +754,30 @@ static int user_space_load(process_t *p)
     p->trace_count = 0;
     p->denied = 0;
 
-    int loaded = p->user_root != 0 &&
-                 elf_load(p->user_root, image, size, user_block, p, &p->user_entry) == 0;
+    int linux = elf_is_linux(image, size);
+    elf_linux_info_t info;
+    int loaded = 0;
+
+    p->user_sp = 0;
+
+    if (p->user_root != 0 && linux)
+    {
+        int result = elf_load_linux(p->user_root, image, size, user_block, p, &info);
+
+        loaded = result == 0;
+        p->user_entry = info.entry;
+
+        if (result == ELF_LINUX_DYNAMIC)
+        {
+            uart_puts("[LINUX] ");
+            uart_puts(program->name);
+            uart_puts(" is a dynamically linked Linux program: only static Linux programs run for now\n");
+        }
+    }
+    else if (p->user_root != 0)
+    {
+        loaded = elf_load(p->user_root, image, size, user_block, p, &p->user_entry) == 0;
+    }
 
     if (file != 0)
     {
@@ -756,6 +789,34 @@ static int user_space_load(process_t *p)
     {
         user_space_free(p);
         return -1;
+    }
+
+    if (linux)
+    {
+        uint8_t *linux_stack = user_block(p, LINUX_STACK_SIZE);
+        char exe[PATH_MAX] = "/bin/";
+
+        if (program->path)
+        {
+            memcpy(exe, program->path, PATH_MAX - 1);
+        }
+        else
+        {
+            copy_name(exe + 5, program->name);
+        }
+
+        if (linux_stack == 0 ||
+            vm_user_map(p->user_root, USER_STACK_TOP - LINUX_STACK_SIZE, (uintptr_t)linux_stack, LINUX_STACK_SIZE,
+                        PTE_R | PTE_W) != 0 ||
+            (p->linux_state = linux_create(exe, program->name, p->args, p->cwd, &info, linux_stack, USER_STACK_TOP,
+                                           LINUX_STACK_SIZE, &p->user_sp)) == 0)
+        {
+            user_space_free(p);
+            return -1;
+        }
+
+        p->satp = vm_make_satp(p->user_root);
+        return 0;
     }
 
     void *stack = user_block(p, USER_STACK_SIZE);
@@ -784,9 +845,10 @@ static void user_process_start(void *arg)
 
     uintptr_t kernel_sp = ((uintptr_t)current->stack + PROCESS_STACK_SIZE) & ~0xFUL;
 
+    uintptr_t sp = current->user_sp ? current->user_sp : current->leader ? current->thread_stack : USER_STACK_TOP;
+
     bkl_leave_to_user();
-    user_enter(current->user_entry, current->leader ? current->thread_stack : USER_STACK_TOP, kernel_sp,
-               current->thread_argument);
+    user_enter(current->user_entry, sp, kernel_sp, current->thread_argument);
 }
 
 int process_spawn(const program_t *program)
@@ -1701,6 +1763,35 @@ static int kill_locked(process_t *p)
     return 0;
 }
 
+int process_is_linux(void)
+{
+    return current != 0 && current->linux_state != 0;
+}
+
+void *process_linux_state(void)
+{
+    return current != 0 ? current->linux_state : 0;
+}
+
+int process_map_anonymous(uintptr_t address, uint64_t size)
+{
+    process_t *owner = owner_of(current);
+    void *memory = user_block(owner, size);
+
+    if (memory == 0)
+    {
+        return -1;
+    }
+
+    if (vm_user_map(owner->user_root, address, (uintptr_t)memory, size, PTE_R | PTE_W) != 0)
+    {
+        return -1;
+    }
+
+    asm volatile("sfence.vma zero, zero");
+    return 0;
+}
+
 void process_exit_if_killed(void)
 {
     if (current == 0 || !current->kill_pending)
@@ -1974,7 +2065,7 @@ int process_info(uint32_t index, process_info_t *info)
         info->state = p->state;
         info->user = (uint32_t)p->user;
         info->restarts = p->restarts;
-        info->flags = p->pid == foreground ? PROCESS_FLAG_FOREGROUND : 0;
+        info->flags = (p->pid == foreground ? PROCESS_FLAG_FOREGROUND : 0) | (p->linux_state ? PROCESS_FLAG_LINUX : 0);
         info->cpu_ticks = p->cpu_ticks;
         info->memory = p->mem_used;
         info->denied = p->denied;

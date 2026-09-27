@@ -1,4 +1,5 @@
 #include "cpu.h"
+#include "mmio.h"
 #include "trap.h"
 #include "vm.h"
 #include "timer.h"
@@ -112,14 +113,14 @@ void cpu_kick(int id)
     if (id != cpu_id() && id < CPU_MAX && cpus[id].online && !cpus[id].kicked)
     {
         cpus[id].kicked = 1;
-        ((volatile uint32_t *)CLINT_BASE)[id] = 1;
+        ((volatile uint32_t *)MMIO(CLINT_BASE))[id] = 1;
     }
 }
 
 uint64_t cpu_ticks_passed(void)
 {
     cpu_t *cpu = cpu_self();
-    uint64_t cmp = *(volatile uint64_t *)(CLINT_BASE + 0x4000 + 8 * (uint64_t)cpu->id);
+    uint64_t cmp = *(volatile uint64_t *)MMIO(CLINT_BASE + 0x4000 + 8 * (uint64_t)cpu->id);
     uint64_t passed = cpu->last_cmp ? (cmp - cpu->last_cmp) / TIMER_INTERVAL : 1;
 
     cpu->last_cmp = cmp;

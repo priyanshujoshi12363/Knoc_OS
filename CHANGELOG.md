@@ -2,6 +2,23 @@
 
 All notable changes to KnocOS are listed here. Versions follow [Semantic Versioning](https://semver.org/): while KnocOS is below `1.0.0`, every minor version is a development milestone.
 
+## [0.31.0] - 2026-09-27
+
+Linux programs run on KnocOS.
+
+### Added
+- Static Linux programs for RISC-V run unchanged: the kernel recognizes them by their ELF header, loads them where Linux would (also static PIE), and gives them the Linux start-up stack (arguments, environment, the auxiliary vector with page size, entry point and random bytes)
+- A Linux system call layer (`kernel/linux.c`): about 90 calls translated onto KnocOS: files (`openat`, `read`, `write`, `readv`/`writev`, `pread`, `lseek`, `newfstatat`/`fstat`, `getdents64`, `mkdirat`, `unlinkat`, `renameat`, `faccessat`, `dup`/`dup3`, `fcntl`, `ftruncate`, `statfs`, `readlinkat`), memory (`brk`, `mmap` anonymous and from files), the terminal (Linux line editing, raw mode, window size, `poll`/`select` that wait for keys), time (`clock_gettime`, `nanosleep`), `uname`, `getrandom`, `prlimit64`, `sysinfo`, and signal and process calls as simple stand-ins; unknown calls answer "not supported" and are named once on the console
+- `/dev/null`, `/dev/tty` and a generated `/proc` (`meminfo`, `mounts`, `cpuinfo`, `stat`, `uptime`, `version`, `loadavg`, and `stat` / `status` / `cmdline` for every process), so tools like `ps`, `top`, `free` and `df` work
+- BusyBox: `scripts/get-busybox.sh` (and `make linux-apps`) downloads Debian's static RISC-V BusyBox 1.37 and puts it in `/bin/busybox`; its tools also work without typing `busybox` (`grep`, `sed`, `awk`, `sort`, `tar`, `gzip`, `vi`, `top`, `df`, `find`, `md5sum`...), knocsh's own commands keep priority
+- Linux programs get the same capabilities, quotas and crash handling as KnocOS programs: a crashing Linux program is stopped alone and diagnosed by the crash classifier; `ps` shows them as `linux`
+- `linuxtest`, a Linux program built in this repository that checks the system call layer
+- `make test` Run 19: `linuxtest`, BusyBox tools compared with the host (`md5sum`, `sed`, `sort`, `wc`, `tar`, `gzip`), `vi` editing and saving a file, and a Linux program crash contained by the AI space
+
+### Changed
+- The kernel reaches devices through a mapping at the top of the address space, so the low 2 GiB are free for Linux programs
+- Programs can have up to 256 memory blocks and 16 open files; the file system calls have kernel versions the Linux layer shares
+
 ## [0.30.0] - 2026-09-27
 
 Search by meaning: `find invoice from last month`.
